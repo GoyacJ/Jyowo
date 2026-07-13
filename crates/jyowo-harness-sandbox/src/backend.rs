@@ -93,6 +93,7 @@ pub struct ExecSpec {
     pub command: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    pub authorized_env_keys: BTreeSet<String>,
     pub cwd: Option<PathBuf>,
     pub stdin: StdioSpec,
     pub stdout: StdioSpec,
@@ -102,6 +103,7 @@ pub struct ExecSpec {
     pub policy: SandboxPolicy,
     pub workspace_access: WorkspaceAccess,
     pub output_policy: OutputPolicy,
+    pub required_kill_scope: Option<KillScope>,
 }
 
 impl ExecSpec {
@@ -114,10 +116,13 @@ impl ExecSpec {
             write_string(&mut hasher, arg);
         }
 
-        let filtered_env = self
-            .env
-            .iter()
-            .filter(|(key, _)| base.passthrough_env_keys.contains(*key));
+        write_usize(&mut hasher, self.authorized_env_keys.len());
+        for key in &self.authorized_env_keys {
+            write_string(&mut hasher, key);
+        }
+        let filtered_env = self.env.iter().filter(|(key, _)| {
+            base.passthrough_env_keys.contains(*key) || self.authorized_env_keys.contains(*key)
+        });
         write_usize(&mut hasher, filtered_env.clone().count());
         for (key, value) in filtered_env {
             write_string(&mut hasher, key);
@@ -144,6 +149,7 @@ impl Default for ExecSpec {
             command: String::new(),
             args: Vec::new(),
             env: BTreeMap::new(),
+            authorized_env_keys: BTreeSet::new(),
             cwd: None,
             stdin: StdioSpec::Piped,
             stdout: StdioSpec::Piped,
@@ -153,6 +159,7 @@ impl Default for ExecSpec {
             policy: default_sandbox_policy(),
             workspace_access: WorkspaceAccess::None,
             output_policy: OutputPolicy::default(),
+            required_kill_scope: None,
         }
     }
 }
@@ -509,6 +516,26 @@ pub fn validate_preflight_capabilities(
         });
     }
 
+    if !spec.authorized_env_keys.is_empty() && !capabilities.supports_per_exec_env {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "environment".to_owned(),
+            detail: format!(
+                "sandbox backend `{backend_id}` cannot inject explicitly authorized environment variables"
+            ),
+        });
+    }
+
+    if let Some(required_scope) = spec.required_kill_scope {
+        if !capabilities.supports_kill_scope.contains(&required_scope) {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "kill_scope".to_owned(),
+                detail: format!(
+                    "sandbox backend `{backend_id}` cannot kill execution scope: {required_scope:?}"
+                ),
+            });
+        }
+    }
+
     validate_resource_preflight(capabilities, &spec.policy.resource_limits)?;
     Ok(())
 }
@@ -648,6 +675,7 @@ pub struct SandboxCapabilities {
     pub cwd_marker_support: CwdMarkerSupport,
     pub supports_activity_heartbeat: bool,
     pub supports_interactive_shell: bool,
+    pub supports_per_exec_env: bool,
     pub network: NetworkPolicySupport,
     pub workspace: WorkspacePolicySupport,
     pub supports_gpu: bool,
@@ -671,6 +699,7 @@ impl Default for SandboxCapabilities {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: false,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport::default(),
             workspace: WorkspacePolicySupport::default(),
             supports_gpu: false,

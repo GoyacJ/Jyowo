@@ -219,6 +219,7 @@ impl SandboxBackend for SshSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport {
                 none: false,
                 loopback_only: false,

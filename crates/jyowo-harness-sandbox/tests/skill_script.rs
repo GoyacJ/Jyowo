@@ -14,9 +14,9 @@ use harness_contracts::{
 };
 use harness_sandbox::{
     execute_skill_script, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
-    NetworkPolicySupport, ProcessHandle, ResourceLimitSupport, SandboxBackend, SandboxBaseConfig,
-    SandboxCapabilities, SessionSnapshotFile, SkillScriptPackFile, SkillScriptSandboxRequest,
-    SkillScriptStatus, SnapshotSpec,
+    NetworkPolicySupport, ProcessHandle, ResourceLimitSupport, SandboxBackend, SandboxCapabilities,
+    SessionSnapshotFile, SkillScriptPackFile, SkillScriptSandboxRequest, SkillScriptStatus,
+    SnapshotSpec,
 };
 use harness_skill::{SkillScriptDecl, SkillScriptNetworkPolicy};
 use serde_json::json;
@@ -34,12 +34,19 @@ struct TestActivity {
     delay: Duration,
     exit_status: SandboxExitStatus,
     killed: Arc<AtomicUsize>,
+    kill_scopes: Arc<Mutex<Vec<KillScope>>>,
+    terminal_waits: Arc<AtomicUsize>,
+    terminated: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
 impl ActivityHandle for TestActivity {
     async fn wait(&self) -> Result<ExecOutcome, SandboxError> {
-        tokio::time::sleep(self.delay).await;
+        tokio::select! {
+            () = tokio::time::sleep(self.delay) => {}
+            () = self.terminated.notified() => {}
+        }
+        self.terminal_waits.fetch_add(1, Ordering::SeqCst);
         Ok(ExecOutcome {
             exit_status: self.exit_status.clone(),
             started_at: Utc::now(),
@@ -48,8 +55,10 @@ impl ActivityHandle for TestActivity {
         })
     }
 
-    async fn kill(&self, _signal: i32, _scope: KillScope) -> Result<(), SandboxError> {
+    async fn kill(&self, _signal: i32, scope: KillScope) -> Result<(), SandboxError> {
         self.killed.fetch_add(1, Ordering::SeqCst);
+        self.kill_scopes.lock().unwrap().push(scope);
+        self.terminated.notify_waiters();
         Ok(())
     }
 
@@ -62,6 +71,8 @@ impl ActivityHandle for TestActivity {
 
 struct TestBackend {
     network_deny: bool,
+    per_exec_env: bool,
+    kill_scopes_supported: Vec<KillScope>,
     executed: AtomicUsize,
     recorded: Mutex<Vec<ExecSpec>>,
     stdout: Vec<u8>,
@@ -70,14 +81,18 @@ struct TestBackend {
     exit_status: SandboxExitStatus,
     artifacts: Vec<(String, Vec<u8>)>,
     pending_output: bool,
-    allowed_env: BTreeSet<String>,
     killed: Arc<AtomicUsize>,
+    kill_scopes: Arc<Mutex<Vec<KillScope>>>,
+    terminal_waits: Arc<AtomicUsize>,
+    terminated: Arc<tokio::sync::Notify>,
 }
 
 impl TestBackend {
     fn accepting() -> Self {
         Self {
             network_deny: true,
+            per_exec_env: true,
+            kill_scopes_supported: vec![KillScope::Process, KillScope::ProcessGroup],
             executed: AtomicUsize::new(0),
             recorded: Mutex::new(Vec::new()),
             stdout: Vec::new(),
@@ -86,8 +101,10 @@ impl TestBackend {
             exit_status: SandboxExitStatus::Code(0),
             artifacts: Vec::new(),
             pending_output: false,
-            allowed_env: BTreeSet::new(),
             killed: Arc::new(AtomicUsize::new(0)),
+            kill_scopes: Arc::new(Mutex::new(Vec::new())),
+            terminal_waits: Arc::new(AtomicUsize::new(0)),
+            terminated: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -101,6 +118,7 @@ impl SandboxBackend for TestBackend {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             supports_streaming: true,
+            supports_per_exec_env: self.per_exec_env,
             network: NetworkPolicySupport {
                 none: self.network_deny,
                 loopback_only: false,
@@ -113,19 +131,13 @@ impl SandboxBackend for TestBackend {
                 writable_subpaths: true,
             },
             max_concurrent_execs: 1,
+            supports_kill_scope: self.kill_scopes_supported.clone(),
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport {
                 wall_clock: true,
                 ..ResourceLimitSupport::default()
             },
             ..SandboxCapabilities::default()
-        }
-    }
-
-    fn base_config(&self) -> SandboxBaseConfig {
-        SandboxBaseConfig {
-            passthrough_env_keys: self.allowed_env.clone(),
-            ..SandboxBaseConfig::default()
         }
     }
 
@@ -163,6 +175,9 @@ impl SandboxBackend for TestBackend {
                 delay: self.delay,
                 exit_status: self.exit_status.clone(),
                 killed: Arc::clone(&self.killed),
+                kill_scopes: Arc::clone(&self.kill_scopes),
+                terminal_waits: Arc::clone(&self.terminal_waits),
+                terminated: Arc::clone(&self.terminated),
             }),
         })
     }
@@ -205,10 +220,7 @@ async fn rejects_backend_that_cannot_enforce_network_denial() {
 
 #[tokio::test]
 async fn injects_only_explicit_declared_environment_values() {
-    let backend = Arc::new(TestBackend {
-        allowed_env: BTreeSet::from(["TOKEN".to_owned()]),
-        ..TestBackend::accepting()
-    });
+    let backend = Arc::new(TestBackend::accepting());
     let mut declaration = script_decl();
     declaration.env.insert(
         "TOKEN".to_owned(),
@@ -237,8 +249,11 @@ async fn injects_only_explicit_declared_environment_values() {
 }
 
 #[tokio::test]
-async fn rejects_backend_that_would_drop_declared_environment_values() {
-    let backend = Arc::new(TestBackend::accepting());
+async fn rejects_backend_that_cannot_inject_explicit_environment_values() {
+    let backend = Arc::new(TestBackend {
+        per_exec_env: false,
+        ..TestBackend::accepting()
+    });
     let mut declaration = script_decl();
     declaration.env.insert(
         "TOKEN".to_owned(),
@@ -252,11 +267,29 @@ async fn rejects_backend_that_would_drop_declared_environment_values() {
 
     let error = execute_skill_script(backend.clone(), request, test_context())
         .await
-        .expect_err("backend that would drop declared env must be rejected");
+        .expect_err("backend without per-exec environment support must be rejected");
 
     assert!(matches!(
         error,
         SandboxError::CapabilityMismatch { ref capability, .. } if capability == "environment"
+    ));
+    assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn rejects_backend_that_cannot_kill_the_process_group() {
+    let backend = Arc::new(TestBackend {
+        kill_scopes_supported: vec![KillScope::Process],
+        ..TestBackend::accepting()
+    });
+
+    let error = execute_skill_script(backend.clone(), request(script_decl()), test_context())
+        .await
+        .expect_err("backend without process-group kill support must be rejected");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. } if capability == "kill_scope"
     ));
     assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
 }
@@ -292,6 +325,11 @@ async fn enforces_timeout_and_kills_backend_process() {
 
     assert_eq!(result.status, SkillScriptStatus::TimedOut);
     assert_eq!(backend.killed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        backend.kill_scopes.lock().unwrap().as_slice(),
+        &[KillScope::ProcessGroup]
+    );
+    assert_eq!(backend.terminal_waits.load(Ordering::SeqCst), 1);
     assert_eq!(result.enforced_policy.timeout_ms, 1_000);
 }
 

@@ -819,7 +819,7 @@ async fn local_sandbox_emits_backpressure_when_consumer_pauses() {
 }
 
 #[tokio::test]
-async fn local_sandbox_filters_environment_with_passthrough_keys() {
+async fn local_sandbox_filters_environment_with_passthrough_and_per_exec_keys() {
     let root = temp_root("env");
     let sandbox = LocalSandbox::with_base(
         &root,
@@ -829,9 +829,14 @@ async fn local_sandbox_filters_environment_with_passthrough_keys() {
         },
     );
 
-    let mut spec = shell_spec("printf '%s:%s' \"${VISIBLE:-missing}\" \"${HIDDEN:-missing}\"");
+    let mut spec = shell_spec(
+        "printf '%s:%s:%s' \"${VISIBLE:-missing}\" \"${EXPLICIT:-missing}\" \"${HIDDEN:-missing}\"",
+    );
     spec.env.insert("VISIBLE".to_owned(), "yes".to_owned());
+    spec.env
+        .insert("EXPLICIT".to_owned(), "declared".to_owned());
     spec.env.insert("HIDDEN".to_owned(), "no".to_owned());
+    spec.authorized_env_keys.insert("EXPLICIT".to_owned());
 
     let mut handle = sandbox
         .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
@@ -840,7 +845,7 @@ async fn local_sandbox_filters_environment_with_passthrough_keys() {
     let output = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
     let outcome = handle.activity.wait().await.expect("wait should succeed");
 
-    assert_eq!(output, "yes:missing");
+    assert_eq!(output, "yes:declared:missing");
     assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
 }
 

@@ -61,6 +61,7 @@ impl SandboxBackend for LocalSandbox {
             },
             supports_activity_heartbeat: true,
             supports_interactive_shell: cfg!(unix),
+            supports_per_exec_env: true,
             network: network_policy_support_for_isolation(self.isolation),
             workspace: workspace_policy_support_for_isolation(self.isolation),
             supports_gpu: false,
@@ -1160,9 +1161,9 @@ fn filtered_env<'a>(
     allowed: &'a BTreeSet<String>,
     spec: &'a ExecSpec,
 ) -> impl Iterator<Item = (&'a String, &'a String)> + 'a {
-    spec.env
-        .iter()
-        .filter(|(key, _)| allowed.contains(key.as_str()))
+    spec.env.iter().filter(|(key, _)| {
+        allowed.contains(key.as_str()) || spec.authorized_env_keys.contains(key.as_str())
+    })
 }
 
 fn create_local_snapshot(

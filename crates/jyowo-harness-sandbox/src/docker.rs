@@ -483,6 +483,7 @@ impl SandboxBackend for DockerSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport {
                 none: true,
                 loopback_only: false,

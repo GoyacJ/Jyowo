@@ -89,7 +89,6 @@ pub async fn execute_skill_script(
 ) -> Result<SkillScriptSandboxResult, SandboxError> {
     validate_declaration(&request.declaration)?;
     validate_environment(&request)?;
-    validate_backend_environment(backend.as_ref(), &request.env)?;
 
     let workspace = TempSkillWorkspace::create(&ctx.workspace_root)?;
     let root = workspace.path().to_path_buf();
@@ -138,10 +137,12 @@ pub async fn execute_skill_script(
         .declaration
         .max_stdout_bytes
         .max(request.declaration.max_stderr_bytes);
+    let authorized_env_keys = request.env.keys().cloned().collect();
     let spec = ExecSpec {
         command: command_for_script(&script_path).to_owned(),
         args: vec![script_path_string],
         env: request.env,
+        authorized_env_keys,
         cwd: Some(root.clone()),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
@@ -169,6 +170,7 @@ pub async fn execute_skill_script(
             overflow: OutputOverflowPolicy::Truncate,
             redact_secrets: true,
         },
+        required_kill_scope: Some(KillScope::ProcessGroup),
     };
 
     let backend_id = backend.backend_id().to_owned();
@@ -184,15 +186,17 @@ pub async fn execute_skill_script(
     ));
 
     let activity = Arc::clone(&handle.activity);
+    let mut wait = Box::pin(activity.wait());
     let outcome = match tokio::time::timeout(
         timeout.saturating_add(BACKEND_TIMEOUT_GRACE),
-        activity.wait(),
+        &mut wait,
     )
     .await
     {
         Ok(outcome) => Some(outcome?),
         Err(_) => {
-            activity.kill(9, KillScope::Process).await?;
+            activity.kill(9, KillScope::ProcessGroup).await?;
+            let _ = tokio::time::timeout(BACKEND_TIMEOUT_GRACE, &mut wait).await;
             None
         }
     };
@@ -261,23 +265,6 @@ fn validate_environment(request: &SkillScriptSandboxRequest) -> Result<(), Sandb
         return Err(SandboxError::Message(format!(
             "undeclared environment variable `{name}`"
         )));
-    }
-    Ok(())
-}
-
-fn validate_backend_environment(
-    backend: &dyn SandboxBackend,
-    env: &BTreeMap<String, String>,
-) -> Result<(), SandboxError> {
-    let allowed = backend.base_config().passthrough_env_keys;
-    if let Some(name) = env.keys().find(|name| !allowed.contains(*name)) {
-        return Err(SandboxError::CapabilityMismatch {
-            capability: "environment".to_owned(),
-            detail: format!(
-                "sandbox backend `{}` cannot inject declared environment variable `{name}`",
-                backend.backend_id()
-            ),
-        });
     }
     Ok(())
 }
