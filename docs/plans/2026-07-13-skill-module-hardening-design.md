@@ -49,7 +49,7 @@ Secret values are excluded from rendered model context, event payloads, logs, re
 
 ## Typed Skill References and First-Turn Injection
 
-`contextReferences` becomes a versioned tagged structure. Deserialization accepts legacy string entries and normalizes them to the current skill-reference form.
+`contextReferences` becomes a versioned tagged structure. Deserialization accepts legacy string entries and normalizes them to `WorkspaceFile`, matching the existing Daemon interpretation of string references as workspace paths.
 
 ```text
 ContextReference::Skill {
@@ -75,6 +75,8 @@ prepared -> context assembled -> provider accepted -> consumed
 The prepared event contains the typed reference, non-secret parameters, source metadata, and a hash of the rendered body. It never contains the rendered body or a secret. Recovery resolves the reference against the current effective runtime, renders it again, and compares the hash before continuing. A mismatch stops recovery with a deterministic integrity error.
 
 The delivery guarantee is at-least-once. A crash after provider acceptance but before the consumed marker can repeat the injection. The system must not silently lose an injection.
+
+Each delivery uses a stable key derived from task ID, queue item ID, queue revision, and reference index. A queue edit therefore creates a distinct delivery identity. `provider accepted` means `model.infer(...)` returned a model stream successfully; it does not mean request construction started or that the first token arrived. The accepted and consumed events are persisted separately so the approved crash window remains observable.
 
 ## Registry and Hook Consistency
 
@@ -147,4 +149,3 @@ Implementation follows test-first RED/GREEN cycles. Coverage includes:
 - Daemon -> SDK -> Context -> Model integration.
 
 Desktop skill command tests use a dedicated test target so unrelated automation/app-info test compilation does not hide skill regressions.
-
