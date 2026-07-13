@@ -392,6 +392,23 @@ async fn rejects_script_and_files_outside_materialized_package() {
 }
 
 #[tokio::test]
+async fn rejects_nested_reserved_package_file_components() {
+    let backend = Arc::new(TestBackend::accepting());
+    let mut reserved_file = request(script_decl());
+    reserved_file.files.push(SkillScriptPackFile {
+        path: "nested/.jyowo-private/value.txt".to_owned(),
+        content: "reserved".to_owned(),
+    });
+
+    let error = execute_skill_script(backend.clone(), reserved_file, test_context())
+        .await
+        .expect_err("nested reserved package file must be rejected");
+
+    assert!(matches!(error, SandboxError::HostPathDenied { .. }));
+    assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn result_serialization_contains_only_enforced_policy_fields() {
     let result = execute_skill_script(
         Arc::new(TestBackend::accepting()),

@@ -148,6 +148,21 @@ fn rejects_script_paths_outside_package() {
 }
 
 #[test]
+fn rejects_reserved_script_path_components() {
+    for path in [
+        ".jyowo-input.json",
+        "scripts/.jyowo-run.sh",
+        "scripts/.jyowo-cache/run.sh",
+    ] {
+        let error = parse_script_error(&format!("scripts:\n  - id: collect\n    path: {path}"));
+        assert!(
+            error.contains("uses reserved .jyowo- path component"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_unsupported_script_network_policy() {
     let error = parse_script_error(
         r"scripts:

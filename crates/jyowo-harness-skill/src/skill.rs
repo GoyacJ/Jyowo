@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use harness_contracts::{
     AgentId, HookEventKind, HookFailureMode, McpServerId, PluginId, SkillId, SkillSourceKind,
@@ -73,6 +73,16 @@ pub enum SkillScriptNetworkPolicy {
 pub struct SkillScriptEnvDecl {
     pub config: String,
     pub secret: bool,
+}
+
+#[must_use]
+pub fn skill_script_path_has_reserved_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component,
+            Component::Normal(value) if value.to_string_lossy().starts_with(".jyowo-")
+        )
+    })
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

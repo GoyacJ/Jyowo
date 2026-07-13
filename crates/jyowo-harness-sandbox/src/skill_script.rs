@@ -11,9 +11,9 @@ use harness_contracts::{
     SandboxPolicy, SandboxScope, WorkspaceAccess,
 };
 use harness_skill::{
-    SkillScriptDecl, SkillScriptNetworkPolicy, MAX_SKILL_SCRIPT_ARTIFACT_BYTES,
-    MAX_SKILL_SCRIPT_ARTIFACT_COUNT, MAX_SKILL_SCRIPT_OUTPUT_BYTES, MAX_SKILL_SCRIPT_STREAM_BYTES,
-    MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
+    skill_script_path_has_reserved_component, SkillScriptDecl, SkillScriptNetworkPolicy,
+    MAX_SKILL_SCRIPT_ARTIFACT_BYTES, MAX_SKILL_SCRIPT_ARTIFACT_COUNT,
+    MAX_SKILL_SCRIPT_OUTPUT_BYTES, MAX_SKILL_SCRIPT_STREAM_BYTES, MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -103,7 +103,7 @@ pub async fn execute_skill_script(
     for file in &request.files {
         let relative = safe_relative_path(Path::new(&file.path))?;
         let normalized = path_to_string(&relative);
-        if normalized.starts_with(".jyowo-") || !baseline.insert(normalized.clone()) {
+        if !baseline.insert(normalized.clone()) {
             return Err(SandboxError::HostPathDenied {
                 path: file.path.clone(),
             });
@@ -479,6 +479,9 @@ fn safe_relative_path(value: &Path) -> Result<PathBuf, SandboxError> {
         }
     }
     if normalized.as_os_str().is_empty() {
+        return Err(SandboxError::HostPathDenied { path: display });
+    }
+    if skill_script_path_has_reserved_component(&normalized) {
         return Err(SandboxError::HostPathDenied { path: display });
     }
     Ok(normalized)

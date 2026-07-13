@@ -6,15 +6,15 @@ use serde_json::{Map, Number, Value};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::{
-    BuiltinHookKind, Skill, SkillConfigDecl, SkillError, SkillFrontmatter, SkillHookDecl,
-    SkillHookExecSpec, SkillHookHttpSecuritySpec, SkillHookHttpSpec, SkillHookTransport,
-    SkillParamType, SkillParameter, SkillPlatform, SkillPrerequisites, SkillScriptDecl,
-    SkillScriptEnvDecl, SkillScriptNetworkPolicy, SkillSource, DEFAULT_SKILL_SCRIPT_ARTIFACT_BYTES,
-    DEFAULT_SKILL_SCRIPT_ARTIFACT_COUNT, DEFAULT_SKILL_SCRIPT_OUTPUT_BYTES,
-    DEFAULT_SKILL_SCRIPT_STDERR_BYTES, DEFAULT_SKILL_SCRIPT_STDOUT_BYTES,
-    DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS, MAX_SKILL_SCRIPT_ARTIFACT_BYTES,
-    MAX_SKILL_SCRIPT_ARTIFACT_COUNT, MAX_SKILL_SCRIPT_OUTPUT_BYTES, MAX_SKILL_SCRIPT_STREAM_BYTES,
-    MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
+    skill_script_path_has_reserved_component, BuiltinHookKind, Skill, SkillConfigDecl, SkillError,
+    SkillFrontmatter, SkillHookDecl, SkillHookExecSpec, SkillHookHttpSecuritySpec,
+    SkillHookHttpSpec, SkillHookTransport, SkillParamType, SkillParameter, SkillPlatform,
+    SkillPrerequisites, SkillScriptDecl, SkillScriptEnvDecl, SkillScriptNetworkPolicy, SkillSource,
+    DEFAULT_SKILL_SCRIPT_ARTIFACT_BYTES, DEFAULT_SKILL_SCRIPT_ARTIFACT_COUNT,
+    DEFAULT_SKILL_SCRIPT_OUTPUT_BYTES, DEFAULT_SKILL_SCRIPT_STDERR_BYTES,
+    DEFAULT_SKILL_SCRIPT_STDOUT_BYTES, DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS,
+    MAX_SKILL_SCRIPT_ARTIFACT_BYTES, MAX_SKILL_SCRIPT_ARTIFACT_COUNT,
+    MAX_SKILL_SCRIPT_OUTPUT_BYTES, MAX_SKILL_SCRIPT_STREAM_BYTES, MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
 };
 
 pub fn parse_skill_markdown(
@@ -313,6 +313,11 @@ fn relative_package_path(value: &str) -> Result<PathBuf, SkillError> {
     if normalized.as_os_str().is_empty() {
         return Err(script_error(format!(
             "script path `{value}` must be a relative package path"
+        )));
+    }
+    if skill_script_path_has_reserved_component(&normalized) {
+        return Err(script_error(format!(
+            "script path `{value}` uses reserved .jyowo- path component"
         )));
     }
     Ok(normalized)
