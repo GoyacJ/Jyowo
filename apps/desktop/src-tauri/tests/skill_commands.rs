@@ -86,6 +86,18 @@ async fn package_integrity_list_marks_a_tampered_installed_skill_rejected() {
         .find(|skill| skill.id == imported.skill.id)
         .unwrap();
     assert_eq!(summary.status, "rejected");
+    assert_eq!(
+        skill_store.load_records().unwrap()[0]
+            .last_validation_error
+            .as_deref(),
+        Some("skill package content hash mismatch")
+    );
+    assert!(state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
 
     let detail = get_skill_detail_with_runtime_state(
         GetSkillDetailRequest {
@@ -123,6 +135,245 @@ async fn package_integrity_list_marks_a_tampered_installed_skill_rejected() {
         .view_runtime_skill("integrity-test", false)
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn package_integrity_detail_persists_rejection_and_evicts_runtime() {
+    let fixture = installed_integrity_skill().await;
+    fixture.tamper();
+
+    let detail = get_skill_detail_with_runtime_state(
+        GetSkillDetailRequest {
+            id: fixture.skill_id.clone(),
+        },
+        &fixture.state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(detail.skill.summary.status, "rejected");
+    assert_eq!(
+        fixture.store.load_records().unwrap()[0]
+            .last_validation_error
+            .as_deref(),
+        Some("skill package content hash mismatch")
+    );
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn package_integrity_same_state_enable_revalidates_and_evicts_runtime() {
+    let fixture = installed_integrity_skill().await;
+    fixture.tamper();
+
+    let response = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: fixture.skill_id.clone(),
+            enabled: true,
+        },
+        &fixture.state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.skill.status, "rejected");
+    assert_eq!(
+        fixture.store.load_records().unwrap()[0]
+            .last_validation_error
+            .as_deref(),
+        Some("skill package content hash mismatch")
+    );
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn package_integrity_config_lookup_rejects_a_tampered_managed_skill() {
+    let fixture = installed_integrity_skill().await;
+    fixture.tamper();
+
+    for request_id in [
+        fixture.skill_id.clone(),
+        "integrity-test".to_owned(),
+        "user:integrity-test".to_owned(),
+    ] {
+        let result = get_skill_config_with_runtime_state(
+            GetSkillConfigRequest {
+                skill_id: request_id.clone(),
+            },
+            &fixture.state,
+        )
+        .await;
+        let error = result.expect_err(&format!(
+            "request {request_id} unexpectedly resolved a stale runtime view"
+        ));
+        assert_eq!(error.code, "INVALID_PAYLOAD");
+    }
+    assert_eq!(
+        fixture.store.load_records().unwrap()[0]
+            .last_validation_error
+            .as_deref(),
+        Some("skill package content hash mismatch")
+    );
+}
+
+#[tokio::test]
+async fn package_integrity_missing_selection_uses_legacy_enabled_records_and_hashes() {
+    let fixture = installed_integrity_skill().await;
+    std::fs::remove_file(fixture.layout.global_skills_file()).unwrap();
+    fixture.tamper();
+
+    let response = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: fixture.skill_id.clone(),
+            enabled: true,
+        },
+        &fixture.state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.skill.status, "rejected");
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn package_integrity_list_evicts_after_an_earlier_check_persisted_the_rejection() {
+    let fixture = installed_integrity_skill().await;
+    fixture.tamper();
+    get_skill_config_with_runtime_state(
+        GetSkillConfigRequest {
+            skill_id: fixture.skill_id.clone(),
+        },
+        &fixture.state,
+    )
+    .await
+    .expect_err("config lookup must persist the integrity rejection");
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_some());
+
+    list_skills_with_runtime_state(&fixture.state)
+        .await
+        .unwrap();
+
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn package_integrity_missing_recorded_hash_fails_closed() {
+    let fixture = installed_integrity_skill().await;
+    let mut records = fixture.store.load_records().unwrap();
+    records[0].content_hash.clear();
+    fixture.store.save_records(&records).unwrap();
+
+    let response = set_skill_enabled_with_runtime_state(
+        SetSkillEnabledRequest {
+            id: fixture.skill_id.clone(),
+            enabled: true,
+        },
+        &fixture.state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.skill.status, "rejected");
+    assert!(fixture
+        .state
+        .settings_runtime()
+        .unwrap()
+        .view_runtime_skill("integrity-test", false)
+        .unwrap()
+        .is_none());
+}
+
+struct InstalledIntegritySkill {
+    _root: tempfile::TempDir,
+    layout: StorageLayout,
+    state: DesktopRuntimeState,
+    store: Arc<jyowo_desktop_shell::commands::DesktopSkillStore>,
+    skill_id: String,
+}
+
+impl InstalledIntegritySkill {
+    fn tamper(&self) {
+        std::fs::write(
+            self.layout
+                .global_skills_root()
+                .join("packages")
+                .join(&self.skill_id)
+                .join("SKILL.md"),
+            "---\nname: integrity-test\ndescription: Integrity test\n---\nTampered body.\n",
+        )
+        .unwrap();
+    }
+}
+
+async fn installed_integrity_skill() -> InstalledIntegritySkill {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let mut state = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace.clone(),
+        settings_runtime,
+    )
+    .unwrap();
+    let store = Arc::new(jyowo_desktop_shell::commands::DesktopSkillStore::global(
+        layout.clone(),
+    ));
+    state.set_skill_store_for_test(store.clone());
+    state.set_config_stores_for_test(GlobalConfigStore::new(layout.clone()), None);
+    let source = workspace.join("source-skill");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("SKILL.md"),
+        "---\nname: integrity-test\ndescription: Integrity test\n---\nOriginal body.\n",
+    )
+    .unwrap();
+    let imported = import_skill_with_runtime_state(
+        ImportSkillRequest {
+            source_path: source.to_string_lossy().into_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    InstalledIntegritySkill {
+        _root: root,
+        layout,
+        state,
+        store,
+        skill_id: imported.skill.id,
+    }
 }
 
 impl BlockingLoadGate {
@@ -328,6 +579,16 @@ async fn skill_config_commands_share_one_canonical_namespace() {
         layout.clone(),
     ));
     state.set_skill_store_for_test(skill_store.clone());
+    let package_source = workspace.join("managed-configured-package");
+    std::fs::create_dir_all(&package_source).unwrap();
+    std::fs::write(
+        package_source.join("SKILL.md"),
+        "---\nname: configured\ndescription: Configured skill\nconfig:\n  - key: region\n    type: string\n---\nUse ${config.region}.\n",
+    )
+    .unwrap();
+    let content_hash = skill_store
+        .write_skill_package("managed-record-id", true, &package_source)
+        .unwrap();
     let skill_index = layout.global_skills_root().join("index.json");
     std::fs::create_dir_all(skill_index.parent().unwrap()).unwrap();
     std::fs::write(
@@ -337,7 +598,7 @@ async fn skill_config_commands_share_one_canonical_namespace() {
             name: "configured".to_owned(),
             description: "Configured skill".to_owned(),
             enabled: true,
-            content_hash: "test-hash".to_owned(),
+            content_hash,
             package_dir: "managed-record-id".to_owned(),
             file_name: String::new(),
             imported_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -369,6 +630,7 @@ async fn skill_config_commands_share_one_canonical_namespace() {
             },
             &state,
         )
+        .await
         .unwrap_or_else(|error| panic!("request {request_id} failed: {error:?}"));
         assert_eq!(response.skill_id, canonical_id);
     }
@@ -411,9 +673,20 @@ async fn managed_record_id_does_not_resolve_to_a_workspace_skill_with_the_same_n
     let mut state =
         DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
             .unwrap();
-    state.set_skill_store_for_test(Arc::new(
-        jyowo_desktop_shell::commands::DesktopSkillStore::global(layout.clone()),
+    let skill_store = Arc::new(jyowo_desktop_shell::commands::DesktopSkillStore::global(
+        layout.clone(),
     ));
+    state.set_skill_store_for_test(skill_store.clone());
+    let package_source = layout.global_skills_root().join("shadow-package-source");
+    std::fs::create_dir_all(&package_source).unwrap();
+    std::fs::write(
+        package_source.join("SKILL.md"),
+        "---\nname: configured\ndescription: User skill\n---\nUser.\n",
+    )
+    .unwrap();
+    let content_hash = skill_store
+        .write_skill_package("managed-record-id", true, &package_source)
+        .unwrap();
     let skill_index = layout.global_skills_root().join("index.json");
     std::fs::create_dir_all(skill_index.parent().unwrap()).unwrap();
     std::fs::write(
@@ -423,7 +696,7 @@ async fn managed_record_id_does_not_resolve_to_a_workspace_skill_with_the_same_n
             name: "configured".to_owned(),
             description: "User skill".to_owned(),
             enabled: true,
-            content_hash: "test-hash".to_owned(),
+            content_hash,
             package_dir: "managed-record-id".to_owned(),
             file_name: String::new(),
             imported_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -443,6 +716,7 @@ async fn managed_record_id_does_not_resolve_to_a_workspace_skill_with_the_same_n
         },
         &state,
     )
+    .await
     .expect_err("managed record must not bind to a shadowing workspace skill");
 
     assert_eq!(error.code, "INVALID_PAYLOAD");
@@ -547,6 +821,7 @@ async fn get_skill_config_projects_the_persisted_entry_through_current_declarati
         },
         &state,
     )
+    .await
     .unwrap();
 
     assert!(!response.config.values.contains_key("apiToken"));
@@ -587,6 +862,7 @@ async fn get_skill_config_propagates_secret_store_failure() {
         },
         &state,
     )
+    .await
     .expect_err("secure-store failure must not be shown as an unconfigured secret");
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");

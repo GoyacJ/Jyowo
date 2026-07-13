@@ -148,18 +148,10 @@ impl Harness {
         ))
     }
 
-    pub async fn reload_workspace_managed_skills(
-        &self,
-        enabled_dir: impl AsRef<Path>,
-    ) -> Result<(), HarnessError> {
-        self.reload_workspace_managed_skills_with_expected_package_hashes(enabled_dir, None)
-            .await
-    }
-
     pub async fn reload_workspace_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        expected_package_hashes: Option<std::collections::BTreeMap<String, String>>,
+        expected_package_hashes: std::collections::BTreeMap<String, String>,
     ) -> Result<(), HarnessError> {
         let enabled_dir = enabled_dir.as_ref().to_path_buf();
         let source = SkillSource::Workspace(enabled_dir.clone());
@@ -178,18 +170,10 @@ impl Harness {
     ///
     /// Skills are loaded with [`DirectorySourceKind::User`] and stored under
     /// [`SkillSource::User`] so they coexist with workspace-managed skills.
-    pub async fn reload_user_managed_skills(
-        &self,
-        enabled_dir: impl AsRef<Path>,
-    ) -> Result<(), HarnessError> {
-        self.reload_user_managed_skills_with_expected_package_hashes(enabled_dir, None)
-            .await
-    }
-
     pub async fn reload_user_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        expected_package_hashes: Option<std::collections::BTreeMap<String, String>>,
+        expected_package_hashes: std::collections::BTreeMap<String, String>,
     ) -> Result<(), HarnessError> {
         let enabled_dir = enabled_dir.as_ref().to_path_buf();
         let source = SkillSource::User(enabled_dir.clone());

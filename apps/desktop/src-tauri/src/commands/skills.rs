@@ -34,11 +34,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const SKILL_PACKAGE_INTEGRITY_ERROR: &str = "skill package content hash mismatch";
 
-pub fn get_skill_config_with_runtime_state(
+pub async fn get_skill_config_with_runtime_state(
     request: GetSkillConfigRequest,
     state: &DesktopRuntimeState,
 ) -> Result<GetSkillConfigResponse, CommandErrorPayload> {
-    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let view = resolve_skill_config_view(&request.skill_id, state).await?;
     let skill_id = view.summary.id;
     let snapshot = state.skill_config_store.load_snapshot()?;
     let mut config = SkillConfigEntry::default();
@@ -64,7 +64,7 @@ pub async fn set_skill_config_value_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
     let _settings_reload_guard = state.settings_reload_lock.lock().await;
-    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let view = resolve_skill_config_view(&request.skill_id, state).await?;
     let declaration = config_declaration(&view, &request.key)?;
     state
         .skill_config_store
@@ -82,7 +82,7 @@ pub async fn set_skill_secret_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
     let _settings_reload_guard = state.settings_reload_lock.lock().await;
-    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let view = resolve_skill_config_view(&request.skill_id, state).await?;
     let declaration = config_declaration(&view, &request.key)?;
     state.skill_config_store.set_secret(
         &view.summary.id,
@@ -102,7 +102,7 @@ pub async fn clear_skill_secret_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
     let _settings_reload_guard = state.settings_reload_lock.lock().await;
-    let view = resolve_skill_config_view(&request.skill_id, state)?;
+    let view = resolve_skill_config_view(&request.skill_id, state).await?;
     let declaration = config_declaration(&view, &request.key)?;
     state
         .skill_config_store
@@ -124,16 +124,20 @@ fn refresh_skill_config_snapshot(state: &DesktopRuntimeState) -> Result<(), Comm
     Ok(())
 }
 
-fn resolve_skill_config_view(
+async fn resolve_skill_config_view(
     request_id: &str,
     state: &DesktopRuntimeState,
 ) -> Result<RuntimeSkillView, CommandErrorPayload> {
+    let _skill_store_guard = state.skill_store_lock.lock().await;
     let runtime = state.settings_runtime().ok_or_else(|| {
         runtime_unavailable("Skill configuration requires the runtime skill facade.")
     })?;
     let mut records = state.skill_store.load_records()?;
-    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
+    refresh_and_persist_skill_package_integrity(state, &mut records)?;
     if let Some(record) = records.iter().find(|record| record.id == request_id) {
+        if record.last_validation_error.is_some() {
+            return Err(invalid_payload("skill package is rejected".to_owned()));
+        }
         if records
             .iter()
             .filter(|candidate| candidate.name == record.name)
@@ -164,10 +168,16 @@ fn resolve_skill_config_view(
         .find(|skill| skill.id == request_id || skill.name == request_id)
         .map(|skill| skill.name.as_str())
         .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
-    runtime
+    let view = runtime
         .view_runtime_skill(requested_name, false)
         .map_err(skill_config_runtime_error)?
-        .ok_or_else(|| invalid_payload("skill not found".to_owned()))
+        .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
+    if records.iter().any(|record| {
+        record.last_validation_error.is_some() && view.summary.id == format!("user:{}", record.name)
+    }) {
+        return Err(invalid_payload("skill package is rejected".to_owned()));
+    }
+    Ok(view)
 }
 
 fn skill_config_runtime_error(
@@ -212,8 +222,8 @@ fn runtime_config_type(
 pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
-    let mut records = state.skill_store.load_records()?;
-    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
+    let _skill_store_guard = state.skill_store_lock.lock().await;
+    let records = load_fresh_skill_records(state).await?;
     let runtime = match state.settings_runtime() {
         Some(settings_runtime) => settings_runtime
             .list_runtime_skills()
@@ -809,8 +819,8 @@ pub async fn get_skill_detail_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<GetSkillDetailResponse, CommandErrorPayload> {
     ensure_skill_id(&request.id)?;
-    let mut records = state.skill_store.load_records()?;
-    refresh_skill_package_integrity(state.skill_store.as_ref(), &mut records);
+    let _skill_store_guard = state.skill_store_lock.lock().await;
+    let records = load_fresh_skill_records(state).await?;
     let record = records.iter().find(|record| record.id == request.id);
     let enabled_ids = enabled_skill_ids_for_state(state)?;
     let settings_runtime = state.settings_runtime();
@@ -895,6 +905,7 @@ pub async fn set_skill_enabled_with_runtime_state(
         runtime_unavailable("Changing skill state requires the runtime skill facade.")
     })?;
     let mut records = state.skill_store.load_records()?;
+    refresh_and_persist_skill_package_integrity(state, &mut records)?;
     let previous_selection = load_skill_selection_for_state(state)?;
     let enabled_ids: BTreeSet<String> = previous_selection.enabled.iter().cloned().collect();
     let record_index = records
@@ -960,6 +971,8 @@ pub async fn set_skill_enabled_with_runtime_state(
             let _ = reload_managed_skills(state, &settings_runtime).await;
             return Err(error);
         }
+    } else {
+        reload_managed_skills(state, &settings_runtime).await?;
     }
     let record = state
         .skill_store
@@ -1057,18 +1070,55 @@ pub(crate) async fn reload_managed_skills(
 pub(crate) fn expected_package_hashes(
     records: &[SkillStoreRecord],
     enabled_ids: Option<&BTreeSet<String>>,
-) -> Option<BTreeMap<String, String>> {
-    enabled_ids.map(|enabled_ids| {
-        records
-            .iter()
-            .filter(|record| enabled_ids.contains(&record.id))
-            .map(|record| (record.id.clone(), record.content_hash.clone()))
-            .collect()
-    })
+) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter(|record| {
+            enabled_ids
+                .map(|enabled_ids| enabled_ids.contains(&record.id))
+                .unwrap_or(record.enabled)
+        })
+        .map(|record| (record.id.clone(), record.content_hash.clone()))
+        .collect()
 }
 
-fn refresh_skill_package_integrity(store: &dyn SkillStore, records: &mut [SkillStoreRecord]) {
+async fn load_fresh_skill_records(
+    state: &DesktopRuntimeState,
+) -> Result<Vec<SkillStoreRecord>, CommandErrorPayload> {
+    let mut records = state.skill_store.load_records()?;
+    let integrity_changed = refresh_and_persist_skill_package_integrity(state, &mut records)?;
+    let has_integrity_rejection = records.iter().any(|record| {
+        record
+            .last_validation_error
+            .as_deref()
+            .is_some_and(is_skill_package_integrity_error)
+    });
+    if integrity_changed || has_integrity_rejection {
+        if let Some(settings_runtime) = state.settings_runtime() {
+            reload_managed_skills(state, &settings_runtime).await?;
+        }
+    }
+    Ok(records)
+}
+
+fn refresh_and_persist_skill_package_integrity(
+    state: &DesktopRuntimeState,
+    records: &mut [SkillStoreRecord],
+) -> Result<bool, CommandErrorPayload> {
+    if !refresh_skill_package_integrity(state.skill_store.as_ref(), records) {
+        return Ok(false);
+    }
+    state.skill_store.save_records(records)?;
+    Ok(true)
+}
+
+fn refresh_skill_package_integrity(
+    store: &dyn SkillStore,
+    records: &mut [SkillStoreRecord],
+) -> bool {
+    let mut changed = false;
     for record in records {
+        let previous_error = record.last_validation_error.clone();
         let integrity_error = match store.current_package_hash(record) {
             Ok(None) => continue,
             Ok(Some(current_hash)) if current_hash == record.content_hash => None,
@@ -1083,14 +1133,18 @@ fn refresh_skill_package_integrity(store: &dyn SkillStore, records: &mut [SkillS
             None if record
                 .last_validation_error
                 .as_deref()
-                .is_some_and(|error| {
-                    error == SKILL_PACKAGE_INTEGRITY_ERROR
-                        || error.starts_with("skill package integrity check failed:")
-                }) =>
+                .is_some_and(is_skill_package_integrity_error) =>
             {
                 record.last_validation_error = None;
             }
             None => {}
         }
+        changed |= record.last_validation_error != previous_error;
     }
+    changed
+}
+
+fn is_skill_package_integrity_error(error: &str) -> bool {
+    error == SKILL_PACKAGE_INTEGRITY_ERROR
+        || error.starts_with("skill package integrity check failed:")
 }

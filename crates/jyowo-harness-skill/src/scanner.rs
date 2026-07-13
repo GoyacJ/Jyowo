@@ -3,21 +3,28 @@ use harness_memory::MemoryThreatScanner;
 
 use std::path::Path;
 
-use crate::{loader::read_skill_package_files, Skill, SkillError, SkillSource};
+use crate::{Skill, SkillError, SkillPackageSnapshot, SkillSource};
 
-pub(crate) fn auxiliary_skill_package_text(root: &Path) -> Result<Vec<String>, SkillError> {
+pub(crate) fn auxiliary_skill_package_text(snapshot: &SkillPackageSnapshot) -> Vec<String> {
     let mut text = Vec::new();
-    for file in read_skill_package_files(root)? {
-        if file.relative_path == Path::new("SKILL.md")
-            || !is_supported_text_path(&file.relative_path)
+    for (relative_path, bytes) in snapshot.files() {
+        if relative_path == Path::new("SKILL.md")
+            || !is_supported_text_path(relative_path)
+            || looks_binary(bytes)
         {
             continue;
         }
-        if let Ok(content) = String::from_utf8(file.bytes) {
-            text.push(content);
+        if let Ok(content) = std::str::from_utf8(bytes) {
+            text.push(content.to_owned());
         }
     }
-    Ok(text)
+    text
+}
+
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| {
+        matches!(byte, 0 | 0x7f) || (*byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
+    })
 }
 
 fn is_supported_text_path(path: &Path) -> bool {

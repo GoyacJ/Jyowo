@@ -88,6 +88,8 @@ async fn missing_skill_selection_uses_current_index_enabled_state() {
         "Current package skill",
         None,
     );
+    let content_hash =
+        harness_skill::hash_skill_package(&home.package_path(skill_id)).expect("package hash");
     let index_path = home.index_path();
     std::fs::create_dir_all(index_path.parent().unwrap()).unwrap();
     std::fs::write(
@@ -97,7 +99,7 @@ async fn missing_skill_selection_uses_current_index_enabled_state() {
             name: "current-skill".to_owned(),
             description: "Current package skill".to_owned(),
             enabled: true,
-            content_hash: "test-hash".to_owned(),
+            content_hash,
             package_dir: skill_id.to_owned(),
             file_name: String::new(),
             imported_at: now().to_rfc3339(),
@@ -265,12 +267,13 @@ async fn enabling_skill_rejects_runtime_duplicate_name() {
         skill_markdown("shared-name", "Workspace skill"),
     )
     .unwrap();
+    let content_hash = harness_skill::hash_skill_package(&disabled_dir).expect("package hash");
     let record = SkillStoreRecord {
         id: disabled_id.to_owned(),
         name: "shared-name".to_owned(),
         description: "Workspace skill".to_owned(),
         enabled: false,
-        content_hash: "test-hash".to_owned(),
+        content_hash,
         package_dir: disabled_id.to_owned(),
         file_name: String::new(),
         imported_at: now().to_rfc3339(),

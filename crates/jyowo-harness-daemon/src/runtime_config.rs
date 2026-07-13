@@ -1561,12 +1561,12 @@ fn build_skill_loader(
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: global_home.join("skills/packages"),
             source_kind: DirectorySourceKind::User,
-            expected_package_hashes: Some(global_expected),
+            expected_package_hashes: global_expected,
         })
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: workspace_root.join(".jyowo/skills/packages"),
             source_kind: DirectorySourceKind::Workspace,
-            expected_package_hashes: Some(project_expected),
+            expected_package_hashes: project_expected,
         })
 }
 

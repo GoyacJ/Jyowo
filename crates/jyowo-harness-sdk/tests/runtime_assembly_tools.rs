@@ -1149,7 +1149,13 @@ async fn workspace_hook_reload_replaces_old_handler_after_new_handler_registers(
         .expect("harness should build");
 
     harness
-        .reload_workspace_managed_skills(&enabled)
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
         .await
         .expect("initial hook should load");
     let old_id = hook_registry
@@ -1160,7 +1166,13 @@ async fn workspace_hook_reload_replaces_old_handler_after_new_handler_registers(
 
     write_package_hook(&package, "events: [PostToolUse]");
     harness
-        .reload_workspace_managed_skills(&enabled)
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
         .await
         .expect("changed hook should load");
 
@@ -1194,7 +1206,13 @@ async fn workspace_hook_removal_rejects_foreign_replacement_without_deleting_it(
         .await
         .unwrap();
     harness
-        .reload_workspace_managed_skills(&enabled)
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
         .await
         .unwrap();
     let handler_id = hook_registry
@@ -1211,7 +1229,12 @@ async fn workspace_hook_removal_rejects_foreign_replacement_without_deleting_it(
         .unwrap();
     std::fs::remove_dir_all(&package).unwrap();
 
-    let result = harness.reload_workspace_managed_skills(&enabled).await;
+    let result = harness
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::new(),
+        )
+        .await;
 
     assert!(result.is_err());
     assert!(harness.skill_registry().get("audit").is_some());

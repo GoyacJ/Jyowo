@@ -112,7 +112,7 @@ impl DesktopSettingsRuntime {
     pub async fn reload_user_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        expected_package_hashes: Option<BTreeMap<String, String>>,
+        expected_package_hashes: BTreeMap<String, String>,
     ) -> Result<(), HarnessError> {
         self.inner
             .reload_user_managed_skills_with_expected_package_hashes(

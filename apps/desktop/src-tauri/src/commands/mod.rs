@@ -851,7 +851,7 @@ pub async fn get_skill_config(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetSkillConfigResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    get_skill_config_with_runtime_state(GetSkillConfigRequest { skill_id }, &runtime_state)
+    get_skill_config_with_runtime_state(GetSkillConfigRequest { skill_id }, &runtime_state).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
