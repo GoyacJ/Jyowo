@@ -318,6 +318,38 @@ describe('MCPManager', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows exact browser preset versions when provided', async () => {
+    renderMCPManager(
+      createTestCommandClient({
+        browserMcpPresets: {
+          presets: [
+            {
+              description: 'Browser automation through Playwright MCP.',
+              displayName: 'Playwright Browser',
+              enabled: false,
+              id: 'playwright',
+              serverId: 'browser-playwright',
+              version: '0.0.78',
+            },
+            {
+              description: 'Browser inspection through Chrome DevTools MCP.',
+              displayName: 'Chrome DevTools Browser',
+              enabled: false,
+              id: 'chrome-devtools',
+              serverId: 'browser-chrome-devtools',
+              version: '1.5.0',
+            },
+          ],
+        },
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
+    )
+
+    expect(await screen.findByText('0.0.78')).toBeInTheDocument()
+    expect(screen.getByText('1.5.0')).toBeInTheDocument()
+  })
+
   it('enables disabled browser MCP presets', async () => {
     const saveBrowserMcpPreset = vi.fn().mockResolvedValue({
       preset: {

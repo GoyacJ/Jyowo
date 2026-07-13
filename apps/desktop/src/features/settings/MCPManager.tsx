@@ -831,6 +831,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h4 className="font-medium text-sm">{preset.displayName}</h4>
+                      {preset.version ? <Badge variant="outline">{preset.version}</Badge> : null}
                       <Badge variant={preset.enabled ? 'secondary' : 'outline'}>
                         {preset.enabled
                           ? t('mcp.browserPresets.enabled')

@@ -1494,6 +1494,7 @@ describe('CommandClient', () => {
               enabled: false,
               id: 'playwright',
               serverId: 'browser-playwright',
+              version: '0.0.78',
             },
             {
               description: 'Browser inspection through Chrome DevTools MCP.',
@@ -1501,6 +1502,7 @@ describe('CommandClient', () => {
               enabled: false,
               id: 'chrome-devtools',
               serverId: 'browser-chrome-devtools',
+              version: '1.5.0',
             },
           ],
         }
@@ -1513,6 +1515,7 @@ describe('CommandClient', () => {
           enabled: false,
           id: 'playwright',
           serverId: 'browser-playwright',
+          version: '0.0.78',
         },
         server: {
           configLayer: 'global',
@@ -1542,6 +1545,7 @@ describe('CommandClient', () => {
           enabled: false,
           id: 'playwright',
           serverId: 'browser-playwright',
+          version: '0.0.78',
         },
         {
           description: 'Browser inspection through Chrome DevTools MCP.',
@@ -1549,6 +1553,7 @@ describe('CommandClient', () => {
           enabled: false,
           id: 'chrome-devtools',
           serverId: 'browser-chrome-devtools',
+          version: '1.5.0',
         },
       ],
     })
@@ -2089,6 +2094,141 @@ describe('CommandClient', () => {
           headers: [{ key: 'X-Value', value: 'Bearer public-value' }],
           kind: 'http',
           url: 'https://mcp.example.com/mcp',
+        },
+      },
+    ]
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    for (const request of invalidRequests) {
+      await expect(client.saveMcpServer(request as never)).rejects.toThrow(TauriCommandPayloadError)
+    }
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('rejects MCP fields that exceed Rust UTF-8 byte limits before invoking Tauri', async () => {
+    const oversized4KiB = '界'.repeat(1366)
+    const oversized8KiB = '界'.repeat(2731)
+    const invalidRequests = [
+      {
+        configLayer: 'global',
+        displayName: '界'.repeat(86),
+        id: 'display-name-bytes',
+        required: false,
+        scope: 'global',
+        transport: { command: 'node', kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Command bytes',
+        id: 'command-bytes',
+        required: false,
+        scope: 'global',
+        transport: { command: oversized4KiB, kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Argument bytes',
+        id: 'argument-bytes',
+        required: false,
+        scope: 'global',
+        transport: { args: [oversized4KiB], command: 'node', kind: 'stdio' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Environment bytes',
+        id: 'environment-bytes',
+        required: false,
+        scope: 'global',
+        transport: {
+          command: 'node',
+          env: [{ key: 'LOG_LEVEL', value: oversized4KiB }],
+          kind: 'stdio',
+        },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Working directory bytes',
+        id: 'working-directory-bytes',
+        required: false,
+        scope: 'global',
+        transport: { command: 'node', kind: 'stdio', workingDir: oversized4KiB },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Header bytes',
+        id: 'header-bytes',
+        required: false,
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'X-Value', value: oversized8KiB }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+    ]
+    const invoke = vi.fn()
+    const client = createInvokeCommandClient(invoke)
+
+    for (const request of invalidRequests) {
+      await expect(client.saveMcpServer(request as never)).rejects.toThrow(TauriCommandPayloadError)
+    }
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('rejects every Rust-classified MCP secret form before invoking Tauri', async () => {
+    const tokenLike = 'a'.repeat(32)
+    const invalidRequests = [
+      {
+        configLayer: 'global',
+        displayName: 'Hyphenated secret query key',
+        id: 'hyphenated-query-key',
+        required: false,
+        scope: 'global',
+        transport: { kind: 'http', url: 'https://mcp.example.com/mcp?api-key=public' },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Token-like environment value',
+        id: 'token-like-env',
+        required: false,
+        scope: 'global',
+        transport: {
+          command: 'node',
+          env: [{ key: 'LOG_LEVEL', value: tokenLike }],
+          kind: 'stdio',
+        },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Token-like header value',
+        id: 'token-like-header',
+        required: false,
+        scope: 'global',
+        transport: {
+          headers: [{ key: 'X-Value', value: tokenLike }],
+          kind: 'http',
+          url: 'https://mcp.example.com/mcp',
+        },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Token-like query value',
+        id: 'token-like-query',
+        required: false,
+        scope: 'global',
+        transport: { kind: 'http', url: `https://mcp.example.com/mcp?value=${tokenLike}` },
+      },
+      {
+        configLayer: 'global',
+        displayName: 'Known secret prefix',
+        id: 'known-secret-prefix',
+        required: false,
+        scope: 'global',
+        transport: {
+          command: 'node',
+          env: [{ key: 'LOG_LEVEL', value: 'ghp_short' }],
+          kind: 'stdio',
         },
       },
     ]

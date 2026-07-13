@@ -4,10 +4,50 @@ use jyowo_desktop_shell::commands::{
     list_mcp_servers_for_layer_with_runtime_state, save_mcp_server_for_layer_with_runtime_state,
     set_mcp_server_enabled_for_layer_with_runtime_state, DeleteMcpServerRequest,
     DesktopRuntimeState, GetMcpServerConfigRequest, McpConfigLayer, McpDiagnosticPlane,
-    McpDiagnosticRecord, SaveMcpServerRequest, SaveMcpServerTransportConfig,
+    McpDiagnosticRecord, McpNameValueSaveRecord, McpServerConfigRecord, McpServerStore,
+    McpServerTransportConfig, SaveMcpServerRequest, SaveMcpServerTransportConfig,
     SetMcpServerEnabledRequest,
 };
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct MemoryMcpServerStore {
+    records: Mutex<Vec<McpServerConfigRecord>>,
+}
+
+impl McpServerStore for MemoryMcpServerStore {
+    fn load_records(
+        &self,
+    ) -> Result<Vec<McpServerConfigRecord>, jyowo_desktop_shell::commands::CommandErrorPayload>
+    {
+        Ok(self.records.lock().unwrap().clone())
+    }
+
+    fn save_record(
+        &self,
+        record: &McpServerConfigRecord,
+    ) -> Result<(), jyowo_desktop_shell::commands::CommandErrorPayload> {
+        let mut records = self.records.lock().unwrap();
+        if let Some(existing) = records.iter_mut().find(|existing| existing.id == record.id) {
+            *existing = record.clone();
+        } else {
+            records.push(record.clone());
+        }
+        Ok(())
+    }
+
+    fn delete_record(
+        &self,
+        id: &str,
+    ) -> Result<(), jyowo_desktop_shell::commands::CommandErrorPayload> {
+        self.records
+            .lock()
+            .unwrap()
+            .retain(|record| record.id != id);
+        Ok(())
+    }
+}
 
 fn layered_mcp_request(id: &str, display_name: &str) -> SaveMcpServerRequest {
     SaveMcpServerRequest {
@@ -22,6 +62,57 @@ fn layered_mcp_request(id: &str, display_name: &str) -> SaveMcpServerRequest {
             env: Vec::new(),
             inherit_env: Vec::new(),
             working_dir: None,
+        },
+    }
+}
+
+fn stdio_request(
+    id: &str,
+    display_name: &str,
+    value: Option<&str>,
+    preserve_existing: bool,
+) -> SaveMcpServerRequest {
+    SaveMcpServerRequest {
+        enabled: false,
+        required: false,
+        display_name: display_name.to_owned(),
+        id: id.to_owned(),
+        scope: "global".to_owned(),
+        transport: SaveMcpServerTransportConfig::Stdio {
+            command: "node".to_owned(),
+            args: Vec::new(),
+            env: vec![McpNameValueSaveRecord {
+                key: "LOG_LEVEL".to_owned(),
+                value: value.map(str::to_owned),
+                preserve_existing,
+            }],
+            inherit_env: Vec::new(),
+            working_dir: None,
+        },
+    }
+}
+
+fn http_request(
+    id: &str,
+    display_name: &str,
+    value: Option<&str>,
+    preserve_existing: bool,
+) -> SaveMcpServerRequest {
+    SaveMcpServerRequest {
+        enabled: false,
+        required: false,
+        display_name: display_name.to_owned(),
+        id: id.to_owned(),
+        scope: "global".to_owned(),
+        transport: SaveMcpServerTransportConfig::Http {
+            url: "https://mcp.example.com/mcp".to_owned(),
+            bearer_token_env_var: None,
+            headers: vec![McpNameValueSaveRecord {
+                key: "X-Client-Name".to_owned(),
+                value: value.map(str::to_owned),
+                preserve_existing,
+            }],
+            headers_from_env: Vec::new(),
         },
     }
 }
@@ -148,6 +239,136 @@ async fn inherited_global_mcp_record_is_read_only_in_project_layer() {
     .await
     .expect_err("inherited config must be read-only");
     assert_eq!(error.code, "INVALID_PAYLOAD");
+}
+
+#[tokio::test]
+async fn inherited_global_hidden_values_are_preserved_when_creating_project_overrides() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let workspace_root = workspace
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let mut state = DesktopRuntimeState::with_workspace_for_test(workspace_root)
+        .expect("desktop runtime state");
+    let global_store = Arc::new(MemoryMcpServerStore::default());
+    let project_store = Arc::new(MemoryMcpServerStore::default());
+    state.set_mcp_server_store_for_test(global_store.clone());
+    state.set_project_mcp_server_store_for_test(Some(project_store.clone()));
+
+    save_mcp_server_for_layer_with_runtime_state(
+        McpConfigLayer::Global,
+        stdio_request("inherited-stdio", "Global stdio", Some("verbose"), false),
+        &state,
+    )
+    .await
+    .expect("save global stdio server");
+    save_mcp_server_for_layer_with_runtime_state(
+        McpConfigLayer::Global,
+        http_request(
+            "inherited-http",
+            "Global HTTP",
+            Some("jyowo-desktop"),
+            false,
+        ),
+        &state,
+    )
+    .await
+    .expect("save global HTTP server");
+
+    for (id, hidden_value) in [
+        ("inherited-stdio", "verbose"),
+        ("inherited-http", "jyowo-desktop"),
+    ] {
+        let config = get_mcp_server_config_for_layer_with_runtime_state(
+            McpConfigLayer::Project,
+            GetMcpServerConfigRequest { id: id.to_owned() },
+            &state,
+        )
+        .await
+        .expect("read inherited config");
+        let serialized = serde_json::to_string(&config).expect("serialize inherited config");
+        assert_eq!(config.server.config_layer, McpConfigLayer::Global);
+        assert!(!serialized.contains(hidden_value));
+        match config.server.transport {
+            jyowo_desktop_shell::commands::McpServerConfigTransportPayload::Stdio {
+                env, ..
+            } => {
+                assert!(env[0].has_value);
+                assert!(env[0].value.is_none());
+            }
+            jyowo_desktop_shell::commands::McpServerConfigTransportPayload::Http {
+                headers,
+                ..
+            } => {
+                assert!(headers[0].has_value);
+                assert!(headers[0].value.is_none());
+            }
+            _ => panic!("unexpected inherited transport"),
+        }
+    }
+    let global_before_override = global_store.records.lock().unwrap().clone();
+
+    save_mcp_server_for_layer_with_runtime_state(
+        McpConfigLayer::Project,
+        stdio_request("inherited-stdio", "Project stdio", None, true),
+        &state,
+    )
+    .await
+    .expect("preserve inherited stdio env in project override");
+    save_mcp_server_for_layer_with_runtime_state(
+        McpConfigLayer::Project,
+        http_request("inherited-http", "Project HTTP", None, true),
+        &state,
+    )
+    .await
+    .expect("preserve inherited HTTP header in project override");
+
+    let project_records = project_store.records.lock().unwrap().clone();
+    let project_stdio = project_records
+        .iter()
+        .find(|record| record.id == "inherited-stdio")
+        .expect("project stdio record");
+    let McpServerTransportConfig::Stdio { env, .. } = &project_stdio.transport else {
+        panic!("expected project stdio transport");
+    };
+    assert_eq!(env[0].value, "verbose");
+    let project_http = project_records
+        .iter()
+        .find(|record| record.id == "inherited-http")
+        .expect("project HTTP record");
+    let McpServerTransportConfig::Http { headers, .. } = &project_http.transport else {
+        panic!("expected project HTTP transport");
+    };
+    assert_eq!(headers[0].value, "jyowo-desktop");
+
+    assert_eq!(
+        *global_store.records.lock().unwrap(),
+        global_before_override
+    );
+
+    for (id, hidden_value) in [
+        ("inherited-stdio", "verbose"),
+        ("inherited-http", "jyowo-desktop"),
+    ] {
+        delete_mcp_server_for_layer_with_runtime_state(
+            McpConfigLayer::Project,
+            DeleteMcpServerRequest { id: id.to_owned() },
+            &state,
+        )
+        .await
+        .expect("delete project override");
+        let revealed = get_mcp_server_config_for_layer_with_runtime_state(
+            McpConfigLayer::Project,
+            GetMcpServerConfigRequest { id: id.to_owned() },
+            &state,
+        )
+        .await
+        .expect("read revealed global config");
+        assert_eq!(revealed.server.config_layer, McpConfigLayer::Global);
+        assert!(!serde_json::to_string(&revealed)
+            .expect("serialize revealed global config")
+            .contains(hidden_value));
+    }
 }
 
 #[test]

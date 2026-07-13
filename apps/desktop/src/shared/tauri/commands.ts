@@ -2530,6 +2530,12 @@ const mcpDiagnosticSeveritySchema = z.enum(['info', 'warning', 'error'])
 
 const mcpDiagnosticPlaneSchema = z.enum(['settings', 'task'])
 
+const utf8Encoder = new TextEncoder()
+
+function hasMaxUtf8Bytes(value: string, maxBytes: number): boolean {
+  return utf8Encoder.encode(value).byteLength <= maxBytes
+}
+
 const mcpDiagnosticSummarySchema = z
   .string()
   .min(1)
@@ -2559,7 +2565,11 @@ const mcpDiagnosticRecordSchema = z
 const mcpServerSummarySchema = z
   .object({
     configLayer: mcpConfigLayerSchema,
-    displayName: z.string().min(1).max(256),
+    displayName: z
+      .string()
+      .min(1)
+      .max(256)
+      .refine((value) => hasMaxUtf8Bytes(value, 256)),
     effective: z.boolean(),
     enabled: z.boolean(),
     exposedToolCount: z.number().int().min(0),
@@ -2596,6 +2606,7 @@ const browserMcpPresetSchema = z
     enabled: z.boolean(),
     id: browserMcpPresetIdSchema,
     serverId: mcpServerIdSchema,
+    version: z.string().trim().min(1).optional(),
   })
   .strict()
 
@@ -2625,7 +2636,17 @@ const mcpEnvVarNameSchema = z
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 
 function isSensitiveEnvName(value: string): boolean {
-  return /(?:auth|api_?key|authorization|bearer|password|secret|token)/i.test(value)
+  const normalized = value.toLowerCase().replaceAll('-', '_')
+  return [
+    'auth',
+    'api_key',
+    'apikey',
+    'authorization',
+    'bearer',
+    'password',
+    'secret',
+    'token',
+  ].some((marker) => normalized.includes(marker))
 }
 
 function isSensitiveHeaderName(value: string): boolean {
@@ -2658,6 +2679,15 @@ function isSecretBearingMcpHeaderValue(value: string): boolean {
   )
 }
 
+function looksLikeRawMcpSecret(value: string): boolean {
+  const trimmed = value.trim()
+  const lower = trimmed.toLowerCase()
+  const knownPrefix = ['ghp_', 'github_pat_', 'glpat-', 'sk-', 'xoxb-', 'xoxp-', 'xoxa-'].some(
+    (prefix) => lower.startsWith(prefix),
+  )
+  return knownPrefix || (trimmed.length >= 32 && /^[A-Za-z0-9_.=/+-]+$/.test(trimmed))
+}
+
 function isSafeMcpHttpUrl(value: string): boolean {
   try {
     const parsed = new URL(value)
@@ -2670,7 +2700,11 @@ function isSafeMcpHttpUrl(value: string): boolean {
       return false
     }
     for (const [key, queryValue] of parsed.searchParams) {
-      if (isSensitiveEnvName(key) || hasObviousUnredactedSecret(queryValue)) {
+      if (
+        isSensitiveEnvName(key) ||
+        hasObviousUnredactedSecret(queryValue) ||
+        looksLikeRawMcpSecret(queryValue)
+      ) {
         return false
       }
     }
@@ -2702,7 +2736,10 @@ const mcpStdioEnvConfigSchema = mcpNameValueConfigSchema
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP stdio inline env must not contain obvious unredacted secrets',
   })
-  .refine((record) => record.value == null || record.value.length <= 4096, {
+  .refine((record) => record.value == null || !looksLikeRawMcpSecret(record.value), {
+    message: 'MCP stdio inline env must not contain secret-bearing values',
+  })
+  .refine((record) => record.value == null || hasMaxUtf8Bytes(record.value, 4096), {
     message: 'MCP stdio inline env values must contain at most 4096 bytes',
   })
 
@@ -2715,6 +2752,12 @@ const mcpHttpHeaderConfigSchema = mcpNameValueConfigSchema
   })
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP static headers must not contain obvious unredacted secrets',
+  })
+  .refine((record) => record.value == null || !looksLikeRawMcpSecret(record.value), {
+    message: 'MCP static headers must not contain secret-bearing values',
+  })
+  .refine((record) => record.value == null || hasMaxUtf8Bytes(record.value, 8192), {
+    message: 'MCP static header values must contain at most 8192 bytes',
   })
   .refine((record) => record.value == null || isValidMcpHeaderValue(record.value), {
     message: 'MCP static header values must not contain control characters',
@@ -2769,7 +2812,10 @@ const mcpStdioEnvRecordSchema = mcpNameValueSaveRecordSchema
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP stdio inline env must not contain obvious unredacted secrets',
   })
-  .refine((record) => record.value == null || record.value.length <= 4096, {
+  .refine((record) => record.value == null || !looksLikeRawMcpSecret(record.value), {
+    message: 'MCP stdio inline env must not contain secret-bearing values',
+  })
+  .refine((record) => record.value == null || hasMaxUtf8Bytes(record.value, 4096), {
     message: 'MCP stdio inline env values must contain at most 4096 bytes',
   })
 
@@ -2782,6 +2828,12 @@ const mcpHttpHeaderRecordSchema = mcpNameValueSaveRecordSchema
   })
   .refine((record) => record.value == null || !hasObviousUnredactedSecret(record.value), {
     message: 'MCP static headers must not contain obvious unredacted secrets',
+  })
+  .refine((record) => record.value == null || !looksLikeRawMcpSecret(record.value), {
+    message: 'MCP static headers must not contain secret-bearing values',
+  })
+  .refine((record) => record.value == null || hasMaxUtf8Bytes(record.value, 8192), {
+    message: 'MCP static header values must contain at most 8192 bytes',
   })
   .refine((record) => record.value == null || isValidMcpHeaderValue(record.value), {
     message: 'MCP static header values must not contain control characters',
@@ -2811,6 +2863,7 @@ const mcpStdioTransportRequestSchema = z
           .string()
           .min(1)
           .max(4096)
+          .refine((value) => hasMaxUtf8Bytes(value, 4096))
           .refine((value) => value.trim().length > 0 && !hasNul(value)),
       )
       .max(64)
@@ -2820,6 +2873,7 @@ const mcpStdioTransportRequestSchema = z
       .trim()
       .min(1)
       .max(4096)
+      .refine((value) => hasMaxUtf8Bytes(value, 4096))
       .refine((value) => !hasNul(value)),
     env: z.array(mcpStdioEnvRecordSchema).max(64).default([]),
     inheritEnv: z
@@ -2836,6 +2890,7 @@ const mcpStdioTransportRequestSchema = z
       .trim()
       .min(1)
       .max(4096)
+      .refine((value) => hasMaxUtf8Bytes(value, 4096))
       .refine((value) => !hasNul(value))
       .optional(),
   })
@@ -2866,6 +2921,7 @@ const saveMcpServerRequestSchema = z
       .trim()
       .min(1)
       .max(256)
+      .refine((value) => hasMaxUtf8Bytes(value, 256))
       .refine((value) => !hasNul(value)),
     enabled: z.boolean().default(true),
     id: mcpServerIdSchema,
@@ -2884,7 +2940,12 @@ const saveMcpServerResponseSchema = z
 const mcpServerConfigSchema = z
   .object({
     configLayer: mcpConfigLayerSchema,
-    displayName: z.string().trim().min(1).max(256),
+    displayName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .refine((value) => hasMaxUtf8Bytes(value, 256)),
     effective: z.boolean(),
     enabled: z.boolean(),
     id: mcpServerIdSchema,

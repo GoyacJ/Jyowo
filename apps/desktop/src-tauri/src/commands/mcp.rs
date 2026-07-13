@@ -207,7 +207,15 @@ pub async fn save_mcp_server_for_layer_with_runtime_state(
         .load_records()?
         .into_iter()
         .find(|record| record.id == id);
-    let record = mcp_server_record_from_save_request(request, existing.as_ref())?;
+    let preserve_source = if existing.is_some() || config_layer == McpConfigLayer::Global {
+        existing
+    } else {
+        mcp_store_for_layer(state, McpConfigLayer::Global)?
+            .load_records()?
+            .into_iter()
+            .find(|record| record.id == id)
+    };
+    let record = mcp_server_record_from_save_request(request, preserve_source.as_ref())?;
 
     save_mcp_server_record_for_layer_with_runtime_state(record, config_layer, state).await
 }
