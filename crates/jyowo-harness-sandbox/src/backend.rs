@@ -783,6 +783,9 @@ pub struct SandboxCapabilities {
     pub supports_per_exec_env: bool,
     pub network: NetworkPolicySupport,
     pub workspace: WorkspacePolicySupport,
+    /// The backend prevents a process from reading arbitrary host files outside
+    /// the materialized sandbox workspace.
+    pub host_filesystem_isolation: bool,
     pub supports_gpu: bool,
     pub supports_pty: bool,
     pub supports_detach: bool,
@@ -808,6 +811,7 @@ impl Default for SandboxCapabilities {
             supports_per_exec_env: false,
             network: NetworkPolicySupport::default(),
             workspace: WorkspacePolicySupport::default(),
+            host_filesystem_isolation: false,
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,

@@ -495,6 +495,7 @@ impl SandboxBackend for DockerSandbox {
                 read_only: false,
                 writable_subpaths: false,
             },
+            host_filesystem_isolation: true,
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,

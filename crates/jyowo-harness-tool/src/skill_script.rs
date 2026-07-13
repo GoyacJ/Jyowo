@@ -61,7 +61,9 @@ pub async fn run_prepared_skill_script(
             run_id: ctx.run_id,
             tool_use_id: Some(ctx.tool_use_id),
             tenant_id: ctx.tenant_id,
-            workspace_root: ctx.workspace_root.clone(),
+            // Skill packages run in a private materialized workspace. The user
+            // workspace is intentionally not passed across this boundary.
+            workspace_root: PathBuf::new(),
             correlation_id: CorrelationId::new(),
             event_sink: Arc::new(NullEventSink),
             redactor: Arc::clone(&ctx.redactor),

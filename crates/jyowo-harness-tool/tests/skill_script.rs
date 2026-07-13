@@ -159,6 +159,7 @@ impl SandboxBackend for RecordingBackend {
                 writable_subpaths: true,
                 ..harness_sandbox::WorkspacePolicySupport::default()
             },
+            host_filesystem_isolation: true,
             max_concurrent_execs: 1,
             supports_kill_scope: vec![KillScope::Process, KillScope::ProcessGroup],
             supports_synchronous_kill_scope: vec![KillScope::ProcessGroup],

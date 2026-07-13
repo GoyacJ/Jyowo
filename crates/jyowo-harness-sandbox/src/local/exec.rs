@@ -124,6 +124,7 @@ impl SandboxBackend for LocalSandbox {
             supports_per_exec_env: true,
             network: network_policy_support_for_isolation(self.isolation),
             workspace: workspace_policy_support_for_isolation(self.isolation),
+            host_filesystem_isolation: matches!(self.isolation, LocalIsolation::Bubblewrap),
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,

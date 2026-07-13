@@ -361,6 +361,48 @@ Token ${config.apiToken:secret}
     assert!(render_error.to_string().contains("cannot be interpolated"));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn script_preparation_rejects_package_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let package = tempfile::tempdir().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    let script_dir = package.path().join("scripts");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    symlink(outside.path(), script_dir.join("collect.sh")).unwrap();
+    let markdown = r#"---
+name: collector
+description: Collector
+scripts:
+  - id: collect
+    path: scripts/collect.sh
+    network: deny
+---
+Collector
+"#;
+    let skill_path = package.path().join("SKILL.md");
+    std::fs::write(&skill_path, markdown).unwrap();
+    let skill = parse_skill_markdown(
+        markdown,
+        SkillSource::Workspace(package.path().to_path_buf()),
+        Some(skill_path),
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    let service = SkillRegistryService::new(
+        registry_with_skill(skill),
+        harness_skill::SkillRenderer::new(Arc::new(TestConfigResolver)),
+    );
+
+    let error = service
+        .prepare_script(&AgentId::from_u128(1), "collector", "collect", json!({}))
+        .await
+        .expect_err("package symlink must be rejected");
+
+    assert!(error.to_string().contains("symlink"));
+}
+
 struct TestConfigResolver;
 
 struct ScriptConfigResolver;

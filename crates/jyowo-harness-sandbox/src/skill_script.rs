@@ -106,8 +106,17 @@ pub async fn execute_skill_script(
     let secret_lookahead = secret_values
         .first()
         .map_or(0, |value| value.len().saturating_sub(1) as u64);
-    if !backend
-        .capabilities()
+    let capabilities = backend.capabilities();
+    if !capabilities.host_filesystem_isolation {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "host_filesystem".to_owned(),
+            detail: format!(
+                "sandbox backend `{}` cannot isolate skill scripts from host files",
+                backend.backend_id()
+            ),
+        });
+    }
+    if !capabilities
         .supports_synchronous_kill_scope
         .contains(&KillScope::ProcessGroup)
     {
@@ -122,9 +131,9 @@ pub async fn execute_skill_script(
 
     let workspace = TempSkillWorkspace::create(&ctx.workspace_root)?;
     let root = workspace.path().to_path_buf();
-    if ctx.workspace_root.as_os_str().is_empty() {
-        ctx.workspace_root = workspace.base().to_path_buf();
-    }
+    // The backend sees only the private materialized package as its workspace.
+    // The caller's workspace is never part of the script sandbox scope.
+    ctx.workspace_root = root.clone();
     let script_path = safe_relative_path(&request.declaration.path)?;
     let mut mounted_files = Vec::with_capacity(request.files.len());
     let mut baseline = BTreeMap::new();
@@ -215,7 +224,7 @@ pub async fn execute_skill_script(
             denied_host_paths: Vec::new(),
         },
         workspace_access: WorkspaceAccess::ReadWrite {
-            allowed_writable_subpaths: vec![workspace.relative_path().to_path_buf()],
+            allowed_writable_subpaths: vec![PathBuf::from(".")],
         },
         output_policy: OutputPolicy {
             max_inline_bytes: stream_backend_limit,
@@ -766,8 +775,6 @@ fn io_error(error: std::io::Error) -> SandboxError {
 }
 
 struct TempSkillWorkspace {
-    base: PathBuf,
-    relative_path: PathBuf,
     path: PathBuf,
 }
 
@@ -792,19 +799,7 @@ impl TempSkillWorkspace {
         };
         let path = base.join(&relative_path);
         std::fs::create_dir_all(&path).map_err(io_error)?;
-        Ok(Self {
-            base,
-            relative_path,
-            path,
-        })
-    }
-
-    fn base(&self) -> &Path {
-        &self.base
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
+        Ok(Self { path })
     }
 
     fn path(&self) -> &Path {

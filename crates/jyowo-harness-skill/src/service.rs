@@ -7,6 +7,8 @@ use harness_contracts::{
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(unix)]
+use std::{ffi::OsStr, io::Read, os::unix::ffi::OsStrExt};
 
 use crate::{
     RenderError, Skill, SkillMetricsSink, SkillRegistry, SkillRegistrySnapshot, SkillRenderer,
@@ -283,49 +285,18 @@ fn collect_script_package(skill: &Skill, declared_path: &Path) -> Result<ScriptP
             skill.name
         ))
     })?;
-    reject_symlink(raw_path)?;
     let package_root = raw_path.parent().ok_or_else(|| {
         ToolError::Validation(format!(
             "skill `{}` package root is unavailable",
             skill.name
         ))
     })?;
-    let canonical_root = package_root
-        .canonicalize()
-        .map_err(|error| ToolError::Validation(format!("resolve skill package: {error}")))?;
-    let declared_file = package_root.join(declared_path);
-    reject_symlink(&declared_file)?;
-    let canonical_declared = declared_file
-        .canonicalize()
-        .map_err(|error| ToolError::Validation(format!("resolve declared script: {error}")))?;
-    if !canonical_declared.starts_with(&canonical_root) || !canonical_declared.is_file() {
-        return Err(ToolError::Validation(format!(
-            "declared script `{}` escapes the skill package",
-            declared_path.display()
-        )));
-    }
-
-    let mut paths = Vec::new();
-    collect_package_paths(package_root, package_root, &mut paths)?;
-    paths.sort_by(|left, right| left.0.cmp(&right.0));
-    if paths.len() > MAX_SCRIPT_PACKAGE_FILES {
-        return Err(ToolError::Validation(format!(
-            "skill package exceeds {MAX_SCRIPT_PACKAGE_FILES} files"
-        )));
-    }
-    let mut total_bytes = 0usize;
-    let mut files = Vec::with_capacity(paths.len());
+    let mut package_files = collect_package_files(package_root)?;
+    package_files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut files = Vec::with_capacity(package_files.len());
     let mut hasher = blake3::Hasher::new();
     hash_field(&mut hasher, b"jyowo.skill_script.package.v1");
-    for (relative, path) in paths {
-        let bytes = std::fs::read(&path)
-            .map_err(|error| ToolError::Validation(format!("read skill package file: {error}")))?;
-        total_bytes = total_bytes.saturating_add(bytes.len());
-        if total_bytes > MAX_SCRIPT_PACKAGE_BYTES {
-            return Err(ToolError::Validation(format!(
-                "skill package exceeds {MAX_SCRIPT_PACKAGE_BYTES} bytes"
-            )));
-        }
+    for (relative, bytes) in package_files {
         let content = String::from_utf8(bytes).map_err(|_| {
             ToolError::Validation(format!(
                 "skill package file `{}` is not UTF-8",
@@ -354,54 +325,97 @@ fn collect_script_package(skill: &Skill, declared_path: &Path) -> Result<ScriptP
     })
 }
 
-fn collect_package_paths(
-    root: &Path,
-    directory: &Path,
-    paths: &mut Vec<(PathBuf, PathBuf)>,
+#[cfg(unix)]
+fn collect_package_files(package_root: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, ToolError> {
+    let root = rustix::fs::open(
+        package_root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(package_open_error)?;
+    let root = std::fs::File::from(root);
+    let mut files = Vec::new();
+    let mut total_bytes = 0usize;
+    collect_package_files_from_dir(&root, Path::new(""), &mut files, &mut total_bytes)?;
+    Ok(files)
+}
+
+#[cfg(unix)]
+fn collect_package_files_from_dir(
+    directory: &std::fs::File,
+    relative_dir: &Path,
+    files: &mut Vec<(PathBuf, Vec<u8>)>,
+    total_bytes: &mut usize,
 ) -> Result<(), ToolError> {
-    let entries = std::fs::read_dir(directory)
-        .map_err(|error| ToolError::Validation(format!("read skill package: {error}")))?;
+    let entries = rustix::fs::Dir::read_from(directory).map_err(package_open_error)?;
     for entry in entries {
-        let entry =
-            entry.map_err(|error| ToolError::Validation(format!("read skill package: {error}")))?;
-        let path = entry.path();
-        let metadata = entry
-            .file_type()
+        let entry = entry.map_err(package_open_error)?;
+        let name_bytes = entry.file_name().to_bytes();
+        if matches!(name_bytes, b"." | b"..") {
+            continue;
+        }
+        let name = OsStr::from_bytes(name_bytes);
+        let relative = relative_dir.join(name);
+        let child = rustix::fs::openat(
+            directory,
+            Path::new(name),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(package_open_error)?;
+        let child = std::fs::File::from(child);
+        let metadata = child
+            .metadata()
             .map_err(|error| ToolError::Validation(format!("inspect skill package: {error}")))?;
-        if metadata.is_symlink() {
-            return Err(ToolError::Validation(format!(
-                "skill package symlink is not executable: {}",
-                path.display()
-            )));
-        }
         if metadata.is_dir() {
-            collect_package_paths(root, &path, paths)?;
+            collect_package_files_from_dir(&child, &relative, files, total_bytes)?;
         } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| ToolError::Validation("invalid skill package path".to_owned()))?
-                .to_path_buf();
-            paths.push((relative, path));
-        }
-        if paths.len() > MAX_SCRIPT_PACKAGE_FILES {
-            return Err(ToolError::Validation(format!(
-                "skill package exceeds {MAX_SCRIPT_PACKAGE_FILES} files"
-            )));
+            if files.len() >= MAX_SCRIPT_PACKAGE_FILES {
+                return Err(ToolError::Validation(format!(
+                    "skill package exceeds {MAX_SCRIPT_PACKAGE_FILES} files"
+                )));
+            }
+            let remaining = MAX_SCRIPT_PACKAGE_BYTES.saturating_sub(*total_bytes);
+            let mut bytes = Vec::new();
+            child
+                .take(remaining.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    ToolError::Validation(format!("read skill package file: {error}"))
+                })?;
+            *total_bytes = total_bytes.saturating_add(bytes.len());
+            if *total_bytes > MAX_SCRIPT_PACKAGE_BYTES {
+                return Err(ToolError::Validation(format!(
+                    "skill package exceeds {MAX_SCRIPT_PACKAGE_BYTES} bytes"
+                )));
+            }
+            files.push((relative, bytes));
         }
     }
     Ok(())
 }
 
-fn reject_symlink(path: &Path) -> Result<(), ToolError> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| ToolError::Validation(format!("inspect skill package path: {error}")))?;
-    if metadata.file_type().is_symlink() {
-        return Err(ToolError::Validation(format!(
-            "skill package symlink is not executable: {}",
-            path.display()
-        )));
-    }
-    Ok(())
+#[cfg(unix)]
+fn package_open_error(error: rustix::io::Errno) -> ToolError {
+    let message = if matches!(error, rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) {
+        "skill package symlinks are not executable".to_owned()
+    } else {
+        format!("read skill package: {error}")
+    };
+    ToolError::Validation(message)
+}
+
+#[cfg(not(unix))]
+fn collect_package_files(_package_root: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, ToolError> {
+    Err(ToolError::Validation(
+        "secure skill package scanning is unavailable on this platform".to_owned(),
+    ))
 }
 
 fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {

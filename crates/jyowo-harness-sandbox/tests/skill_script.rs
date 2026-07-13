@@ -92,6 +92,7 @@ impl TestActivity {
 
 struct TestBackend {
     network_deny: bool,
+    host_filesystem_isolation: bool,
     per_exec_env: bool,
     kill_scopes_supported: Vec<KillScope>,
     synchronous_kill_scopes_supported: Vec<KillScope>,
@@ -115,6 +116,7 @@ impl TestBackend {
     fn accepting() -> Self {
         Self {
             network_deny: true,
+            host_filesystem_isolation: true,
             per_exec_env: true,
             kill_scopes_supported: vec![KillScope::Process, KillScope::ProcessGroup],
             synchronous_kill_scopes_supported: vec![KillScope::ProcessGroup],
@@ -157,6 +159,7 @@ impl SandboxBackend for TestBackend {
                 read_only: false,
                 writable_subpaths: true,
             },
+            host_filesystem_isolation: self.host_filesystem_isolation,
             max_concurrent_execs: 1,
             supports_kill_scope: self.kill_scopes_supported.clone(),
             supports_synchronous_kill_scope: self.synchronous_kill_scopes_supported.clone(),
@@ -250,6 +253,25 @@ async fn rejects_backend_that_cannot_enforce_network_denial() {
     assert!(matches!(
         error,
         SandboxError::CapabilityMismatch { ref capability, .. } if capability == "network"
+    ));
+    assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn rejects_backend_that_cannot_isolate_host_files() {
+    let backend = Arc::new(TestBackend {
+        host_filesystem_isolation: false,
+        ..TestBackend::accepting()
+    });
+
+    let error = execute_skill_script(backend.clone(), request(script_decl()), test_context())
+        .await
+        .expect_err("backend without host filesystem isolation must be rejected");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "host_filesystem"
     ));
     assert_eq!(backend.executed.load(Ordering::SeqCst), 0);
 }

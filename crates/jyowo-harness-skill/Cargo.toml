@@ -35,5 +35,8 @@ tokio = { workspace = true }
 yaml-rust2 = { workspace = true }
 parking_lot = "0.12.5"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

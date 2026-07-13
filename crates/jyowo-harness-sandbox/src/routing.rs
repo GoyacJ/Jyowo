@@ -102,6 +102,9 @@ impl SandboxBackend for RoutingSandboxBackend {
         // The router reports the union of its children's capabilities. A policy is
         // supported when at least one child backend can enforce it.
         let mut caps = SandboxCapabilities::default();
+        // Host filesystem isolation is safe to advertise only when every child
+        // the router may select enforces it.
+        caps.host_filesystem_isolation = true;
         for backend in &self.backends {
             let child = backend.capabilities();
             // Accumulate per-policy support.
@@ -114,6 +117,8 @@ impl SandboxBackend for RoutingSandboxBackend {
             caps.workspace.read_only = caps.workspace.read_only || child.workspace.read_only;
             caps.workspace.writable_subpaths =
                 caps.workspace.writable_subpaths || child.workspace.writable_subpaths;
+            caps.host_filesystem_isolation =
+                caps.host_filesystem_isolation && child.host_filesystem_isolation;
             // Accumulate boolean capabilities.
             caps.supports_streaming = caps.supports_streaming || child.supports_streaming;
             caps.supports_stdin = caps.supports_stdin || child.supports_stdin;
