@@ -12,7 +12,8 @@ use harness_contracts::{
     ProviderCapabilityRoute, ProviderCapabilityRouteSettings,
     ProviderProfileConversationCapability, ProviderProfileDefinition,
     ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
-    ProviderSecretsRecord, ProviderSelectionRecord, SkillSelectionRecord, ToolProfile, TrustLevel,
+    ProviderSecretsRecord, ProviderSelectionRecord, SkillId, SkillSelectionRecord, SkillStatus,
+    ToolProfile, TrustLevel,
 };
 use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver};
 use harness_plugin::{PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName};
@@ -42,6 +43,7 @@ fn skill_config_document_is_loaded_from_the_global_config_root() {
     );
 
     let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .with_skill_secret_store(Arc::new(MemorySecretStore::default()))
         .resolve(fixture.workspace(), None)
         .expect("resolve skill config");
 
@@ -88,7 +90,8 @@ fn skill_config_secret_availability_uses_the_injected_secret_store() {
         .expect("resolve missing secret");
     assert!(!missing
         .skill_config
-        .secret_is_available_for("workspace:configured", "github.token"));
+        .secret_is_available_for("workspace:configured", "github.token")
+        .unwrap());
 
     secret_store
         .set(
@@ -102,7 +105,72 @@ fn skill_config_secret_availability_uses_the_injected_secret_store() {
         .expect("resolve available secret");
     assert!(available
         .skill_config
-        .secret_is_available_for("workspace:configured", "github.token"));
+        .secret_is_available_for("workspace:configured", "github.token")
+        .unwrap());
+}
+
+#[test]
+fn skill_secret_store_failure_aborts_runtime_snapshot_construction() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_raw(
+        "skill-config.json",
+        r#"{"version":1,"skills":{"workspace:configured":{"values":{},"secrets":{"github.token":{"configured":false}}}}}"#,
+    );
+
+    let error = RuntimeConfigResolver::new(fixture.config_root())
+        .with_skill_secret_store(Arc::new(UnavailableSecretStore))
+        .resolve(fixture.workspace(), None)
+        .expect_err("secure-store failure must not become an empty skill config snapshot");
+
+    assert!(matches!(
+        error,
+        RuntimeConfigError::SkillConfigStore {
+            source: SkillConfigStoreError::SecretStoreUnavailable
+        }
+    ));
+    assert!(!format!("{error:?} {error}").contains("must-not-leak-secret"));
+}
+
+#[tokio::test]
+async fn wrong_typed_required_value_from_global_document_marks_skill_missing() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["typed".into()],
+        },
+    );
+    fixture.write_project_skill_with_frontmatter(
+        "typed",
+        "config:\n  - key: region\n    type: string\n    required: true",
+        "Body without config interpolation.",
+    );
+    fixture.write_global_raw(
+        "skill-config.json",
+        r#"{"version":1,"skills":{"workspace:typed":{"values":{"region":42},"secrets":{}}}}"#,
+    );
+
+    let snapshot = RuntimeConfigResolver::new(fixture.config_root())
+        .with_skill_secret_store(Arc::new(MemorySecretStore::default()))
+        .resolve(fixture.workspace(), None)
+        .expect("resolve runtime snapshot");
+    let report = snapshot.skill_loader.load_all().await.expect("load skills");
+    let registry = jyowo_harness_sdk::ext::SkillRegistry::builder()
+        .with_skills(report.loaded)
+        .build();
+    let mut registry_snapshot = (*registry.snapshot()).clone();
+    jyowo_harness_sdk::apply_skill_config_statuses(&mut registry_snapshot, &snapshot.skill_config)
+        .expect("status assembly");
+
+    assert!(matches!(
+        registry_snapshot
+            .status
+            .get(&SkillId("workspace:typed".to_owned())),
+        Some(SkillStatus::PrerequisiteMissing { config_keys, .. })
+            if config_keys == &["region".to_owned()]
+    ));
 }
 
 #[test]
@@ -1252,6 +1320,31 @@ impl SkillSecretStore for MemorySecretStore {
     }
 }
 
+struct UnavailableSecretStore;
+
+impl SkillSecretStore for UnavailableSecretStore {
+    fn get(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn set(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+        _value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn delete(&self, _skill_id: &str, _key: &str) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+}
+
 struct RuntimeFixture {
     root: TempDir,
     home: std::path::PathBuf,
@@ -1341,6 +1434,15 @@ impl RuntimeFixture {
     }
 
     fn write_project_skill(&self, package_id: &str, body: &str) {
+        self.write_project_skill_with_frontmatter(package_id, "", body);
+    }
+
+    fn write_project_skill_with_frontmatter(
+        &self,
+        package_id: &str,
+        frontmatter: &str,
+        body: &str,
+    ) {
         let package = self
             .workspace
             .join(".jyowo/skills/packages")
@@ -1348,7 +1450,9 @@ impl RuntimeFixture {
         fs::create_dir_all(&package).expect("project skill package");
         fs::write(
             package.join("SKILL.md"),
-            format!("---\nname: {package_id}\ndescription: frozen skill\n---\n{body}\n"),
+            format!(
+                "---\nname: {package_id}\ndescription: frozen skill\n{frontmatter}\n---\n{body}\n"
+            ),
         )
         .expect("write project skill");
     }

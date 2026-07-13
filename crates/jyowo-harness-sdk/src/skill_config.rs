@@ -129,6 +129,13 @@ impl SkillConfigSnapshot {
                 document.version,
             ));
         }
+        // Metadata only selects accounts for eager access validation. Readiness
+        // still queries the store directly through `secret_is_available_for`.
+        for (skill_id, entry) in &document.skills {
+            for key in entry.secrets.keys() {
+                secret_store.get(skill_id, key)?;
+            }
+        }
         let skills = document
             .skills
             .into_iter()
@@ -200,12 +207,15 @@ impl SkillConfigSnapshot {
             .is_some_and(|config| config.configured_secrets.contains(key))
     }
 
-    #[must_use]
-    pub fn secret_is_available_for(&self, skill_id: &str, key: &str) -> bool {
-        self.secret_store
-            .as_ref()
-            .and_then(|store| store.get(skill_id, key).ok().flatten())
-            .is_some()
+    pub fn secret_is_available_for(
+        &self,
+        skill_id: &str,
+        key: &str,
+    ) -> Result<bool, SkillConfigStoreError> {
+        let Some(store) = &self.secret_store else {
+            return Ok(false);
+        };
+        store.get(skill_id, key).map(|secret| secret.is_some())
     }
 
     pub fn secret_for_script(
@@ -253,6 +263,7 @@ pub enum SkillConfigError {
         key: String,
         expected: &'static str,
     },
+    Store(SkillConfigStoreError),
 }
 
 impl fmt::Display for SkillConfigError {
@@ -272,11 +283,25 @@ impl fmt::Display for SkillConfigError {
                 formatter,
                 "invalid skill config `{key}` for `{skill_id}`: expected {expected}"
             ),
+            Self::Store(error) => error.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for SkillConfigError {}
+impl std::error::Error for SkillConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::MissingRequired { .. } | Self::InvalidType { .. } => None,
+        }
+    }
+}
+
+impl From<SkillConfigStoreError> for SkillConfigError {
+    fn from(error: SkillConfigStoreError) -> Self {
+        Self::Store(error)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SkillConfigSnapshotResolver {
@@ -390,9 +415,9 @@ impl SkillConfigResolver for SkillConfigSnapshotResolver {
 pub fn apply_skill_config_statuses(
     registry_snapshot: &mut SkillRegistrySnapshot,
     config_snapshot: &SkillConfigSnapshot,
-) {
+) -> Result<(), SkillConfigStoreError> {
     for skill in registry_snapshot.entries.values() {
-        let missing = missing_required_config(skill, config_snapshot);
+        let missing = missing_required_config(skill, config_snapshot)?;
         if missing.is_empty() {
             continue;
         }
@@ -408,6 +433,7 @@ pub fn apply_skill_config_statuses(
             },
         );
     }
+    Ok(())
 }
 
 pub fn validate_required_skill_config(
@@ -427,7 +453,7 @@ pub fn validate_required_skill_config(
                     }
                 }
             }
-            if declaration.required && !is_configured(skill, declaration, config_snapshot) {
+            if declaration.required && !is_configured(skill, declaration, config_snapshot)? {
                 return Err(SkillConfigError::MissingRequired {
                     skill_id: skill.id.0.clone(),
                     key: declaration.key.clone(),
@@ -441,30 +467,29 @@ pub fn validate_required_skill_config(
 fn missing_required_config(
     skill: &harness_skill::Skill,
     config_snapshot: &SkillConfigSnapshot,
-) -> Vec<String> {
+) -> Result<Vec<String>, SkillConfigStoreError> {
     let mut missing = Vec::new();
     for declaration in &skill.frontmatter.config {
-        let configured = is_configured(skill, declaration, config_snapshot);
-        if declaration.required && !configured {
+        if declaration.required && !is_configured(skill, declaration, config_snapshot)? {
             missing.push(declaration.key.clone());
         }
     }
     missing.sort();
-    missing
+    Ok(missing)
 }
 
 fn is_configured(
     skill: &harness_skill::Skill,
     declaration: &SkillConfigDecl,
     config_snapshot: &SkillConfigSnapshot,
-) -> bool {
+) -> Result<bool, SkillConfigStoreError> {
     if declaration.secret {
         config_snapshot.secret_is_available_for(&skill.id.0, &declaration.key)
     } else {
-        config_snapshot
+        Ok(config_snapshot
             .value_for(&skill.id.0, &declaration.key)
-            .is_some()
-            || declaration.default.is_some()
+            .or(declaration.default.as_ref())
+            .is_some_and(|value| validate_type(value, declaration.value_type)))
     }
 }
 

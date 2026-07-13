@@ -45,7 +45,9 @@ pub fn get_skill_config_with_runtime_state(
             config.secrets.insert(
                 declaration.key.clone(),
                 SkillSecretMetadata {
-                    configured: snapshot.secret_is_available_for(&skill_id, &declaration.key),
+                    configured: snapshot
+                        .secret_is_available_for(&skill_id, &declaration.key)
+                        .map_err(skill_config_runtime_error)?,
                 },
             );
         } else if let Some(value) = snapshot.value_for(&skill_id, &declaration.key) {
@@ -141,6 +143,7 @@ fn resolve_skill_config_view(
         }
         let view = runtime
             .view_runtime_skill(&record.name, false)
+            .map_err(skill_config_runtime_error)?
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
         let expected_id = format!("user:{}", record.name);
         if view.summary.id != expected_id {
@@ -150,7 +153,9 @@ fn resolve_skill_config_view(
         }
         return Ok(view);
     }
-    let runtime_skills = runtime.list_runtime_skills();
+    let runtime_skills = runtime
+        .list_runtime_skills()
+        .map_err(skill_config_runtime_error)?;
     let requested_name = runtime_skills
         .iter()
         .find(|skill| skill.id == request_id || skill.name == request_id)
@@ -158,7 +163,14 @@ fn resolve_skill_config_view(
         .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
     runtime
         .view_runtime_skill(requested_name, false)
+        .map_err(skill_config_runtime_error)?
         .ok_or_else(|| invalid_payload("skill not found".to_owned()))
+}
+
+fn skill_config_runtime_error(
+    _error: jyowo_harness_sdk::SkillConfigStoreError,
+) -> CommandErrorPayload {
+    runtime_operation_failed("skill secret store operation failed".to_owned())
 }
 
 fn config_declaration(
@@ -198,10 +210,12 @@ pub async fn list_skills_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListSkillsResponse, CommandErrorPayload> {
     let records = state.skill_store.load_records()?;
-    let runtime = state
-        .settings_runtime()
-        .map(|settings_runtime| settings_runtime.list_runtime_skills())
-        .unwrap_or_default();
+    let runtime = match state.settings_runtime() {
+        Some(settings_runtime) => settings_runtime
+            .list_runtime_skills()
+            .map_err(skill_config_runtime_error)?,
+        None => Vec::new(),
+    };
     let enabled_ids = enabled_skill_ids_for_state(state)?;
     Ok(ListSkillsResponse {
         skills: skill_summaries_from_records_and_runtime(&records, &runtime, &enabled_ids),
@@ -629,6 +643,7 @@ pub(crate) fn active_skill_names(
         names.extend(
             settings_runtime
                 .list_runtime_skills()
+                .map_err(skill_config_runtime_error)?
                 .into_iter()
                 .map(|skill| skill.name),
         );
@@ -688,6 +703,7 @@ pub(crate) async fn install_skill_package_with_progress(
         .any(|record| enabled_ids.contains(&record.id) && record.name == validated.summary.name)
         || settings_runtime
             .list_runtime_skills()
+            .map_err(skill_config_runtime_error)?
             .iter()
             .any(|skill| skill.name == validated.summary.name)
     {
@@ -737,6 +753,7 @@ pub(crate) async fn install_skill_package_with_progress(
         .any(|existing| enabled_ids.contains(&existing.id) && existing.name == record.name)
         || settings_runtime
             .list_runtime_skills()
+            .map_err(skill_config_runtime_error)?
             .iter()
             .any(|skill| skill.name == record.name)
     {
@@ -777,7 +794,8 @@ pub(crate) async fn install_skill_package_with_progress(
         skill: managed_skill_summary(
             &record,
             true,
-            runtime_status_for_name(&settings_runtime, &record.name),
+            runtime_status_for_name(&settings_runtime, &record.name)
+                .map_err(skill_config_runtime_error)?,
         ),
     })
 }
@@ -798,6 +816,7 @@ pub async fn get_skill_detail_with_runtime_state(
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
         let view = settings_runtime
             .view_runtime_skill(&request.id, false)
+            .map_err(skill_config_runtime_error)?
             .ok_or_else(|| invalid_payload("skill not found".to_owned()))?;
         return Ok(GetSkillDetailResponse {
             skill: skill_detail_from_runtime_view(
@@ -810,11 +829,12 @@ pub async fn get_skill_detail_with_runtime_state(
     };
 
     let enabled = enabled_ids.contains(&record.id);
-    let runtime_view = settings_runtime.as_ref().and_then(|settings_runtime| {
-        enabled
-            .then(|| settings_runtime.view_runtime_skill(&record.name, false))
-            .flatten()
-    });
+    let runtime_view = match (enabled, settings_runtime.as_ref()) {
+        (true, Some(settings_runtime)) => settings_runtime
+            .view_runtime_skill(&record.name, false)
+            .map_err(skill_config_runtime_error)?,
+        _ => None,
+    };
     let files = state.skill_store.list_skill_package_files(record)?;
     let detail = if let Some(view) = runtime_view {
         let status = skill_status_string(&view.summary.status);
@@ -886,6 +906,7 @@ pub async fn set_skill_enabled_with_runtime_state(
                     && candidate.id != request.id
             }) || settings_runtime
                 .list_runtime_skills()
+                .map_err(skill_config_runtime_error)?
                 .iter()
                 .any(|skill| skill.name == record_name))
         {
@@ -936,15 +957,14 @@ pub async fn set_skill_enabled_with_runtime_state(
         }
     }
     let record = records[record_index].clone();
+    let runtime_status = if request.enabled {
+        runtime_status_for_name(&settings_runtime, &record.name)
+            .map_err(skill_config_runtime_error)?
+    } else {
+        None
+    };
     Ok(SetSkillEnabledResponse {
-        skill: managed_skill_summary(
-            &record,
-            request.enabled,
-            request
-                .enabled
-                .then(|| runtime_status_for_name(&settings_runtime, &record.name))
-                .flatten(),
-        ),
+        skill: managed_skill_summary(&record, request.enabled, runtime_status),
     })
 }
 

@@ -988,12 +988,12 @@ pub(crate) fn skill_detail_from_runtime_view(
 pub(crate) fn runtime_status_for_name(
     settings_runtime: &DesktopSettingsRuntime,
     name: &str,
-) -> Option<&'static str> {
-    settings_runtime
-        .list_runtime_skills()
+) -> Result<Option<&'static str>, jyowo_harness_sdk::SkillConfigStoreError> {
+    Ok(settings_runtime
+        .list_runtime_skills()?
         .iter()
         .find(|skill| skill.name == name)
-        .map(|skill| skill_status_string(&skill.status))
+        .map(|skill| skill_status_string(&skill.status)))
 }
 
 pub(crate) fn skill_status_string(status: &jyowo_harness_sdk::ext::SkillStatus) -> &'static str {

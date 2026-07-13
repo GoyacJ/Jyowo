@@ -123,6 +123,7 @@ use crate::builder::BuiltinMemoryConfig;
 use crate::builder::{HarnessBuilder, Set, Unset};
 use crate::skill_config::{
     apply_skill_config_statuses, SkillConfigSnapshot, SkillConfigSnapshotResolver,
+    SkillConfigStoreError,
 };
 use crate::skill_pack_loader::{
     LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,

@@ -25,7 +25,7 @@ use harness_sandbox::{LocalIsolation, LocalSandbox};
 use jyowo_harness_sdk::{
     builtin_agent_profiles,
     ext::{DirectorySourceKind, SkillLoader, SkillSourceConfig},
-    KeyringSkillSecretStore, SkillConfigSnapshot, SkillSecretStore,
+    KeyringSkillSecretStore, SkillConfigSnapshot, SkillConfigStoreError, SkillSecretStore,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -268,11 +268,7 @@ impl RuntimeConfigResolver {
         let skill_config = SkillConfigSnapshot::from_document(
             skill_config_document,
             self.skill_secret_store.clone(),
-        )
-        .map_err(|source| RuntimeConfigError::Invalid {
-            kind: "global skill config",
-            reason: source.to_string(),
-        })?;
+        )?;
 
         let global_plugin_records = read_optional_json::<PluginSettingsFile>(
             &global_home.join("plugins/index.json"),
@@ -1054,11 +1050,26 @@ pub enum RuntimeConfigError {
     PluginRegistry {
         source: harness_plugin::PluginError,
     },
+    SkillConfigStore {
+        source: SkillConfigStoreError,
+    },
 }
 
 impl From<ProviderConfigError> for RuntimeConfigError {
     fn from(source: ProviderConfigError) -> Self {
         Self::Provider(source)
+    }
+}
+
+impl From<SkillConfigStoreError> for RuntimeConfigError {
+    fn from(source: SkillConfigStoreError) -> Self {
+        match source {
+            SkillConfigStoreError::SecretStoreUnavailable => Self::SkillConfigStore { source },
+            SkillConfigStoreError::UnsupportedDocumentVersion(version) => Self::Invalid {
+                kind: "global skill config",
+                reason: format!("unsupported document version {version}"),
+            },
+        }
     }
 }
 
@@ -1078,6 +1089,9 @@ impl fmt::Display for RuntimeConfigError {
             }
             Self::Invalid { kind, .. } => format!("invalid {kind}"),
             Self::PluginRegistry { .. } => "failed to initialize plugin registry".to_owned(),
+            Self::SkillConfigStore { .. } => {
+                "failed to load skill configuration from secure storage".to_owned()
+            }
         };
         formatter.write_str(&bounded_runtime_config_diagnostic(message))
     }

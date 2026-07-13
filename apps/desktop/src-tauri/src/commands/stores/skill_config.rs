@@ -107,7 +107,7 @@ impl DesktopSkillConfigStore {
             hook();
         }
         SkillConfigSnapshot::from_document(self.load_document()?, self.secret_store.clone())
-            .map_err(|_| runtime_operation_failed("skill config snapshot is invalid".to_owned()))
+            .map_err(secret_store_error)
     }
 
     pub fn set_public_value(

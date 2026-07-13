@@ -81,11 +81,17 @@ impl DesktopSettingsRuntime {
         self.inner.runtime_execution_status()
     }
 
-    pub fn list_runtime_skills(&self) -> Vec<RuntimeSkillSummary> {
+    pub fn list_runtime_skills(
+        &self,
+    ) -> Result<Vec<RuntimeSkillSummary>, crate::SkillConfigStoreError> {
         self.inner.list_runtime_skills()
     }
 
-    pub fn view_runtime_skill(&self, name: &str, full: bool) -> Option<RuntimeSkillView> {
+    pub fn view_runtime_skill(
+        &self,
+        name: &str,
+        full: bool,
+    ) -> Result<Option<RuntimeSkillView>, crate::SkillConfigStoreError> {
         self.inner.view_runtime_skill(name, full)
     }
 

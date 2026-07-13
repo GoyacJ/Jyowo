@@ -1292,7 +1292,8 @@ impl EngineSessionTurnRunner {
         };
 
         let mut snapshot = (*registry.snapshot()).clone();
-        apply_skill_config_statuses(&mut snapshot, &self.skill_config_snapshot);
+        apply_skill_config_statuses(&mut snapshot, &self.skill_config_snapshot)
+            .map_err(|error| SessionError::Message(error.to_string()))?;
         let snapshot = Arc::new(snapshot);
         let mut cap_registry = engine.cap_registry().as_ref().clone();
         let resolver_snapshot = self.skill_config_snapshot.clone();

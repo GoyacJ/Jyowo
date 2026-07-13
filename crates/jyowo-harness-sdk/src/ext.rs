@@ -74,7 +74,7 @@ pub use harness_session::{
 };
 pub use harness_skill::{
     DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader, SkillParamType, SkillPlatform,
-    SkillSourceConfig,
+    SkillRegistry, SkillSourceConfig,
 };
 pub use harness_tool::{
     AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,

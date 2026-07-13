@@ -6,25 +6,26 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::{executor::block_on, stream, StreamExt};
 use harness_contracts::{
-    BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction, ProviderRestriction,
-    ResultBudget, SkillId, SkillInjectionId, SkillInvocationReceipt, SkillRegistryCap, TenantId,
-    ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel, WorkspaceAccess,
+    AgentId, BudgetMetric, Decision, DeferPolicy, Event, NetworkAccess, OverflowAction,
+    ProviderRestriction, ResultBudget, SkillId, SkillInjectionId, SkillInvocationReceipt,
+    SkillRegistryCap, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, ToolUseId, TrustLevel,
+    WorkspaceAccess,
 };
 use harness_journal::EventStore;
 use harness_model::{ContentDelta, ModelStreamEvent};
 use harness_permission::PermissionCheck;
 use harness_skill::{
     parse_skill_markdown, ConfigResolveError, SkillConfigResolver, SkillLoader, SkillPlatform,
-    SkillSource, SkillSourceConfig,
+    SkillRegistry, SkillRegistryService, SkillSource, SkillSourceConfig,
 };
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, Tool, ToolContext, ToolEvent,
     ToolStream, ValidationError,
 };
 use jyowo_harness_sdk::skill_config::{
-    SecretString, SkillConfigSnapshot, SkillConfigSnapshotResolver, SkillConfigStoreError,
-    SkillSecretStore,
+    apply_skill_config_statuses, SecretString, SkillConfigSnapshot, SkillConfigSnapshotResolver,
+    SkillConfigStoreError, SkillSecretStore,
 };
 use jyowo_harness_sdk::{prelude::*, testing::*, KeyringSkillSecretStore};
 use secrecy::ExposeSecret;
@@ -62,9 +63,11 @@ fn missing_required_config_disables_only_its_skill_without_blocking_session() {
 
         let configured = harness
             .view_runtime_skill("configured", false)
+            .unwrap()
             .expect("configured skill");
         let ready = harness
             .view_runtime_skill("ready", false)
+            .unwrap()
             .expect("ready skill");
         assert_eq!(configured.summary.id, "workspace:configured");
         assert!(configured
@@ -111,7 +114,10 @@ fn required_secret_metadata_without_a_secret_store_entry_remains_missing() {
             .await
             .unwrap();
 
-        let configured = harness.view_runtime_skill("configured", false).unwrap();
+        let configured = harness
+            .view_runtime_skill("configured", false)
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             configured.summary.status,
             harness_contracts::SkillStatus::PrerequisiteMissing { ref config_keys, .. }
@@ -162,6 +168,7 @@ fn required_secret_store_entry_without_metadata_is_ready() {
             harness
                 .view_runtime_skill("configured", false)
                 .unwrap()
+                .unwrap()
                 .summary
                 .status,
             harness_contracts::SkillStatus::Ready
@@ -181,7 +188,9 @@ fn script_secret_lookup_uses_only_the_injected_store_as_runtime_truth() {
         .unwrap();
     let without_metadata = SkillConfigSnapshot::new().with_secret_store(populated_store.clone());
 
-    assert!(without_metadata.secret_is_available_for("workspace:configured", "github.token"));
+    assert!(without_metadata
+        .secret_is_available_for("workspace:configured", "github.token")
+        .unwrap());
     assert_eq!(
         without_metadata
             .secret_for_script("workspace:configured", "github.token")
@@ -195,11 +204,154 @@ fn script_secret_lookup_uses_only_the_injected_store_as_runtime_truth() {
     let stale_metadata = SkillConfigSnapshot::new()
         .with_skill_secret_presence("workspace:configured", "github.token")
         .with_secret_store(empty_store);
-    assert!(!stale_metadata.secret_is_available_for("workspace:configured", "github.token"));
+    assert!(!stale_metadata
+        .secret_is_available_for("workspace:configured", "github.token")
+        .unwrap());
     assert!(stale_metadata
         .secret_for_script("workspace:configured", "github.token")
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn secret_store_failure_is_not_reported_as_a_missing_secret() {
+    let snapshot = SkillConfigSnapshot::new().with_secret_store(Arc::new(UnavailableSecretStore));
+
+    let presence = snapshot
+        .secret_is_available_for("workspace:configured", "github.token")
+        .expect_err("store failure must remain distinguishable from a missing entry");
+    let script = snapshot
+        .secret_for_script("workspace:configured", "github.token")
+        .expect_err("script lookup must propagate the same store failure");
+
+    assert_eq!(presence, SkillConfigStoreError::SecretStoreUnavailable);
+    assert_eq!(script, SkillConfigStoreError::SecretStoreUnavailable);
+    let diagnostic = format!("{presence:?} {presence} {script:?} {script}");
+    assert!(!diagnostic.contains("must-not-leak-secret"));
+}
+
+#[test]
+fn sdk_status_and_session_assembly_propagate_secret_store_failure() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-skill-config-store-failure");
+        let skill_dir = workspace.join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("configured.md"), configured_skill()).unwrap();
+        let loader = SkillLoader::default().with_source(SkillSourceConfig::Directory {
+            path: skill_dir,
+            source_kind: harness_skill::DirectorySourceKind::Workspace,
+        });
+        let loaded = loader.clone().load_all().await.unwrap().loaded;
+        let config = SkillConfigSnapshot::new()
+            .with_skill_value("workspace:configured", "github.org", json!("jyowo"))
+            .with_secret_store(Arc::new(UnavailableSecretStore));
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .with_skill_config_snapshot(config)
+            .build()
+            .await
+            .unwrap();
+        harness.skill_registry().register_batch(loaded).unwrap();
+
+        let status_error = harness
+            .list_runtime_skills()
+            .expect_err("status assembly must return the store error");
+        assert_eq!(status_error, SkillConfigStoreError::SecretStoreUnavailable);
+        let session_error = harness
+            .create_session(SessionOptions::new(&workspace))
+            .await
+            .expect_err("session assembly must fail instead of publishing missing status");
+        let diagnostic =
+            format!("{status_error:?} {status_error} {session_error:?} {session_error}");
+        assert!(!diagnostic.contains("must-not-leak-secret"));
+    });
+}
+
+#[test]
+fn required_public_config_with_the_wrong_type_is_missing_before_rendering() {
+    block_on(async {
+        let skill = parse_skill_markdown(
+            "---\nname: typed\ndescription: Typed config\nconfig:\n  - key: region\n    type: string\n    required: true\n---\nBody without interpolation.\n",
+            SkillSource::Workspace("test/skills".into()),
+            None,
+            SkillPlatform::Macos,
+        )
+        .unwrap();
+        let registry = SkillRegistry::builder().with_skill(skill).build();
+        let mut registry_snapshot = (*registry.snapshot()).clone();
+        let document = serde_json::from_value(json!({
+            "version": 1,
+            "skills": {
+                "workspace:typed": {
+                    "values": { "region": 42 },
+                    "secrets": {}
+                }
+            }
+        }))
+        .unwrap();
+        let config_snapshot =
+            SkillConfigSnapshot::from_document(document, Arc::new(MemorySecretStore::default()))
+                .unwrap();
+        apply_skill_config_statuses(&mut registry_snapshot, &config_snapshot).unwrap();
+
+        assert!(matches!(
+            registry_snapshot.status.get(&SkillId("workspace:typed".to_owned())),
+            Some(harness_contracts::SkillStatus::PrerequisiteMissing { config_keys, .. })
+                if config_keys == &["region".to_owned()]
+        ));
+
+        let renderer_snapshot = config_snapshot.clone();
+        let renderer = harness_skill::SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &harness_skill::Skill| -> Arc<dyn SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    renderer_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
+        ));
+        let service = SkillRegistryService::new(registry, renderer)
+            .with_snapshot(Arc::new(registry_snapshot));
+        let error = service
+            .render(&AgentId::from_u128(1), "typed", json!({}))
+            .await
+            .expect_err("invalid required config must fail even when the body does not use it");
+        assert!(matches!(
+            error,
+            harness_skill::RenderError::MissingConfig { ref skill_id, ref config_keys }
+                if skill_id == "workspace:typed" && config_keys == &["region".to_owned()]
+        ));
+    });
+}
+
+#[test]
+fn status_assembly_does_not_read_optional_secrets() {
+    let skill = parse_skill_markdown(
+        "---\nname: optional-secret\ndescription: Optional secret\nconfig:\n  - key: token\n    type: string\n    secret: true\n---\nBody.\n",
+        SkillSource::Workspace("test/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    let registry = SkillRegistry::builder().with_skill(skill).build();
+    let mut registry_snapshot = (*registry.snapshot()).clone();
+    let config_snapshot =
+        SkillConfigSnapshot::new().with_secret_store(Arc::new(UnavailableSecretStore));
+
+    apply_skill_config_statuses(&mut registry_snapshot, &config_snapshot)
+        .expect("optional secrets are not status prerequisites");
+
+    assert_eq!(
+        registry_snapshot
+            .status
+            .get(&SkillId("workspace:optional-secret".to_owned())),
+        Some(&harness_contracts::SkillStatus::Ready)
+    );
 }
 
 #[test]
@@ -551,6 +703,31 @@ impl SkillSecretStore for MemorySecretStore {
             .unwrap()
             .remove(&(skill_id.to_owned(), key.to_owned()));
         Ok(())
+    }
+}
+
+struct UnavailableSecretStore;
+
+impl SkillSecretStore for UnavailableSecretStore {
+    fn get(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn set(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+        _value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn delete(&self, _skill_id: &str, _key: &str) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
     }
 }
 

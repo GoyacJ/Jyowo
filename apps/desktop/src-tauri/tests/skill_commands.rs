@@ -78,6 +78,7 @@ async fn initial_runtime_loads_the_persisted_global_skill_config_snapshot() {
         runtime
             .view_runtime_skill("persisted-config-bootstrap-test", false)
             .unwrap()
+            .unwrap()
             .summary
             .status,
         SkillStatus::Ready
@@ -104,6 +105,7 @@ async fn plugin_rebuild_reloads_the_persisted_global_skill_config_snapshot() {
         initial_runtime
             .view_runtime_skill("persisted-config-bootstrap-test", false)
             .unwrap()
+            .unwrap()
             .summary
             .status,
         SkillStatus::PrerequisiteMissing { .. }
@@ -128,6 +130,7 @@ async fn plugin_rebuild_reloads_the_persisted_global_skill_config_snapshot() {
     assert_eq!(
         rebuilt_runtime
             .view_runtime_skill("persisted-config-bootstrap-test", false)
+            .unwrap()
             .unwrap()
             .summary
             .status,
@@ -215,12 +218,14 @@ async fn skill_config_commands_share_one_canonical_namespace() {
         .unwrap();
     let canonical_id = settings_runtime
         .list_runtime_skills()
+        .unwrap()
         .into_iter()
         .find(|skill| skill.name == "configured")
         .unwrap()
         .id;
     assert!(settings_runtime
         .view_runtime_skill("configured", false)
+        .unwrap()
         .is_some());
     let mut state = DesktopRuntimeState::with_settings_runtime_for_workspace(
         workspace.clone(),
@@ -258,6 +263,7 @@ async fn skill_config_commands_share_one_canonical_namespace() {
         .settings_runtime()
         .unwrap()
         .view_runtime_skill("configured", false)
+        .unwrap()
         .is_some());
 
     for request_id in [
@@ -303,6 +309,7 @@ async fn managed_record_id_does_not_resolve_to_a_workspace_skill_with_the_same_n
     assert_eq!(
         settings_runtime
             .view_runtime_skill("configured", false)
+            .unwrap()
             .unwrap()
             .summary
             .id,
@@ -371,6 +378,7 @@ async fn skill_config_mutation_refreshes_the_current_settings_runtime_snapshot()
         settings_runtime
             .view_runtime_skill("configured", false)
             .unwrap()
+            .unwrap()
             .summary
             .status,
         SkillStatus::PrerequisiteMissing { .. }
@@ -400,6 +408,7 @@ async fn skill_config_mutation_refreshes_the_current_settings_runtime_snapshot()
     assert_eq!(
         settings_runtime
             .view_runtime_skill("configured", false)
+            .unwrap()
             .unwrap()
             .summary
             .status,
@@ -455,6 +464,43 @@ async fn get_skill_config_projects_the_persisted_entry_through_current_declarati
         .contains("legacy-plaintext"));
 }
 
+#[tokio::test]
+async fn get_skill_config_propagates_secret_store_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let skill = parse_skill_markdown(
+        "---\nname: configured\ndescription: Configured skill\nconfig:\n  - key: apiToken\n    type: string\n    secret: true\n---\nConfigured.\n",
+        SkillSource::Workspace("data/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    settings_runtime
+        .skill_registry()
+        .register_batch(vec![skill])
+        .unwrap();
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .unwrap();
+    state.set_skill_config_store_for_test(Arc::new(DesktopSkillConfigStore::new(
+        layout,
+        Arc::new(UnavailableSecretStore),
+    )));
+
+    let error = get_skill_config_with_runtime_state(
+        GetSkillConfigRequest {
+            skill_id: "workspace:configured".to_owned(),
+        },
+        &state,
+    )
+    .expect_err("secure-store failure must not be shown as an unconfigured secret");
+
+    assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
+    assert!(!format!("{error:?}").contains("must-not-leak-secret"));
+}
+
 impl SkillSecretStore for MemorySecretStore {
     fn get(
         &self,
@@ -488,6 +534,32 @@ impl SkillSecretStore for MemorySecretStore {
             .unwrap()
             .remove(&format!("{skill_id}/{key}"));
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct UnavailableSecretStore;
+
+impl SkillSecretStore for UnavailableSecretStore {
+    fn get(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+    ) -> Result<Option<SecretString>, SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn set(
+        &self,
+        _skill_id: &str,
+        _key: &str,
+        _value: SecretString,
+    ) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
+    }
+
+    fn delete(&self, _skill_id: &str, _key: &str) -> Result<(), SkillConfigStoreError> {
+        Err(SkillConfigStoreError::SecretStoreUnavailable)
     }
 }
 
