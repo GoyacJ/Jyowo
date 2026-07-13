@@ -44,10 +44,12 @@ function renderMCPManager(
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 function mcpServer(overrides: Partial<McpServerSummary> = {}): McpServerSummary {
@@ -964,6 +966,7 @@ describe('MCPManager', () => {
     const cardB = screen.getByRole('article', { name: 'Server B' })
     fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
     expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save MCP server' })).toBeEnabled()
 
     await act(async () => {
       saveA.resolve({ server: serverA })
@@ -971,6 +974,44 @@ describe('MCPManager', () => {
     })
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+  })
+
+  it('does not let an older save failure leak into a newer dialog', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const saveA = deferred<{ server: McpServerSummary }>()
+    const saveMcpServer = vi.fn(() => saveA.promise)
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig: vi.fn((_: 'global' | 'project', id: string) =>
+        Promise.resolve(mcpConfig(id === serverA.id ? serverA : serverB, `${id}-command`)),
+      ),
+      saveMcpServer,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    expect(await screen.findByDisplayValue('server-a-command')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+    await waitFor(() => expect(saveMcpServer).toHaveBeenCalled())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+
+    await act(async () => {
+      saveA.reject({ code: 'INVALID_PAYLOAD', message: 'Server A save failed.' })
+      await expect(saveA.promise).rejects.toMatchObject({ message: 'Server A save failed.' })
+    })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.queryByText('Server A save failed.')).not.toBeInTheDocument()
+    expect(screen.queryByText('MCP server could not be saved.')).not.toBeInTheDocument()
   })
 
   it('preserves redacted inline env values when saving unchanged config details', async () => {
@@ -1159,13 +1200,19 @@ describe('MCPManager', () => {
     }
     const listMcpDiagnostics = vi.fn().mockResolvedValue({ events: [initialEvent] })
     const clearMcpDiagnostics = vi.fn().mockResolvedValue({ status: 'cleared' })
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-before-clear',
+      })
+      .mockResolvedValueOnce({
+        replayEvents: [],
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-after-clear',
+      })
     const client = {
       ...createTestCommandClient({
         mcpServers: { configLayer: 'global', servers: [mcpServer()] },
-        subscribeMcpDiagnostics: {
-          replayEvents: [initialEvent],
-          subscriptionId: 'mcp-diagnostic-subscription-transitions',
-        },
       }),
       clearMcpDiagnostics,
       listMcpDiagnostics,
@@ -1175,6 +1222,7 @@ describe('MCPManager', () => {
           return () => undefined
         },
       ),
+      subscribeMcpDiagnostics,
     }
     renderMCPManager(client)
 
@@ -1183,7 +1231,7 @@ describe('MCPManager', () => {
       emitBatch?.({
         events: [liveEvent],
         phase: 'live',
-        subscriptionId: 'mcp-diagnostic-subscription-transitions',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-before-clear',
       })
     })
     expect(await screen.findByText('Live after focus.')).toBeInTheDocument()
@@ -1197,6 +1245,7 @@ describe('MCPManager', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
     await waitFor(() => expect(clearMcpDiagnostics).toHaveBeenCalled())
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.queryByText('Initial diagnostic.')).not.toBeInTheDocument())
     expect(listMcpDiagnostics).toHaveBeenCalledTimes(1)
 
@@ -1204,10 +1253,183 @@ describe('MCPManager', () => {
       emitBatch?.({
         events: [afterClearEvent],
         phase: 'live',
-        subscriptionId: 'mcp-diagnostic-subscription-transitions',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-after-clear',
       })
     })
     expect(await screen.findByText('Live after clear.')).toBeInTheDocument()
+  })
+
+  it('restores post-clear events from the replacement subscription replay', async () => {
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-before-clear',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial before clear.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const postClearEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'post-clear-replay',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Post-clear replay.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const clearResult = deferred<{ status: 'cleared' }>()
+    const replacementSubscription = deferred<{
+      replayEvents: McpDiagnosticBatchPayload['events']
+      subscriptionId: string
+    }>()
+    const listeners: Array<(batch: McpDiagnosticBatchPayload) => void> = []
+    const listenerCleanups = [vi.fn(), vi.fn()]
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'diagnostics-before-clear',
+      })
+      .mockImplementationOnce(() => replacementSubscription.promise)
+    const unsubscribeMcpDiagnostics = vi.fn().mockResolvedValue(undefined)
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [initialEvent] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+      clearMcpDiagnostics: vi.fn(() => clearResult.promise),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          const cleanup = listenerCleanups[listeners.length]
+          listeners.push(onBatch)
+          return cleanup
+        },
+      ),
+      subscribeMcpDiagnostics,
+      unsubscribeMcpDiagnostics,
+    }
+    const { queryClient, unmount } = renderMCPManager(client)
+
+    await waitFor(() => expect(listeners).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(client.clearMcpDiagnostics).toHaveBeenCalled())
+    act(() => {
+      listeners[0]?.({
+        events: [postClearEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-before-clear',
+      })
+    })
+    expect(await screen.findByText('Post-clear replay.')).toBeInTheDocument()
+
+    await act(async () => {
+      clearResult.resolve({ status: 'cleared' })
+      await clearResult.promise
+    })
+    await waitFor(() => expect(subscribeMcpDiagnostics).toHaveBeenCalledTimes(2))
+    expect(queryClient.getQueryData(['mcp-diagnostics', 'list', null])).toEqual({ events: [] })
+    expect(listenerCleanups[0]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-before-clear')
+
+    await act(async () => {
+      replacementSubscription.resolve({
+        replayEvents: [postClearEvent],
+        subscriptionId: 'diagnostics-after-clear',
+      })
+      await replacementSubscription.promise
+    })
+    await waitFor(() => expect(listeners).toHaveLength(2))
+    expect(await screen.findByText('Post-clear replay.')).toBeInTheDocument()
+
+    unmount()
+    expect(listenerCleanups[1]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-after-clear')
+  })
+
+  it('ignores delayed batches from the subscription invalidated by clear', async () => {
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-before-delayed-batch',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial before delayed batch.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const delayedEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'delayed-before-clear',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Delayed before clear.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const currentEvent: McpDiagnosticBatchPayload['events'][number] = {
+      ...delayedEvent,
+      id: 'current-after-clear',
+      summary: 'Current after clear.',
+      timestamp: '2026-07-13T00:00:02.000Z',
+    }
+    const listeners: Array<(batch: McpDiagnosticBatchPayload) => void> = []
+    const listenerCleanups = [vi.fn(), vi.fn()]
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'diagnostics-delayed-before-clear',
+      })
+      .mockResolvedValueOnce({
+        replayEvents: [],
+        subscriptionId: 'diagnostics-current-after-clear',
+      })
+    const unsubscribeMcpDiagnostics = vi.fn().mockResolvedValue(undefined)
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [initialEvent] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+      clearMcpDiagnostics: vi.fn().mockResolvedValue({ status: 'cleared' }),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          const cleanup = listenerCleanups[listeners.length]
+          listeners.push(onBatch)
+          return cleanup
+        },
+      ),
+      subscribeMcpDiagnostics,
+      unsubscribeMcpDiagnostics,
+    }
+    const { unmount } = renderMCPManager(client)
+
+    await waitFor(() => expect(listeners).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(listeners).toHaveLength(2))
+    expect(listenerCleanups[0]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-delayed-before-clear')
+
+    act(() => {
+      listeners[0]?.({
+        events: [delayedEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-delayed-before-clear',
+      })
+    })
+    expect(screen.queryByText('Delayed before clear.')).not.toBeInTheDocument()
+
+    act(() => {
+      listeners[1]?.({
+        events: [currentEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-current-after-clear',
+      })
+    })
+    expect(await screen.findByText('Current after clear.')).toBeInTheDocument()
+
+    unmount()
+    expect(listenerCleanups[1]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-current-after-clear')
   })
 
   it('filters diagnostics by settings and task planes', async () => {

@@ -88,6 +88,13 @@ type McpDialogIdentity = {
   serverId: string | null
 }
 
+type McpSaveMutationVariables = {
+  dialogGeneration: number
+  dialogIdentity: McpDialogIdentity
+  projectPath: string | null
+  request: SaveMcpServerRequest
+}
+
 const defaultFormValues: MCPServerFormValues = {
   args: [],
   bearerTokenEnvVar: '',
@@ -120,10 +127,13 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   } | null>(null)
   const [diagnosticServerId, setDiagnosticServerId] = useState<string | null>(null)
   const [diagnosticPlane, setDiagnosticPlane] = useState<'all' | 'settings' | 'task'>('all')
+  const [diagnosticSubscriptionGeneration, setDiagnosticSubscriptionGeneration] = useState(0)
   const [configLoadError, setConfigLoadError] = useState(false)
   const [loadingConfigId, setLoadingConfigId] = useState<string | null>(null)
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null)
   const activeProjectPathRef = useRef(activeProjectPath)
   const configRequestGeneration = useRef(0)
+  const diagnosticSubscriptionGenerationRef = useRef(0)
   const dialogIdentityRef = useRef<McpDialogIdentity | null>(null)
   const configRequestIdentity = useRef<{
     generation: number
@@ -168,15 +178,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     queryFn: () => listBrowserMcpPresets(commandClient),
   })
   const saveMutation = useMutation({
-    mutationFn: ({
-      projectPath,
-      request,
-    }: {
-      dialogGeneration: number
-      dialogIdentity: McpDialogIdentity
-      projectPath: string | null
-      request: SaveMcpServerRequest
-    }) => {
+    mutationFn: ({ projectPath, request }: McpSaveMutationVariables) => {
       if (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current) {
         throw new Error('Stale MCP project identity')
       }
@@ -187,15 +189,17 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
         exact: true,
         queryKey: mcpServerQueryKeys.list(request.configLayer, projectPath),
       })
-      if (
-        dialogGeneration !== configRequestGeneration.current ||
-        !sameMcpDialogIdentity(dialogIdentityRef.current, dialogIdentity) ||
-        (request.configLayer === 'project' && projectPath !== activeProjectPathRef.current)
-      ) {
+      if (!isCurrentSaveMutation({ dialogGeneration, dialogIdentity, projectPath, request })) {
         return
       }
       reset(defaultFormValues)
       closeDialog()
+    },
+    onError: (error, variables) => {
+      if (!isCurrentSaveMutation(variables)) {
+        return
+      }
+      setSaveErrorMessage(safeMcpSaveErrorMessage(error, t('mcp.saveError')))
     },
   })
   const saveBrowserPresetMutation = useMutation({
@@ -240,9 +244,12 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     mutationFn: (serverId: string | null) =>
       clearMcpDiagnostics(serverId ?? undefined, commandClient),
     onSuccess: async (_, serverId) => {
+      const nextSubscriptionGeneration = diagnosticSubscriptionGenerationRef.current + 1
+      diagnosticSubscriptionGenerationRef.current = nextSubscriptionGeneration
       const queryKey = mcpDiagnosticQueryKeys.list(serverId)
       await queryClient.cancelQueries({ exact: true, queryKey })
       queryClient.setQueryData(queryKey, { events: [] })
+      setDiagnosticSubscriptionGeneration(nextSubscriptionGeneration)
     },
   })
   const servers = serversQuery.data?.servers ?? []
@@ -276,6 +283,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setLoadingConfigId(null)
     setEditingServer(null)
     setDialogIdentity(null)
+    setSaveErrorMessage(null)
     setDialogOpen(false)
   }, [activeProjectPath, configLayer, dialogIdentity, dialogOpen])
 
@@ -283,20 +291,25 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     let active = true
     let subscriptionId: string | null = null
     let unlisten: (() => void) | undefined
+    const subscriptionGeneration = diagnosticSubscriptionGeneration
+
+    function isCurrentSubscription() {
+      return active && diagnosticSubscriptionGenerationRef.current === subscriptionGeneration
+    }
 
     async function subscribe() {
       try {
         const subscription = await commandClient.subscribeMcpDiagnostics({
           serverId: diagnosticServerId ?? undefined,
         })
-        if (!active) {
+        if (!isCurrentSubscription()) {
           void commandClient.unsubscribeMcpDiagnostics(subscription.subscriptionId)
           return
         }
         subscriptionId = subscription.subscriptionId
         const queryKey = mcpDiagnosticQueryKeys.list(diagnosticServerId)
         await queryClient.cancelQueries({ exact: true, queryKey })
-        if (!active) {
+        if (!isCurrentSubscription()) {
           return
         }
         queryClient.setQueryData(
@@ -305,8 +318,8 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             events: mergeMcpDiagnosticEvents(current?.events ?? [], subscription.replayEvents),
           }),
         )
-        unlisten = await commandClient.listenMcpDiagnosticBatches((batch) => {
-          if (!active || batch.subscriptionId !== subscription.subscriptionId) {
+        const stopListening = await commandClient.listenMcpDiagnosticBatches((batch) => {
+          if (!isCurrentSubscription() || batch.subscriptionId !== subscription.subscriptionId) {
             return
           }
           queryClient.setQueryData(
@@ -316,6 +329,11 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             }),
           )
         })
+        if (!isCurrentSubscription()) {
+          stopListening()
+          return
+        }
+        unlisten = stopListening
       } catch {
         // The query already renders a sanitized failure state.
       }
@@ -330,7 +348,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
         void commandClient.unsubscribeMcpDiagnostics(subscriptionId)
       }
     }
-  }, [commandClient, diagnosticServerId, queryClient])
+  }, [commandClient, diagnosticServerId, diagnosticSubscriptionGeneration, queryClient])
 
   const mcpServerFormSchema = useMemo(
     () =>
@@ -430,6 +448,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       return
     }
 
+    setSaveErrorMessage(null)
     try {
       await saveMutation.mutateAsync({
         dialogGeneration: configRequestGeneration.current,
@@ -453,6 +472,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setDialogIdentity({ configLayer, projectPath, serverId: null })
     setConfigLoadError(false)
     setLoadingConfigId(null)
+    setSaveErrorMessage(null)
     setDialogOpen(true)
   }
 
@@ -489,6 +509,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setDialogIdentity({ configLayer: targetConfigLayer, projectPath, serverId: server.id })
     setConfigLoadError(false)
     setLoadingConfigId(`${server.configLayer}:${server.id}`)
+    setSaveErrorMessage(null)
     setDialogOpen(true)
     try {
       const payload = await getMcpServerConfig(server.configLayer, server.id, commandClient)
@@ -521,6 +542,15 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setDialogIdentityState(identity)
   }
 
+  function isCurrentSaveMutation(variables: McpSaveMutationVariables) {
+    return (
+      variables.dialogGeneration === configRequestGeneration.current &&
+      sameMcpDialogIdentity(dialogIdentityRef.current, variables.dialogIdentity) &&
+      (variables.request.configLayer !== 'project' ||
+        variables.projectPath === activeProjectPathRef.current)
+    )
+  }
+
   function isCurrentConfigRequest(request: NonNullable<typeof configRequestIdentity.current>) {
     const current = configRequestIdentity.current
     return (
@@ -539,6 +569,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     setLoadingConfigId(null)
     setEditingServer(null)
     setDialogIdentity(null)
+    setSaveErrorMessage(null)
     setDialogOpen(false)
   }
 
@@ -561,10 +592,6 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   function updateDisplayName(value: string) {
     setValue('displayName', value)
   }
-
-  const saveErrorMessage = saveMutation.isError
-    ? safeMcpSaveErrorMessage(saveMutation.error, t('mcp.saveError'))
-    : null
 
   return (
     <Section>
