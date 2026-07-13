@@ -10,15 +10,15 @@ use harness_contracts::{
     ToolExecutionChannel, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
-    ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcRequest,
-    JsonRpcResponse, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
-    McpPromptMessage, McpPromptMessages, McpReadResourceResult, McpResource, McpResourceContents,
-    McpRole, McpServerAdapter, McpServerAuditEvent, McpServerAuditSink, McpServerAuth,
-    McpServerAuthValidator, McpServerError, McpServerPolicy, McpServerRateLimit,
-    McpServerRequestContext, NoopMcpEventSink, PromptProvider, ResourceProvider,
-    SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest, SamplingResponse,
-    StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
-    MCP_SAMPLING_DENIED_CODE,
+    ExposedCapability, HarnessMcpBackend, HarnessMcpServer, IsolationMode, JsonRpcNotification,
+    JsonRpcRequest, JsonRpcResponse, JsonRpcResultResponse, McpContent, McpMessage, McpMetric,
+    McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessage, McpPromptMessages,
+    McpReadResourceResult, McpResource, McpResourceContents, McpRole, McpServerAdapter,
+    McpServerAuditEvent, McpServerAuditSink, McpServerAuth, McpServerAuthValidator, McpServerError,
+    McpServerPolicy, McpServerRateLimit, McpServerRequestContext, NoopMcpEventSink, PromptProvider,
+    ResourceProvider, SamplingJsonRpcHandler, SamplingPolicy, SamplingProvider, SamplingRequest,
+    SamplingResponse, StaticToolContextFactory, TenantMapping, TenantResolver, ToolContextFactory,
+    LATEST_PROTOCOL_VERSION, MCP_SAMPLING_DENIED_CODE,
 };
 use harness_tool::{
     action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
@@ -28,6 +28,165 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+
+#[tokio::test]
+async fn shared_dispatcher_enforces_initialize_then_initialized_lifecycle() {
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .build()
+        .expect("server");
+    let dispatcher = server.dispatcher();
+
+    let before = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(json!(1), "tools/list", Some(json!({})))),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("request response");
+    assert_eq!(expect_error_code(before), -32002);
+
+    let initialized = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(
+                json!(2),
+                "initialize",
+                Some(json!({
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "fixture", "version": "1.0.0" }
+                })),
+            )),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("initialize response");
+    let initialized = expect_result(initialized);
+    assert_eq!(initialized["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    assert!(initialized["capabilities"]["tools"].is_object());
+
+    assert!(dispatcher
+        .dispatch(
+            McpMessage::Notification(JsonRpcNotification::new("notifications/initialized", None,)),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .is_none());
+
+    let listed = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(json!(3), "tools/list", Some(json!({})))),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("tools/list response");
+    assert!(listed.error.is_none());
+
+    let shutdown = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(json!(4), "shutdown", None)),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("shutdown response");
+    assert_eq!(expect_error_code(shutdown), -32601);
+}
+
+#[tokio::test]
+async fn shared_dispatcher_accepts_notifications_without_generating_responses() {
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .build()
+        .expect("server");
+    let dispatcher = server.dispatcher();
+
+    assert!(dispatcher
+        .dispatch(
+            McpMessage::Notification(JsonRpcNotification::new(
+                "notifications/tools/list_changed",
+                None,
+            )),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .is_none());
+
+    let request = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(json!(5), "tools/list", Some(json!({})))),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("request response");
+    assert_eq!(expect_error_code(request), -32002);
+}
+
+#[tokio::test]
+async fn shared_dispatcher_routes_server_requests_to_matching_client_responses() {
+    let server = HarnessMcpServer::new(Arc::new(TestHarness))
+        .build()
+        .expect("server");
+    let dispatcher = server.dispatcher();
+    initialize_dispatcher(&dispatcher).await;
+    let mut outbound = dispatcher.subscribe_outbound();
+    let requesting = {
+        let dispatcher = dispatcher.clone();
+        tokio::spawn(async move {
+            dispatcher
+                .request_client("roots/list", Some(json!({})))
+                .await
+        })
+    };
+
+    let McpMessage::Request(request) = outbound.recv().await.expect("outbound request") else {
+        panic!("expected outbound request")
+    };
+    assert_eq!(request.method, "roots/list");
+    assert!(dispatcher
+        .dispatch(
+            McpMessage::SuccessResponse(JsonRpcResultResponse {
+                jsonrpc: "2.0".to_owned(),
+                id: request.id,
+                result: json!({ "roots": [] }),
+                extra: Default::default(),
+            }),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .is_none());
+
+    assert_eq!(
+        requesting
+            .await
+            .expect("request task")
+            .expect("client result"),
+        json!({ "roots": [] })
+    );
+}
+
+async fn initialize_dispatcher(dispatcher: &harness_mcp::McpServerDispatcher) {
+    let response = dispatcher
+        .dispatch(
+            McpMessage::Request(JsonRpcRequest::new(
+                json!(900),
+                "initialize",
+                Some(json!({
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
+                    "capabilities": { "roots": {} },
+                    "clientInfo": { "name": "fixture", "version": "1.0.0" }
+                })),
+            )),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .expect("initialize response");
+    assert!(response.error.is_none());
+    assert!(dispatcher
+        .dispatch(
+            McpMessage::Notification(JsonRpcNotification::new("notifications/initialized", None,)),
+            McpServerRequestContext::default(),
+        )
+        .await
+        .is_none());
+}
 
 #[cfg(feature = "oauth")]
 const TEST_RSA_PRIVATE_KEY: &str = r#"-----BEGIN RSA PRIVATE KEY-----
@@ -692,7 +851,7 @@ async fn harness_mcp_server_public_serving_is_fail_closed_without_auth() {
 }
 
 #[tokio::test]
-async fn harness_mcp_server_serves_http_jsonrpc_with_request_headers() {
+async fn harness_mcp_server_serves_streamable_http_sessions() {
     let mut policy = McpServerPolicy::default();
     policy.auth = McpServerAuth::StaticBearer("secret".to_owned());
     policy.tenant_mapping = TenantMapping::Header("x-tenant-id".to_owned());
@@ -706,51 +865,148 @@ async fn harness_mcp_server_serves_http_jsonrpc_with_request_headers() {
     let task = tokio::spawn(server.serve_http_listener(listener));
 
     let client = reqwest::Client::new();
-    let response = client
+    let rejected_origin = client
         .post(format!("http://{addr}"))
         .header("authorization", "Bearer secret")
         .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("origin", "https://evil.example")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "fixture", "version": "1.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("origin response");
+    assert_eq!(rejected_origin.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let initialized = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("accept", "application/json, text/event-stream")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LATEST_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "fixture", "version": "1.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize response");
+    assert_eq!(initialized.status(), reqwest::StatusCode::OK);
+    let session_id = initialized
+        .headers()
+        .get("mcp-session-id")
+        .expect("session header")
+        .to_str()
+        .expect("session id")
+        .to_owned();
+    let initialized = initialized
+        .json::<JsonRpcResponse>()
+        .await
+        .expect("initialize json-rpc response");
+    assert_eq!(
+        initialized.result.expect("initialize result")["protocolVersion"],
+        LATEST_PROTOCOL_VERSION
+    );
+
+    let initialized_notification = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("initialized notification response");
+    assert_eq!(
+        initialized_notification.status(),
+        reqwest::StatusCode::ACCEPTED
+    );
+
+    let listed = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
         .json(&JsonRpcRequest::new(
-            json!(31),
+            json!(32),
             "tools/list",
             Some(json!({})),
         ))
         .send()
         .await
-        .expect("http response")
+        .expect("tools/list response")
         .json::<JsonRpcResponse>()
         .await
-        .expect("json-rpc response");
-
-    assert!(
-        response.error.is_none(),
-        "unexpected error: {:?}",
-        response.error
-    );
-    let result = response.result.expect("result");
+        .expect("tools/list json-rpc response");
+    let result = listed.result.expect("tools/list result");
     let tools = result["tools"].as_array().expect("tools");
     assert!(tools.iter().any(|tool| tool["name"] == "sessions_list"));
 
-    let call = client
+    let accepted_response = client
         .post(format!("http://{addr}"))
         .header("authorization", "Bearer secret")
         .header("x-tenant-id", TenantId::SINGLE.to_string())
-        .json(&JsonRpcRequest::new(
-            json!(33),
-            "tools/call",
-            Some(json!({
-                "name": "sessions_list",
-                "arguments": {}
-            })),
-        ))
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&json!({ "jsonrpc": "2.0", "id": "server-1", "result": {} }))
         .send()
         .await
-        .expect("http tool response")
-        .json::<JsonRpcResponse>()
+        .expect("response acknowledgement");
+    assert_eq!(accepted_response.status(), reqwest::StatusCode::ACCEPTED);
+
+    let stream = client
+        .get(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .header("accept", "text/event-stream")
+        .send()
         .await
-        .expect("json-rpc tool response");
+        .expect("SSE stream response");
+    assert_eq!(stream.status(), reqwest::StatusCode::OK);
+    assert_eq!(stream.headers()["content-type"], "text/event-stream");
+    drop(stream);
+
+    let deleted = client
+        .delete(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("mcp-session-id", &session_id)
+        .send()
+        .await
+        .expect("delete session response");
+    assert_eq!(deleted.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let expired = client
+        .post(format!("http://{addr}"))
+        .header("authorization", "Bearer secret")
+        .header("x-tenant-id", TenantId::SINGLE.to_string())
+        .header("mcp-session-id", &session_id)
+        .header("mcp-protocol-version", LATEST_PROTOCOL_VERSION)
+        .json(&JsonRpcRequest::new(json!(33), "ping", Some(json!({}))))
+        .send()
+        .await
+        .expect("expired session response");
     task.abort();
-    assert!(call.error.is_none(), "unexpected error: {:?}", call.error);
+    assert_eq!(expired.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -790,7 +1046,11 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
             serde_json::to_string(&JsonRpcRequest::new(
                 json!(32),
                 "initialize",
-                Some(json!({})),
+                Some(json!({
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "fixture", "version": "1.0.0" }
+                })),
             ))
             .expect("request json"),
         ))
@@ -805,7 +1065,6 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         .expect("text");
     let response: JsonRpcResponse = serde_json::from_str(&response).expect("json");
 
-    task.abort();
     assert!(
         response.error.is_none(),
         "unexpected error: {:?}",
@@ -815,6 +1074,13 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         response.result.expect("result")["serverInfo"]["name"],
         "jyowo-harness-mcp"
     );
+    socket
+        .send(Message::text(
+            serde_json::to_string(&JsonRpcNotification::new("notifications/initialized", None))
+                .expect("notification json"),
+        ))
+        .await
+        .expect("send initialized");
     socket
         .send(Message::text(
             serde_json::to_string(&JsonRpcRequest::new(
@@ -867,6 +1133,7 @@ async fn harness_mcp_server_serves_websocket_jsonrpc_with_request_headers() {
         "unexpected error: {:?}",
         called.error
     );
+    task.abort();
 }
 
 #[tokio::test]
@@ -1113,11 +1380,9 @@ async fn server_adapter_routes_sampling_create_message_to_fail_closed_handler() 
             json!(17),
             "sampling/createMessage",
             Some(json!({
-                "request_id": harness_contracts::RequestId::from_u128(3),
-                "model": "claude-3-5-sonnet",
-                "input_tokens": 1,
-                "max_tokens": 2,
-                "messages": []
+                "messages": [{ "role": "user", "content": { "type": "text", "text": "hello" } }],
+                "modelPreferences": { "hints": [{ "name": "claude-3-5-sonnet" }] },
+                "maxTokens": 2
             })),
         ))
         .await;
@@ -1155,10 +1420,8 @@ async fn server_adapter_injects_authorization_context_into_sampling_handler() {
             json!(18),
             "sampling/createMessage",
             Some(json!({
-                "request_id": harness_contracts::RequestId::from_u128(4),
-                "model": "claude-3-5-sonnet",
-                "input_tokens": 1,
-                "max_tokens": 2,
+                "modelPreferences": { "hints": [{ "name": "claude-3-5-sonnet" }] },
+                "maxTokens": 2,
                 "messages": [{ "role": "user", "content": { "type": "text", "text": "hello" } }]
             })),
         ))
@@ -1381,6 +1644,7 @@ fn adapter_with_policy_and_metrics(
         .with_tool_context_factory(StaticToolContextFactory::new(tool_context()))
         .with_resource_provider(provider.clone())
         .with_prompt_provider(provider)
+        .with_authorization_context(support::mcp_authorization_context())
         .with_metrics_sink(metrics)
         .build()
         .expect("server adapter")

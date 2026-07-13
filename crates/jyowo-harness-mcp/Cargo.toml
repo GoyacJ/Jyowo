@@ -20,7 +20,7 @@ http = ["dep:reqwest"]
 websocket = ["dep:tokio-tungstenite", "tokio/net"]
 sse = ["dep:reqwest"]
 in-process = []
-server-adapter = ["dep:axum", "tokio/io-std", "tokio/io-util"]
+server-adapter = ["dep:axum", "dep:reqwest", "tokio/io-std", "tokio/io-util"]
 oauth = ["dep:jsonwebtoken", "dep:reqwest", "dep:ring"]
 
 [dependencies]

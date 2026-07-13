@@ -24,6 +24,9 @@ use harness_tool::{
 };
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
+mod support;
+
 #[tokio::test]
 async fn server_initialize_returns_capabilities() {
     let server = adapter_with(vec![test_tool("echo", Behavior::Text("ok".into()))]);
@@ -33,7 +36,10 @@ async fn server_initialize_returns_capabilities() {
         .await;
 
     let result = expect_result(response);
-    assert_eq!(result["protocolVersion"], "2025-03-26");
+    assert_eq!(
+        result["protocolVersion"],
+        harness_mcp::LATEST_PROTOCOL_VERSION
+    );
     assert_eq!(result["serverInfo"]["name"], "jyowo-harness-mcp");
     assert!(result["capabilities"]["tools"].is_object());
 }
@@ -350,6 +356,7 @@ fn adapter_with(tools: Vec<TestTool>) -> McpServerAdapter {
     McpServerAdapter::builder(registry)
         .with_tool_context_factory(StaticToolContextFactory::new(tool_context()))
         .with_tool_authorizer(TestToolCallAuthorizer)
+        .with_authorization_context(support::mcp_authorization_context())
         .build()
         .expect("server adapter")
 }
