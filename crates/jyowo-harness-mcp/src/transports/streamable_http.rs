@@ -364,7 +364,7 @@ struct HttpConnectionHandle {
 
 impl Drop for HttpConnectionHandle {
     fn drop(&mut self) {
-        let _ = self.inner.lifetime_cancel.send(true);
+        self.inner.lifetime_cancel.send_replace(true);
     }
 }
 
@@ -1608,6 +1608,7 @@ impl McpConnection for HttpConnectionHandle {
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
+        self.lifetime_cancel.send_replace(true);
         let _transition = self.reinitialize.lock().await;
         let generation = match self.state.send_replace(HttpConnectionState::Closed) {
             HttpConnectionState::Ready(generation) => Some(generation),
@@ -1653,6 +1654,55 @@ impl McpConnection for HttpConnectionHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoopMessageSink;
+
+    #[async_trait]
+    impl McpMessageSink for NoopMessageSink {
+        async fn send(&self, _message: McpOutboundMessage) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    fn test_generation(id: u64) -> Arc<HttpGeneration> {
+        let session = McpSession::new(
+            crate::McpExpectedCapabilities::default(),
+            McpClientCapabilities::default(),
+            McpImplementation::new("test", "0"),
+        );
+        let peer = McpPeer::builder(Arc::new(NoopMessageSink), session)
+            .build()
+            .unwrap();
+        let (cancel, _) = watch::channel(false);
+        let (changes, _) = broadcast::channel(1);
+        Arc::new(HttpGeneration {
+            id,
+            peer,
+            headers: Arc::new(StdMutex::new(SessionHeaders::default())),
+            cancel,
+            tasks: Mutex::new(Vec::new()),
+            changes,
+        })
+    }
+
+    fn test_connection(generation: Arc<HttpGeneration>) -> Arc<HttpConnection> {
+        let (state, _) = watch::channel(HttpConnectionState::Ready(generation));
+        Arc::new(HttpConnection {
+            connection_id: "http:test".to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            client: reqwest::Client::new(),
+            auth_provider: client_auth::McpClientAuthProvider::new(&crate::McpClientAuth::None),
+            expected: crate::McpExpectedCapabilities::default(),
+            timeouts: crate::McpTimeouts::default(),
+            reconnect: ReconnectPolicy::default(),
+            elicitation_handler: None,
+            permission_mode: PermissionMode::Default,
+            state,
+            reinitialize: Mutex::new(()),
+            next_generation_id: AtomicU64::new(2),
+            lifetime_cancel: watch::channel(false).0,
+        })
+    }
 
     #[test]
     fn endpoint_parsing_canonicalizes_domains_and_classifies_ipv6_literals() {
@@ -1748,6 +1798,52 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(10), wait_for_cancel(&mut receiver))
             .await
             .expect("already-set cancellation is observed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_before_rebuild_task_is_polled_cancels_the_connection_lifetime() {
+        let generation = test_generation(1);
+        let connection = test_connection(Arc::clone(&generation));
+        request_reinitialize(Arc::clone(&connection), generation);
+        assert!(matches!(
+            connection.state.borrow().clone(),
+            HttpConnectionState::Rebuilding {
+                expired_generation: 1
+            }
+        ));
+
+        let handle = HttpConnectionHandle {
+            inner: Arc::clone(&connection),
+        };
+        handle.shutdown().await.expect("shutdown");
+
+        assert!(*connection.lifetime_cancel.borrow());
+        assert!(matches!(
+            connection.state.borrow().clone(),
+            HttpConnectionState::Closed
+        ));
+        assert!(matches!(
+            connection.install_generation().await,
+            Err(McpError::Connection(message)) if message.contains("closed")
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_last_handle_before_rebuild_task_is_polled_latches_cancellation() {
+        let generation = test_generation(1);
+        let connection = test_connection(Arc::clone(&generation));
+        request_reinitialize(Arc::clone(&connection), generation);
+        let handle = HttpConnectionHandle {
+            inner: Arc::clone(&connection),
+        };
+
+        drop(handle);
+
+        assert!(*connection.lifetime_cancel.borrow());
+        assert!(matches!(
+            connection.install_generation().await,
+            Err(McpError::Connection(message)) if message.contains("closed")
+        ));
     }
 
     #[test]
