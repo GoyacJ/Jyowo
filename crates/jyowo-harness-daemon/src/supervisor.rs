@@ -391,7 +391,10 @@ fn recover_terminal_task_leases(
     workspace: &WorkspaceCoordinator,
 ) -> Result<(), SupervisorError> {
     for task in store.task_projections()? {
-        let terminal = matches!(task.state, TaskState::Completed | TaskState::Failed);
+        let terminal = matches!(
+            task.state,
+            TaskState::Completed | TaskState::Failed | TaskState::Interrupted
+        );
         if task.removed || (terminal && task.queue.is_empty()) {
             workspace.release_task_leases(task.task_id)?;
         }
@@ -407,7 +410,10 @@ fn retry_terminal_task_lease_release(
     let Ok(Some(task)) = store.task_projection(task_id) else {
         return false;
     };
-    let terminal = matches!(task.state, TaskState::Completed | TaskState::Failed);
+    let terminal = matches!(
+        task.state,
+        TaskState::Completed | TaskState::Failed | TaskState::Interrupted
+    );
     if !task.removed && (!terminal || !task.queue.is_empty()) {
         return false;
     }
@@ -438,6 +444,7 @@ struct ActorExit {
     task_id: TaskId,
     generation: u64,
     failed: bool,
+    workspace_release_pending: bool,
     active_segment: Option<harness_contracts::RunSegmentId>,
 }
 
@@ -527,6 +534,12 @@ async fn run_supervisor(
                 let Some(Ok(exit)) = exit else { continue };
                 let exited_current_generation =
                     remove_actor_generation(&mut actors, exit.task_id, exit.generation);
+                if exit.workspace_release_pending
+                    && exited_current_generation
+                    && workspace.release_task_leases(exit.task_id).is_err()
+                {
+                    pending_workspace_release_compensations.insert(exit.task_id);
+                }
                 if exit.failed {
                     record_parent_stop_compensation(
                         &mut pending_parent_stop_compensations,
@@ -661,8 +674,9 @@ fn spawn_actor(
         ))
         .catch_unwind()
         .await;
-        let failed = match result {
-            Ok(Ok(())) | Ok(Err(TaskActorError::TaskNotFound)) => false,
+        let (failed, workspace_release_pending) = match result {
+            Ok(Ok(())) | Ok(Err(TaskActorError::TaskNotFound)) => (false, false),
+            Ok(Err(TaskActorError::WorkspaceReleaseDeferred(_))) => (false, true),
             Ok(Err(
                 TaskActorError::Store(_)
                 | TaskActorError::RuntimeStatePoisoned
@@ -671,13 +685,14 @@ fn spawn_actor(
                 | TaskActorError::Permission(_)
                 | TaskActorError::Workspace(_),
             ))
-            | Err(_) => true,
+            | Err(_) => (true, false),
         };
         let active_segment = exit_segment_state.lock().ok().and_then(|segment| *segment);
         ActorExit {
             task_id,
             generation,
             failed,
+            workspace_release_pending,
             active_segment,
         }
     });

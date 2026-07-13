@@ -246,6 +246,61 @@ async fn force_stop_timeout_retries_workspace_release_after_dispatch_finishes() 
 }
 
 #[tokio::test]
+async fn completed_run_stays_completed_when_workspace_release_is_deferred() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("deferred-completion-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "deferred completion", &workspace_root);
+    let factory = Arc::new(ControlledFactory::default());
+    let supervisor = Supervisor::start(
+        Arc::clone(&store),
+        factory.clone(),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert!(accepted(
+        supervisor
+            .dispatch(task_id, submit_message_command(&store, task_id))
+            .await
+            .unwrap()
+    ));
+    wait_for_start_count(&factory, task_id, 1).await;
+    let segment_id = factory.requests(task_id)[0].segment_id;
+    let lease_id = store
+        .nonterminal_workspace_leases_for_task(task_id)
+        .unwrap()[0]
+        .lease_id;
+    let dispatch = store.begin_workspace_dispatch(lease_id).unwrap();
+
+    factory.complete(task_id, segment_id);
+    wait_for_state(&store, task_id, TaskState::Completed).await;
+    drop(dispatch);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.workspace_lease(lease_id).unwrap().unwrap().state
+                == harness_contracts::WorkspaceLeaseState::Released
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed workspace release should be retried");
+
+    assert_eq!(
+        store.task_projection(task_id).unwrap().unwrap().state,
+        TaskState::Completed
+    );
+    assert!(!store
+        .events_after(0, 100)
+        .unwrap()
+        .iter()
+        .any(|event| event.task_id == task_id && event.event_type == "task.actor_failed"));
+}
+
+#[tokio::test]
 async fn queued_segment_retains_workspace_until_the_final_segment_completes() {
     let (store, root) = test_store();
     let workspace_root = root.path().join("queued-workspace");
@@ -360,6 +415,74 @@ async fn supervisor_start_releases_a_stale_terminal_workspace_lease() {
             },)
             .unwrap()
     ));
+
+    let _supervisor = Supervisor::start(
+        Arc::clone(&store),
+        Arc::new(ControlledFactory::default()),
+        SupervisorQuotas::new(1, 1),
+    )
+    .unwrap();
+
+    assert_eq!(
+        store
+            .workspace_lease(lease.lease_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        harness_contracts::WorkspaceLeaseState::Released
+    );
+}
+
+#[tokio::test]
+async fn supervisor_start_releases_a_stale_interrupted_workspace_lease() {
+    let (store, root) = test_store();
+    let workspace_root = root.path().join("stale-interrupted-workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let task_id = create_task_in_workspace(&store, "stale interrupted", &workspace_root);
+    let coordinator =
+        WorkspaceCoordinator::new(Arc::clone(&store), root.path().join("managed-worktrees"))
+            .unwrap();
+    let lease = match coordinator
+        .acquire(WorkspaceLeaseRequest {
+            task_id,
+            actor_id: ActorId::from_u128(u128::from_be_bytes(task_id.as_bytes())),
+            root: workspace_root,
+            mode: Some(WorkspaceMode::Current),
+            access: WorkspaceAccess::Write,
+            execution_kind: WorkspaceExecutionKind::Foreground,
+            expires_at: None,
+        })
+        .unwrap()
+    {
+        harness_daemon::WorkspaceAcquireOutcome::Acquired(lease) => lease,
+        harness_daemon::WorkspaceAcquireOutcome::Waiting(_) => panic!("workspace should be free"),
+    };
+    let segment_id = RunSegmentId::new();
+    let mut terminal_command = command(
+        task_id,
+        store.stream_version(task_id).unwrap(),
+        json!({ "type": "seed_interrupted_run" }),
+    );
+    terminal_command.authority = TaskStore::supervisor_authority();
+    assert!(accepted(
+        store
+            .transact_command(terminal_command, |_| {
+                Ok(vec![
+                    NewTaskEvent::run_started(segment_id, Utc::now()),
+                    NewTaskEvent::run_completed(
+                        segment_id,
+                        Utc::now(),
+                        RunTerminalReason::ForcedInterruption,
+                        true,
+                    ),
+                ])
+            })
+            .unwrap()
+    ));
+    assert_eq!(
+        store.task_projection(task_id).unwrap().unwrap().state,
+        TaskState::Interrupted
+    );
 
     let _supervisor = Supervisor::start(
         Arc::clone(&store),

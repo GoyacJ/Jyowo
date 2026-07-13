@@ -92,6 +92,8 @@ pub(crate) enum TaskActorError {
     Permission(#[from] PermissionBrokerError),
     #[error("workspace coordination failed: {0}")]
     Workspace(#[from] WorkspaceCoordinatorError),
+    #[error("terminal workspace release deferred: {0}")]
+    WorkspaceReleaseDeferred(#[source] WorkspaceCoordinatorError),
 }
 
 impl ValidatedTaskCommand {
@@ -1350,7 +1352,9 @@ fn release_terminal_task_leases(
         .task_projection(task_id)?
         .ok_or(TaskActorError::TaskNotFound)?;
     if projection.queue.is_empty() {
-        factory.release_task_leases(task_id)?;
+        factory
+            .release_task_leases(task_id)
+            .map_err(TaskActorError::WorkspaceReleaseDeferred)?;
     }
     Ok(())
 }
@@ -1368,9 +1372,9 @@ fn release_terminal_task_leases_before_event(
     }
     match factory.release_task_leases(task_id) {
         Ok(()) => Ok(true),
-        Err(WorkspaceCoordinatorError::Store(TaskStoreError::WorkspaceDispatchInFlight {
-            ..
-        })) => Ok(false),
+        Err(WorkspaceCoordinatorError::Isolation(
+            harness_agent_runtime::WorkspaceIsolationError::WorkspaceDispatchInFlight { .. },
+        )) => Ok(false),
         Err(error) => Err(error.into()),
     }
 }

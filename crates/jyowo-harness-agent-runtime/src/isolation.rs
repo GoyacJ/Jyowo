@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use chrono::Utc;
-use harness_contracts::{AgentWorkspaceIsolationMode, RunId};
+use harness_contracts::{AgentWorkspaceIsolationMode, RunId, WorkspaceLeaseId};
 use thiserror::Error;
 
 use crate::store::{AgentRuntimeStore, AgentRuntimeStoreError, WorkspaceIsolationLease};
@@ -51,6 +51,8 @@ pub enum WorkspaceIsolationError {
     LeaseNotFound { lease_id: String },
     #[error("workspace lease repository error: {message}")]
     Repository { message: String },
+    #[error("workspace lease {lease_id} has an in-flight dispatch")]
+    WorkspaceDispatchInFlight { lease_id: WorkspaceLeaseId },
 }
 
 pub trait WorkspaceLeaseRepository: Send + Sync {
@@ -99,8 +101,13 @@ impl WorkspaceLeaseRepository for TaskStore {
 }
 
 fn repository_error(error: harness_journal::TaskStoreError) -> WorkspaceIsolationError {
-    WorkspaceIsolationError::Repository {
-        message: error.to_string(),
+    match error {
+        harness_journal::TaskStoreError::WorkspaceDispatchInFlight { lease_id } => {
+            WorkspaceIsolationError::WorkspaceDispatchInFlight { lease_id }
+        }
+        error => WorkspaceIsolationError::Repository {
+            message: error.to_string(),
+        },
     }
 }
 
