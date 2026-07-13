@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    BlobId, CommandId, IndeterminateToolDecision, PermissionMode, PromotionMode, QueueItemId,
-    QueueItemState, RunSegmentId, RunState, StopMode, TaskId, ToolUseId,
+    BlobId, CommandId, ConversationContextReference, IndeterminateToolDecision, PermissionMode,
+    PromotionMode, QueueItemId, QueueItemState, RunSegmentId, RunState, StopMode, TaskId,
+    ToolUseId,
 };
 use harness_engine::{RunControl, RunControlHandle};
 use harness_journal::{
@@ -41,7 +42,7 @@ pub enum ValidatedTaskCommand {
         segment_id: RunSegmentId,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         model_config_id: Option<String>,
         permission_mode: PermissionMode,
         submitted_at: DateTime<Utc>,
@@ -651,7 +652,7 @@ fn handle_submit_message(
     segment_id: RunSegmentId,
     content: String,
     attachments: Vec<BlobId>,
-    context_references: Vec<String>,
+    context_references: Vec<ConversationContextReference>,
     model_config_id: Option<String>,
     permission_mode: PermissionMode,
     submitted_at: DateTime<Utc>,

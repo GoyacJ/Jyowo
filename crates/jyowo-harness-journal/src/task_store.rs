@@ -11,12 +11,13 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use harness_contracts::{
     now, ActorId, AutomationRunRecord, BlobId, CheckpointId, ChildAttachment, ClientId, CommandId,
-    Event, EventId, EventSource, EventSourceKind, IdParseError, IndeterminateToolDecision,
-    PermissionMode, QueueItemId, QueueItemProjection, RedactRules, Redactor, RequestId, RunId,
-    RunSegmentId, RunState, RunTerminalReason, SessionId, SubagentActorState, SubagentId,
-    SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
-    TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
+    ConversationContextReference, Event, EventId, EventSource, EventSourceKind, IdParseError,
+    IndeterminateToolDecision, PermissionMode, QueueItemId, QueueItemProjection, RedactRules,
+    Redactor, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason, SessionId,
+    SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection,
+    TaskEventEnvelope, TaskId, TaskProjection, TenantId, TimelineItemProjection, ToolUseId,
+    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
+    WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -61,9 +62,11 @@ pub struct EventAuthority {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SegmentRunInput {
     pub queue_item_id: Option<QueueItemId>,
+    #[serde(default)]
+    pub queue_item_revision: Option<u64>,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
     pub model_config_id: Option<String>,
     pub permission_mode: PermissionMode,
     pub workspace: Option<WorkspaceSelection>,
@@ -3874,6 +3877,7 @@ fn segment_run_input_in_transaction(
             queue_runtime_options_in_transaction(transaction, task_id, queue_item_id, committed)?;
         return Ok(SegmentRunInput {
             queue_item_id: Some(queue_item_id),
+            queue_item_revision: Some(revision),
             content,
             attachments,
             context_references,
@@ -3907,6 +3911,7 @@ fn segment_run_input_in_transaction(
 
     Ok(SegmentRunInput {
         queue_item_id: None,
+        queue_item_revision: None,
         content: String::new(),
         attachments: Vec::new(),
         context_references: Vec::new(),
@@ -3924,7 +3929,7 @@ fn frozen_queue_content_in_transaction(
     queue_item_id: QueueItemId,
     revision: u64,
     committed: &[TaskEventEnvelope],
-) -> Result<(String, Vec<BlobId>, Vec<String>), TaskStoreError> {
+) -> Result<(String, Vec<BlobId>, Vec<ConversationContextReference>), TaskStoreError> {
     if let Some(queued) = committed.iter().find(|event| {
         event.event_type == "message.queued"
             && event.payload.get("queueItemId") == Some(&Value::String(queue_item_id.to_string()))

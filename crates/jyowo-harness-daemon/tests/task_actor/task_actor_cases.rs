@@ -217,6 +217,15 @@ async fn running_task_accepts_queue_edits_and_consumes_fifo_when_idle() {
     ));
 
     let queue_item_id = QueueItemId::new();
+    let edited_reference = harness_contracts::ConversationContextReference::Skill {
+        version: harness_contracts::CURRENT_CONTEXT_REFERENCE_VERSION,
+        skill_id: harness_contracts::SkillId("user:review".into()),
+        label: "Review".into(),
+        parameters: [("focus".into(), json!("correctness"))]
+            .into_iter()
+            .collect(),
+        source: Some(harness_contracts::SkillSourceKind::User),
+    };
     assert!(accepted(
         supervisor
             .dispatch(
@@ -255,7 +264,7 @@ async fn running_task_accepts_queue_edits_and_consumes_fifo_when_idle() {
                         expected_revision: 1,
                         content: "edited draft".into(),
                         attachments: Vec::new(),
-                        context_references: vec!["context:two".into()],
+                        context_references: vec![edited_reference.clone()],
                     },
                 },
             )
@@ -274,7 +283,8 @@ async fn running_task_accepts_queue_edits_and_consumes_fifo_when_idle() {
     let requests = factory.requests(task_id);
     assert_eq!(requests[1].input.queue_item_id, Some(queue_item_id));
     assert_eq!(requests[1].input.content, "edited draft");
-    assert_eq!(requests[1].input.context_references, vec!["context:two"]);
+    assert_eq!(requests[1].input.context_references, vec![edited_reference]);
+    assert_eq!(requests[1].input.queue_item_revision, Some(2));
     let projection = store.task_projection(task_id).unwrap().unwrap();
     assert!(projection.queue.is_empty());
     assert_ne!(projection.current_run.unwrap().segment_id, active_segment);

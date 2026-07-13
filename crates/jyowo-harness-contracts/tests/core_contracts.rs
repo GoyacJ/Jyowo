@@ -992,8 +992,11 @@ fn conversation_turn_input_keeps_stable_wire_shape() {
                 label: "Generated notes".to_owned(),
             },
             ConversationContextReference::Skill {
-                id: "skill-review".to_owned(),
+                version: CURRENT_CONTEXT_REFERENCE_VERSION,
+                skill_id: SkillId("skill-review".to_owned()),
                 label: "Code review skill".to_owned(),
+                parameters: Default::default(),
+                source: None,
             },
             ConversationContextReference::Tool {
                 id: "builtin.grep".to_owned(),

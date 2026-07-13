@@ -5,11 +5,12 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use harness_contracts::{
     ActorId, BlobId, BlobRef, CausationId, CommandId, ConversationAttachmentReference,
-    CorrelationId, Event, EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent,
-    MessagePart, PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId, RunSegmentId,
-    RunTerminalReason, SessionId, SubagentParentProjection, SubagentProjection, TenantId,
-    ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState, WorkspaceSelection,
+    ConversationContextReference, CorrelationId, Event, EventSource, EventSourceKind,
+    IndeterminateToolDecision, MessageContent, MessagePart, PermissionProjection, QueueItemId,
+    ReferenceKind, RequestId, RunId, RunSegmentId, RunTerminalReason, SessionId,
+    SubagentParentProjection, SubagentProjection, TenantId, ToolResult, ToolResultPart, ToolUseId,
+    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceSelection,
+    CURRENT_CONTEXT_REFERENCE_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,7 +22,9 @@ const MAX_TITLE_CHARS: usize = 4096;
 const MAX_MESSAGE_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_MESSAGE_ATTACHMENTS: usize = 64;
 const MAX_CONTEXT_REFERENCES: usize = 64;
-const MAX_CONTEXT_REFERENCE_BYTES: usize = 4096;
+const MAX_CONTEXT_REFERENCE_BYTES: usize = 16 * 1024;
+const MAX_SKILL_REFERENCE_PARAMETERS: usize = 64;
+const MAX_SKILL_REFERENCE_PARAMETER_BYTES: usize = 4096;
 const MAX_SIDE_EFFECTS: usize = 256;
 const MAX_WORKSPACE_ROOT_BYTES: usize = 4096;
 
@@ -90,7 +93,7 @@ pub(crate) enum TaskEvent {
         queue_item_id: QueueItemId,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         model_config_id: Option<String>,
         permission_mode: harness_contracts::PermissionMode,
         created_at: DateTime<Utc>,
@@ -100,7 +103,7 @@ pub(crate) enum TaskEvent {
         revision: u64,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
     },
     MessagePromoted {
         queue_item_id: QueueItemId,
@@ -307,7 +310,7 @@ struct MessageQueuedPayload {
     queue_item_id: QueueItemId,
     content: String,
     attachments: Vec<BlobId>,
-    context_references: Vec<String>,
+    context_references: Vec<ConversationContextReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model_config_id: Option<String>,
     #[serde(default)]
@@ -322,7 +325,7 @@ struct MessageEditedPayload {
     revision: u64,
     content: String,
     attachments: Vec<BlobId>,
-    context_references: Vec<String>,
+    context_references: Vec<ConversationContextReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -580,7 +583,7 @@ impl NewTaskEvent {
         queue_item_id: QueueItemId,
         content: impl Into<String>,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         created_at: DateTime<Utc>,
     ) -> Self {
         Self::message_queued_with_runtime(
@@ -599,7 +602,7 @@ impl NewTaskEvent {
         queue_item_id: QueueItemId,
         content: impl Into<String>,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         model_config_id: Option<String>,
         permission_mode: harness_contracts::PermissionMode,
         created_at: DateTime<Utc>,
@@ -623,7 +626,7 @@ impl NewTaskEvent {
         revision: u64,
         content: impl Into<String>,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
     ) -> Self {
         Self {
             event: TaskEvent::MessageEdited {
@@ -1746,14 +1749,13 @@ impl TaskEvent {
                         "a message may contain at most {MAX_MESSAGE_ATTACHMENTS} attachments"
                     )));
                 }
-                if context_references.len() > MAX_CONTEXT_REFERENCES
-                    || context_references
-                        .iter()
-                        .any(|reference| reference.len() > MAX_CONTEXT_REFERENCE_BYTES)
-                {
+                if context_references.len() > MAX_CONTEXT_REFERENCES {
                     return Err(TaskStoreError::InvalidInput(
                         "message context references exceed their count or size limit".into(),
                     ));
+                }
+                for reference in context_references {
+                    validate_context_reference(reference)?;
                 }
             }
             Self::Engine {
@@ -1839,6 +1841,43 @@ impl TaskEvent {
     }
 }
 
+fn validate_context_reference(
+    reference: &ConversationContextReference,
+) -> Result<(), TaskStoreError> {
+    let encoded = serde_json::to_vec(reference)?;
+    if encoded.len() > MAX_CONTEXT_REFERENCE_BYTES {
+        return Err(TaskStoreError::InvalidInput(
+            "message context references exceed their count or size limit".into(),
+        ));
+    }
+    if let ConversationContextReference::Skill {
+        version,
+        skill_id,
+        parameters,
+        ..
+    } = reference
+    {
+        if *version != CURRENT_CONTEXT_REFERENCE_VERSION {
+            return Err(TaskStoreError::InvalidInput(format!(
+                "unsupported skill context reference version {version}"
+            )));
+        }
+        if skill_id.0.trim().is_empty() {
+            return Err(TaskStoreError::InvalidInput(
+                "skill context reference id must be non-empty".into(),
+            ));
+        }
+        if parameters.len() > MAX_SKILL_REFERENCE_PARAMETERS
+            || serde_json::to_vec(parameters)?.len() > MAX_SKILL_REFERENCE_PARAMETER_BYTES
+        {
+            return Err(TaskStoreError::InvalidInput(
+                "skill context reference parameters exceed their count or size limit".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn engine_event_type(event: &Event) -> Result<String, TaskStoreError> {
     let value = serde_json::to_value(event)?;
     let event_type = value
@@ -1846,6 +1885,68 @@ fn engine_event_type(event: &Event) -> Result<String, TaskStoreError> {
         .and_then(Value::as_str)
         .ok_or_else(|| TaskStoreError::InvalidInput("engine event type is missing".into()))?;
     Ok(format!("engine.{event_type}"))
+}
+
+#[cfg(test)]
+mod context_reference_tests {
+    use std::collections::BTreeMap;
+
+    use harness_contracts::{
+        ConversationContextReference, QueueItemId, SkillId, SkillSourceKind,
+        CURRENT_CONTEXT_REFERENCE_VERSION,
+    };
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn legacy_maximum_path_still_encodes_after_typed_normalization() {
+        let path = "x".repeat(4096);
+        let event = NewTaskEvent::from_parts(
+            "message.queued",
+            1,
+            json!({
+                "queueItemId": QueueItemId::new(),
+                "content": "inspect",
+                "attachments": [],
+                "contextReferences": [path],
+                "createdAt": Utc::now(),
+            }),
+        )
+        .unwrap();
+
+        let (_, _, payload) = event.encode().expect("legacy path remains valid");
+        assert_eq!(payload["contextReferences"][0]["kind"], "workspace_file");
+    }
+
+    #[test]
+    fn skill_reference_parameter_count_and_bytes_are_bounded() {
+        let too_many = (0..=MAX_SKILL_REFERENCE_PARAMETERS)
+            .map(|index| (format!("parameter-{index}"), Value::Null))
+            .collect();
+        assert!(skill_event(too_many).encode().is_err());
+
+        let too_large = [("payload".into(), json!("x".repeat(4096)))]
+            .into_iter()
+            .collect();
+        assert!(skill_event(too_large).encode().is_err());
+    }
+
+    fn skill_event(parameters: BTreeMap<String, Value>) -> NewTaskEvent {
+        NewTaskEvent::message_queued(
+            QueueItemId::new(),
+            "review",
+            Vec::new(),
+            vec![ConversationContextReference::Skill {
+                version: CURRENT_CONTEXT_REFERENCE_VERSION,
+                skill_id: SkillId("user:review".into()),
+                label: "Review".into(),
+                parameters,
+                source: Some(SkillSourceKind::User),
+            }],
+            Utc::now(),
+        )
+    }
 }
 
 #[cfg(test)]

@@ -412,7 +412,7 @@
             "contextReferences": {
               "type": "array",
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/ConversationContextReference"
               }
             },
             "metadata": {
@@ -461,7 +461,7 @@
             "contextReferences": {
               "type": "array",
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/ConversationContextReference"
               }
             },
             "expectedRevision": {
@@ -1366,6 +1366,187 @@
       "maxItems": 32,
       "minItems": 32
     },
+    "ConversationContextReference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "workspace_file"
+            },
+            "label": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artifact"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "conversation"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "memory"
+            },
+            "label": {
+              "type": "string"
+            },
+            "resolved_content": {
+              "description": "Hydrated content, if resolved. Mutually exclusive with `label`-only rendering.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skill"
+            },
+            "label": {
+              "type": "string"
+            },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": true,
+              "default": {}
+            },
+            "skillId": {
+              "$ref": "#/$defs/SkillId"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SkillSourceKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint16",
+              "const": 1,
+              "default": 1,
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "skillId",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "tool"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "mcp_server"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        }
+      ]
+    },
     "DaemonMemoryItem": {
       "type": "object",
       "properties": {
@@ -1905,6 +2086,9 @@
         "seatbelt",
         "job_object"
       ]
+    },
+    "McpServerId": {
+      "type": "string"
     },
     "MemoryCandidate": {
       "type": "object",
@@ -3380,6 +3564,9 @@
         "saved_policy"
       ]
     },
+    "PluginId": {
+      "type": "string"
+    },
     "PromotionMode": {
       "type": "string",
       "enum": [
@@ -3423,7 +3610,7 @@
         "contextReferences": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/ConversationContextReference"
           }
         },
         "createdAt": {
@@ -4487,6 +4674,45 @@
             "type",
             "code",
             "message"
+          ]
+        }
+      ]
+    },
+    "SkillId": {
+      "type": "string"
+    },
+    "SkillSourceKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "bundled",
+            "workspace",
+            "user"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "plugin": {
+              "$ref": "#/$defs/PluginId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "plugin"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mcp": {
+              "$ref": "#/$defs/McpServerId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mcp"
           ]
         }
       ]

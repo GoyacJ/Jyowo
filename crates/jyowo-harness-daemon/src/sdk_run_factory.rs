@@ -16,13 +16,13 @@ use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
     ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy, AgentTeamTopology,
     AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode, CapabilityRegistry,
-    ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Event,
-    ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution, InteractivityLevel,
-    McpServerId, McpServerScope, ModelError, PermissionMode, PromotionMode, QueueItemState,
-    Redactor, RunId, RunSegmentId, RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan,
-    ToolCapability, ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent,
-    ToolUseId, UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId,
-    WorkspaceLeaseState, WorkspaceMode,
+    ConversationAttachmentReference, ConversationTurnInput, Event, ExecutionDefaultsRecord,
+    FallbackPolicy, IndeterminateToolResolution, InteractivityLevel, McpServerId, McpServerScope,
+    ModelError, PermissionMode, PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId,
+    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId,
+    UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState,
+    WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
 use harness_execution::{
@@ -976,15 +976,7 @@ impl SdkRunCoordinatorFactory {
 
         let mut input = ConversationTurnInput::ask(request.input.content);
         input.client_message_id = Some(request.segment_id.to_string());
-        input.context_references = request
-            .input
-            .context_references
-            .into_iter()
-            .map(|path| ConversationContextReference::WorkspaceFile {
-                label: path.clone(),
-                path,
-            })
-            .collect();
+        input.context_references = request.input.context_references;
         input.attachments = load_attachments(
             &store,
             request.task_id,
@@ -4190,6 +4182,7 @@ exit 2
                 segment_id: RunSegmentId::new(),
                 input: SegmentRunInput {
                     queue_item_id: None,
+                    queue_item_revision: None,
                     content: "hello".into(),
                     attachments: Vec::new(),
                     context_references: Vec::new(),

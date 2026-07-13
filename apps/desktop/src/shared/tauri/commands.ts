@@ -329,9 +329,19 @@ const contextReferenceSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      id: z.string().trim().min(1),
       kind: z.literal('skill'),
       label: z.string().trim().min(1),
+      parameters: z.record(z.string(), z.unknown()).default({}),
+      skillId: z.string().trim().min(1),
+      source: z
+        .union([
+          z.enum(['bundled', 'workspace', 'user']),
+          z.object({ plugin: z.string().trim().min(1) }).strict(),
+          z.object({ mcp: z.string().trim().min(1) }).strict(),
+        ])
+        .nullable()
+        .optional(),
+      version: z.literal(1).default(1),
     })
     .strict(),
   z

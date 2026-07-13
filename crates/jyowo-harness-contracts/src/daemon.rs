@@ -9,15 +9,16 @@ use crate::{
     ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
     AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
     AutomationRunsResponse, AutomationSavedResponse, AutomationSpec, AutomationsResponse, BlobId,
-    CheckpointId, ClientId, CommandId, EventId, GetMemoryRecallTraceRequest,
-    GetMemoryRecallTraceResponse, GetMemorySettingsRequest, GetMemorySettingsResponse,
-    GetModelRequestPreviewRequest, GetModelRequestPreviewResponse, GetThreadMemorySettingsRequest,
-    GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest, ListMemoryCandidatesResponse,
-    ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse, MemoryId,
-    MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode, QueueItemId,
-    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId, RunSegmentId,
-    SessionId, SubagentId, TaskId, UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
-    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
+    CheckpointId, ClientId, CommandId, ConversationContextReference, EventId,
+    GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
+    GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
+    GetThreadMemorySettingsRequest, GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest,
+    ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
+    MemoryId, MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode,
+    QueueItemId, RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId,
+    RunSegmentId, SessionId, SubagentId, TaskId, UpdateMemorySettingsRequest,
+    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 2;
@@ -460,7 +461,7 @@ pub struct SubmitMessageCommand {
     pub task_id: TaskId,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_config_id: Option<String>,
     #[serde(default)]
@@ -476,7 +477,7 @@ pub struct EditQueuedMessageCommand {
     pub expected_revision: u64,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -908,7 +909,7 @@ pub struct QueueItemProjection {
     pub revision: u64,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
     #[serde(
         serialize_with = "strict_rfc3339::serialize",
         deserialize_with = "strict_rfc3339::deserialize"

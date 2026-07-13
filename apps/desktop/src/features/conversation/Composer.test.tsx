@@ -528,7 +528,13 @@ describe('Composer', () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           contextReferences: [
-            { id: 'skill-review', kind: 'skill', label: 'Code review skill' },
+            {
+              kind: 'skill',
+              label: 'Code review skill',
+              parameters: {},
+              skillId: 'skill-review',
+              version: 1,
+            },
             { id: 'builtin.grep', kind: 'tool', label: 'Search files' },
             {
               id: 'mcp-filesystem',

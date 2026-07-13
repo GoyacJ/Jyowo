@@ -1,6 +1,8 @@
 use harness_contracts::{
-    daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest, HandshakeResponse,
-    ServerFrame, TaskProjection, TimelineItemProjection, WorkspaceMode, PROTOCOL_VERSION,
+    daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest,
+    ConversationContextReference, HandshakeResponse, ServerFrame, SkillId, SkillSourceKind,
+    TaskProjection, TimelineItemProjection, WorkspaceMode, CURRENT_CONTEXT_REFERENCE_VERSION,
+    PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -236,6 +238,113 @@ fn submit_message_carries_runtime_choices() {
     let encoded = serde_json::to_value(parsed).expect("runtime choices serialize");
     assert_eq!(encoded["request"]["modelConfigId"], "provider-config-001");
     assert_eq!(encoded["request"]["permissionMode"], "auto");
+}
+
+#[test]
+fn context_reference_legacy_strings_normalize_to_typed_workspace_files() {
+    let frame = json!({
+        "requestId": "req-legacy-context",
+        "protocolVersion": PROTOCOL_VERSION,
+        "request": {
+            "type": "submit_message",
+            "metadata": {
+                "commandId": "00000000000000000000000001",
+                "idempotencyKey": "submit-legacy-context",
+                "expectedStreamVersion": 0
+            },
+            "taskId": "00000000000000000000000002",
+            "content": "inspect",
+            "attachments": [],
+            "contextReferences": ["src/lib.rs"]
+        }
+    });
+
+    let parsed = serde_json::from_value::<ClientFrame>(frame).expect("legacy reference parses");
+    let encoded = serde_json::to_value(parsed).expect("normalized reference serializes");
+
+    assert_eq!(
+        encoded["request"]["contextReferences"],
+        json!([{
+            "kind": "workspace_file",
+            "path": "src/lib.rs",
+            "label": "src/lib.rs"
+        }])
+    );
+}
+
+#[test]
+fn context_reference_skill_round_trips_versioned_metadata() {
+    let value = json!({
+        "kind": "skill",
+        "version": CURRENT_CONTEXT_REFERENCE_VERSION,
+        "skillId": "user:code-review",
+        "label": "Code review",
+        "parameters": {
+            "focus": ["correctness", "security"],
+            "strict": true
+        },
+        "source": "user"
+    });
+
+    let reference: ConversationContextReference =
+        serde_json::from_value(value.clone()).expect("typed skill reference parses");
+    assert_eq!(
+        reference,
+        ConversationContextReference::Skill {
+            version: CURRENT_CONTEXT_REFERENCE_VERSION,
+            skill_id: SkillId("user:code-review".into()),
+            label: "Code review".into(),
+            parameters: [
+                ("focus".into(), json!(["correctness", "security"])),
+                ("strict".into(), json!(true)),
+            ]
+            .into_iter()
+            .collect(),
+            source: Some(SkillSourceKind::User),
+        }
+    );
+    assert_eq!(serde_json::to_value(reference).unwrap(), value);
+}
+
+#[test]
+fn context_reference_legacy_typed_skill_defaults_and_reencodes_current_form() {
+    let reference: ConversationContextReference = serde_json::from_value(json!({
+        "kind": "skill",
+        "id": "user:legacy-review",
+        "label": "Legacy review"
+    }))
+    .expect("legacy typed skill parses");
+
+    assert_eq!(
+        serde_json::to_value(reference).unwrap(),
+        json!({
+            "kind": "skill",
+            "version": CURRENT_CONTEXT_REFERENCE_VERSION,
+            "skillId": "user:legacy-review",
+            "label": "Legacy review",
+            "parameters": {}
+        })
+    );
+}
+
+#[test]
+fn context_reference_rejects_unknown_skill_versions_and_fields() {
+    for value in [
+        json!({
+            "kind": "skill",
+            "version": CURRENT_CONTEXT_REFERENCE_VERSION + 1,
+            "skillId": "user:code-review",
+            "label": "Code review"
+        }),
+        json!({
+            "kind": "workspace_file",
+            "path": "src/lib.rs",
+            "label": "src/lib.rs",
+            "unexpected": true
+        }),
+    ] {
+        assert!(serde_json::from_value::<ConversationContextReference>(value).is_err());
+    }
 }
 
 #[test]

@@ -136,11 +136,13 @@ fn render_context_reference(reference: &ConversationContextReference) -> String 
                 String::new()
             }
         }
-        ConversationContextReference::Skill { id, label } => {
+        ConversationContextReference::Skill {
+            skill_id, label, ..
+        } => {
             format!(
                 "- skill: {} ({})",
                 sanitize_context_line(label),
-                sanitize_context_line(id)
+                sanitize_context_line(&skill_id.0)
             )
         }
         ConversationContextReference::Tool { id, label } => {

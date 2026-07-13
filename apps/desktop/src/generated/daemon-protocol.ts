@@ -46,7 +46,7 @@ export type ClientRequest =
   | {
       attachments: TypedUlid[]
       content: string
-      contextReferences: string[]
+      contextReferences: ConversationContextReference[]
       metadata: CommandMetadata
       modelConfigId?: string | null
       permissionMode?:
@@ -62,7 +62,7 @@ export type ClientRequest =
   | {
       attachments: TypedUlid[]
       content: string
-      contextReferences: string[]
+      contextReferences: ConversationContextReference[]
       expectedRevision: number
       metadata: CommandMetadata
       queueItemId: TypedUlid
@@ -257,6 +257,82 @@ export type TypedUlid = string
  * via the `definition` "WorkspaceMode".
  */
 export type WorkspaceMode = 'current' | 'managed_worktree'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ConversationContextReference".
+ */
+export type ConversationContextReference =
+  | {
+      kind: 'workspace_file'
+      label: string
+      path: string
+    }
+  | {
+      id: string
+      kind: 'artifact'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'conversation'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'memory'
+      label: string
+      /**
+       * Hydrated content, if resolved. Mutually exclusive with `label`-only rendering.
+       */
+      resolved_content?: string | null
+    }
+  | {
+      kind: 'skill'
+      label: string
+      parameters?: {
+        [k: string]: unknown
+      }
+      skillId: SkillId
+      source?: SkillSourceKind | null
+      version?: 1
+    }
+  | {
+      id: string
+      kind: 'tool'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'mcp_server'
+      label: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillId".
+ */
+export type SkillId = string
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillSourceKind".
+ */
+export type SkillSourceKind =
+  | ('bundled' | 'workspace' | 'user')
+  | {
+      plugin: PluginId
+    }
+  | {
+      mcp: McpServerId
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PluginId".
+ */
+export type PluginId = string
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "McpServerId".
+ */
+export type McpServerId = string
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "PromotionMode".
@@ -1199,7 +1275,7 @@ export interface QueueItemProjection {
   attachments: TypedUlid[]
   consumedBy?: TypedUlid | null
   content: string
-  contextReferences: string[]
+  contextReferences: ConversationContextReference[]
   createdAt: string
   createdGlobalOffset: number
   queueItemId: TypedUlid

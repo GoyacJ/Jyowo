@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer, type ComposerSubmitPayload } from '@/features/conversation/Composer'
-import { referenceKey } from '@/features/conversation/composer/ReferenceCombobox'
 import type { ServerFrame, TaskState, TypedUlid } from '@/generated/daemon-protocol'
 import type { DaemonClient } from '@/shared/daemon/client'
 import type {
@@ -70,7 +69,7 @@ export function TaskComposer({
     const requestBody = {
       attachments: (payload.attachments ?? []).map((attachment) => attachment.blobRef.id),
       content: payload.prompt,
-      contextReferences: (payload.contextReferences ?? []).map(referenceKey),
+      contextReferences: payload.contextReferences ?? [],
       ...(payload.modelConfigId ? { modelConfigId: payload.modelConfigId } : {}),
       ...(permissionMode ? { permissionMode: payload.permissionMode } : {}),
       taskId,

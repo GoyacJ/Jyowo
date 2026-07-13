@@ -487,8 +487,11 @@ async fn continue_task_reuses_the_interrupted_segments_immutable_run_input() {
     assert_eq!(requests[0].input.content, "resume this exact prompt");
     assert_eq!(
         requests[0].input.context_references,
-        vec!["context:durable"]
+        vec![harness_contracts::ConversationContextReference::from(
+            "context:durable"
+        )]
     );
+    assert_eq!(requests[0].input.queue_item_revision, Some(1));
     assert_eq!(
         requests[0].input.model_config_id.as_deref(),
         Some("provider-config-continue")
