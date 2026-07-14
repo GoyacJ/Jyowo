@@ -19,7 +19,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None, None).await
+        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None, None, None).await
     }
 
     pub async fn bind_named_pipe_with_supervisor(
@@ -35,6 +35,7 @@ impl LocalIpcServer {
             Some(supervisor),
             None,
             None,
+            None,
         )
         .await
     }
@@ -44,6 +45,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
         supervisor: Arc<crate::Supervisor>,
+        skill_reference_candidates: Arc<crate::SkillReferenceCandidateService>,
         memory_service: Arc<crate::MemoryService>,
         automation_scheduler: Arc<crate::AutomationScheduler>,
     ) -> Result<Self, IpcError> {
@@ -52,6 +54,7 @@ impl LocalIpcServer {
             store,
             config,
             Some(supervisor),
+            Some(skill_reference_candidates),
             Some(memory_service),
             Some(automation_scheduler),
         )
@@ -63,6 +66,7 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
         supervisor: Option<Arc<crate::Supervisor>>,
+        skill_reference_candidates: Option<Arc<crate::SkillReferenceCandidateService>>,
         memory_service: Option<Arc<crate::MemoryService>>,
         automation_scheduler: Option<Arc<crate::AutomationScheduler>>,
     ) -> Result<Self, IpcError> {
@@ -91,6 +95,9 @@ impl LocalIpcServer {
                                 Arc::clone(supervisor),
                             ),
                         );
+                        if let Some(service) = skill_reference_candidates.as_ref() {
+                            connection = connection.with_skill_reference_candidate_service(Arc::clone(service));
+                        }
                         if let Some(memory_service) = memory_service.as_ref() {
                             connection = connection.with_memory_service(Arc::clone(memory_service));
                         }

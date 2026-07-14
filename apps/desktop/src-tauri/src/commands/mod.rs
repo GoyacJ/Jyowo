@@ -191,12 +191,14 @@ pub use contracts::{
     SetProjectPluginsEnabledResponse, SetSkillConfigValueRequest, SetSkillEnabledRequest,
     SetSkillEnabledResponse, SetSkillSecretRequest, SettingsScope,
     SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
-    SkillCatalogInstallTaskPayload, SkillConfigMutationResponse, SkillDetailPayload,
-    SkillFileContentPayload, SkillFilePayload, SkillParameterPayload, SkillStore, SkillStoreRecord,
-    SkillSummaryPayload, StartRunRequest, StartRunResponse, SubscribeMcpDiagnosticsRequest,
-    SubscribeMcpDiagnosticsResponse, UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest,
-    UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest, ValidatePluginFromPathRequest,
-    ValidateProviderSettingsRequest, ValidateProviderSettingsResponse,
+    SkillCatalogInstallTaskPayload, SkillConfigDeclarationPayload, SkillConfigMutationResponse,
+    SkillDetailPayload, SkillFileContentPayload, SkillFilePayload, SkillParameterPayload,
+    SkillPrerequisitePayload, SkillScriptEnvPayload, SkillScriptPayload, SkillStore,
+    SkillStoreRecord, SkillSummaryPayload, StartRunRequest, StartRunResponse,
+    SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse, UninstallPluginRequest,
+    UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest,
+    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
+    ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
 pub use mcp::{

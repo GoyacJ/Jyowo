@@ -1,8 +1,8 @@
 use harness_contracts::{
     daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest,
-    ConversationContextReference, HandshakeResponse, ServerFrame, SkillId, SkillSourceKind,
-    TaskProjection, TimelineItemProjection, WorkspaceMode, CURRENT_CONTEXT_REFERENCE_VERSION,
-    PROTOCOL_VERSION,
+    ConversationContextReference, HandshakeResponse, ListSkillReferenceCandidatesResponse,
+    ServerFrame, ServerMessage, SkillId, SkillReferenceCandidate, SkillSourceKind, TaskProjection,
+    TimelineItemProjection, WorkspaceMode, CURRENT_CONTEXT_REFERENCE_VERSION, PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -27,6 +27,7 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "load_task_events",
         "read_blob",
         "list_runtime_tools",
+        "list_skill_reference_candidates",
         "list_memory_items",
         "get_memory_item",
         "delete_memory_item",
@@ -51,6 +52,35 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn skill_reference_candidates_preserve_runtime_identity_and_source() {
+    let request = ClientRequest::ListSkillReferenceCandidates {
+        task_id: harness_contracts::TaskId::from_u128(1),
+    };
+    let request_value = serde_json::to_value(&request).expect("serialize candidate request");
+    assert_eq!(request_value["type"], "list_skill_reference_candidates");
+    assert_eq!(request_value["taskId"], "00000000000000000000000001");
+    assert!(serde_json::from_value::<ClientRequest>(json!({
+        "type": "list_skill_reference_candidates",
+        "taskId": "00000000000000000000000001",
+        "workspaceRoot": "/client-controlled"
+    }))
+    .is_err());
+
+    let response = ServerMessage::SkillReferenceCandidates(ListSkillReferenceCandidatesResponse {
+        skills: vec![SkillReferenceCandidate {
+            skill_id: SkillId("workspace:review".into()),
+            label: "review".into(),
+            source: SkillSourceKind::Workspace,
+        }],
+    });
+    let value = serde_json::to_value(&response).expect("serialize candidate response");
+    assert_eq!(value["type"], "skill_reference_candidates");
+    assert_eq!(value["skills"][0]["skillId"], "workspace:review");
+    assert_eq!(value["skills"][0]["source"], "workspace");
+    assert!(value["skills"][0].get("status").is_none());
 }
 
 #[test]

@@ -36,7 +36,8 @@ pub use harness::{
     ConversationRunOptions, ConversationSession, ConversationSessionSummary,
     ConversationTurnReceipt, ConversationTurnRequest, Harness, HarnessOptions,
     HarnessSamplingProvider, McpConfig, RuntimeSkillConfig, RuntimeSkillParameter,
-    RuntimeSkillSummary, RuntimeSkillView, TenantPolicy, WorkspaceCreateRequest,
+    RuntimeSkillScript, RuntimeSkillScriptEnv, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
+    WorkspaceCreateRequest,
 };
 pub use harness_agent_runtime::builtin_agent_profiles;
 pub use harness_engine::{RunControl, RunControlHandle, TurnOutcome};

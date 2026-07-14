@@ -11,16 +11,18 @@ use jyowo_desktop_shell::commands::stores::{
     DesktopSkillConfigStore, GlobalConfigStore, SkillConfigStoreFault,
 };
 use jyowo_desktop_shell::commands::{
-    delete_skill_with_runtime_state, get_or_create_skill_catalog_install_task,
-    get_skill_config_with_runtime_state, get_skill_detail_with_runtime_state,
-    import_skill_with_runtime_state, list_skill_catalog_install_tasks_with_runtime_state,
-    list_skills_with_runtime_state, record_skill_catalog_install_task_progress,
+    clear_skill_secret_with_runtime_state, delete_skill_with_runtime_state,
+    get_or_create_skill_catalog_install_task, get_skill_config_with_runtime_state,
+    get_skill_detail_with_runtime_state, import_skill_with_runtime_state,
+    list_skill_catalog_install_tasks_with_runtime_state, list_skills_with_runtime_state,
+    record_skill_catalog_install_task_progress,
     reload_desktop_settings_runtime_after_plugin_change_for_test,
     runtime_state_with_skill_config_store_for_test, set_skill_config_value_with_runtime_state,
-    set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
+    set_skill_enabled_with_runtime_state, set_skill_secret_with_runtime_state,
+    start_skill_catalog_install_task_with_runtime_state, ClearSkillSecretRequest,
     DeleteSkillRequest, DesktopRuntimeState, GetSkillConfigRequest, GetSkillDetailRequest,
-    ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest, SkillStore,
-    SkillStoreRecord,
+    ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest, SetSkillSecretRequest,
+    SkillStore, SkillStoreRecord,
 };
 use jyowo_desktop_shell::skill_catalog::{
     fetch_catalog_http_for_test, CatalogHttpTimeouts, InstallSkillFromCatalogRequest,
@@ -256,6 +258,7 @@ async fn catalog_install_delete_and_reinstall_runs_the_full_local_package_flow()
         .into_iter()
         .find(|skill| skill.name == "catalog-reinstall-test")
         .unwrap();
+    assert_eq!(first.source_kind, "user");
     delete_skill_with_runtime_state(DeleteSkillRequest { id: first.id }, &state)
         .await
         .unwrap();
@@ -1209,9 +1212,145 @@ async fn get_skill_config_projects_the_persisted_entry_through_current_declarati
 
     assert!(!response.config.values.contains_key("apiToken"));
     assert!(!response.config.secrets["apiToken"].configured);
+    assert_eq!(response.declarations.len(), 1);
+    assert_eq!(response.declarations[0].key, "apiToken");
+    assert!(response.declarations[0].secret);
     assert!(!serde_json::to_string(&response)
         .unwrap()
         .contains("legacy-plaintext"));
+}
+
+#[tokio::test]
+async fn commands_config_read_set_and_clear_expose_only_declarations_and_presence() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let skill = parse_skill_markdown(
+        "---\nname: commands-config\ndescription: Commands config\nconfig:\n  - key: region\n    type: string\n    required: true\n  - key: apiToken\n    type: string\n    secret: true\n    required: true\n---\nConfigured.\n",
+        SkillSource::Workspace("data/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    settings_runtime
+        .skill_registry()
+        .register_batch(vec![skill])
+        .unwrap();
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .unwrap();
+    state.set_skill_config_store_for_test(Arc::new(DesktopSkillConfigStore::new(
+        layout,
+        Arc::new(MemorySecretStore::default()),
+    )));
+
+    set_skill_config_value_with_runtime_state(
+        SetSkillConfigValueRequest {
+            skill_id: "workspace:commands-config".to_owned(),
+            key: "region".to_owned(),
+            value: json!("cn-east"),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    set_skill_secret_with_runtime_state(
+        SetSkillSecretRequest {
+            skill_id: "workspace:commands-config".to_owned(),
+            key: "apiToken".to_owned(),
+            value: "task9-secret-must-not-leak".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let response = get_skill_config_with_runtime_state(
+        GetSkillConfigRequest {
+            skill_id: "workspace:commands-config".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.declarations.len(), 2);
+    assert_eq!(response.config.values["region"], json!("cn-east"));
+    assert!(response.config.secrets["apiToken"].configured);
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains("task9-secret-must-not-leak"));
+
+    clear_skill_secret_with_runtime_state(
+        ClearSkillSecretRequest {
+            skill_id: "workspace:commands-config".to_owned(),
+            key: "apiToken".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let response = get_skill_config_with_runtime_state(
+        GetSkillConfigRequest {
+            skill_id: "workspace:commands-config".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert!(!response.config.secrets["apiToken"].configured);
+}
+
+#[tokio::test]
+async fn commands_skill_detail_includes_script_metadata_and_missing_prerequisites() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let layout = test_layout(&workspace);
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let skill = parse_skill_markdown(
+        "---\nname: commands-script-metadata\ndescription: Script metadata\nconfig:\n  - key: apiToken\n    type: string\n    secret: true\n    required: true\nprerequisites:\n  env_vars:\n    - JYOWO_TASK9_MISSING_ENV_7F324D\nscripts:\n  - id: collect\n    path: scripts/collect.sh\n    timeoutSeconds: 12\n    network: deny\n    env:\n      API_TOKEN:\n        config: apiToken\n        secret: true\n    maxStdoutBytes: 100\n    maxStderrBytes: 101\n    maxOutputBytes: 150\n    maxArtifactCount: 2\n    maxArtifactBytes: 512\n---\nRun collect.\n",
+        SkillSource::Workspace("data/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    settings_runtime
+        .skill_registry()
+        .register_batch(vec![skill])
+        .unwrap();
+    let mut state =
+        DesktopRuntimeState::with_settings_runtime_for_workspace(workspace, settings_runtime)
+            .unwrap();
+    state.set_skill_config_store_for_test(Arc::new(DesktopSkillConfigStore::new(
+        layout,
+        Arc::new(MemorySecretStore::default()),
+    )));
+
+    let detail = get_skill_detail_with_runtime_state(
+        GetSkillDetailRequest {
+            id: "commands-script-metadata".to_owned(),
+        },
+        &state,
+    )
+    .await
+    .unwrap()
+    .skill;
+
+    assert_eq!(detail.summary.status, "prerequisite_missing");
+    assert_eq!(detail.scripts.len(), 1);
+    let script = &detail.scripts[0];
+    assert_eq!(script.id, "collect");
+    assert_eq!(script.path, "scripts/collect.sh");
+    assert_eq!(script.timeout_seconds, 12);
+    assert_eq!(script.network, "deny");
+    assert_eq!(script.env[0].name, "API_TOKEN");
+    assert_eq!(script.env[0].config_key, "apiToken");
+    assert!(script.env[0].secret);
+    assert_eq!(detail.prerequisites.missing_config_keys, ["apiToken"]);
+    assert_eq!(
+        detail.prerequisites.missing_env_vars,
+        ["JYOWO_TASK9_MISSING_ENV_7F324D"]
+    );
 }
 
 #[tokio::test]

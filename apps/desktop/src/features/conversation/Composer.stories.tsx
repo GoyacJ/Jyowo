@@ -37,7 +37,7 @@ const referenceCandidates = {
   ],
   memories: [{ id: 'memory-policy-boundary', label: 'Policy authority remains in Rust' }],
   mcpServers: [{ id: 'mcp-filesystem', label: 'Filesystem MCP' }],
-  skills: [{ id: 'skill-code-review', label: 'Code review skill' }],
+  skills: [{ id: 'skill-code-review', label: 'Code review skill', source: 'workspace' }],
   tools: [{ id: 'tool-ripgrep', label: 'ripgrep' }],
 } satisfies ListReferenceCandidatesResponse
 

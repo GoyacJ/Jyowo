@@ -928,7 +928,7 @@ pub(crate) fn managed_skill_summary(
         id: record.id.clone(),
         name: record.name.clone(),
         description: record.description.clone(),
-        source_kind: "workspace".to_owned(),
+        source_kind: "user".to_owned(),
         enabled,
         manageable: true,
         status: status.to_owned(),
@@ -965,6 +965,16 @@ pub(crate) fn skill_detail_from_runtime_view(
     files: Vec<SkillFilePayload>,
     validation_error: Option<String>,
 ) -> SkillDetailPayload {
+    let prerequisites = match &view.summary.status {
+        jyowo_harness_sdk::ext::SkillStatus::Ready => SkillPrerequisitePayload::default(),
+        jyowo_harness_sdk::ext::SkillStatus::PrerequisiteMissing {
+            env_vars,
+            config_keys,
+        } => SkillPrerequisitePayload {
+            missing_env_vars: env_vars.clone(),
+            missing_config_keys: config_keys.clone(),
+        },
+    };
     SkillDetailPayload {
         summary,
         parameters: view
@@ -979,6 +989,31 @@ pub(crate) fn skill_detail_from_runtime_view(
             })
             .collect(),
         config_keys: view.config_keys,
+        scripts: view
+            .scripts
+            .into_iter()
+            .map(|script| SkillScriptPayload {
+                id: script.id,
+                path: script.path,
+                timeout_seconds: script.timeout_seconds,
+                network: script.network,
+                env: script
+                    .env
+                    .into_iter()
+                    .map(|declaration| SkillScriptEnvPayload {
+                        name: declaration.name,
+                        config_key: declaration.config_key,
+                        secret: declaration.secret,
+                    })
+                    .collect(),
+                max_stdout_bytes: script.max_stdout_bytes,
+                max_stderr_bytes: script.max_stderr_bytes,
+                max_output_bytes: script.max_output_bytes,
+                max_artifact_count: script.max_artifact_count,
+                max_artifact_bytes: script.max_artifact_bytes,
+            })
+            .collect(),
+        prerequisites,
         files,
         body_preview: view.body_preview,
         validation_error,

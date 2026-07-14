@@ -2,6 +2,7 @@ import type { CommandClient } from '@/shared/tauri/commands'
 
 export function createRejectedTestCommandClient(error: unknown): CommandClient {
   return {
+    clearSkillSecret: () => Promise.reject(error),
     deleteAgentProfile: () => Promise.reject(error),
     deleteMcpServer: () => Promise.reject(error),
     uninstallPlugin: () => Promise.reject(error),
@@ -18,6 +19,7 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     listRuntimeTools: () => Promise.reject(error),
     getSkillCatalogEntry: () => Promise.reject(error),
     getSkillCatalogFile: () => Promise.reject(error),
+    getSkillConfig: () => Promise.reject(error),
     probeProviderConfig: () => Promise.reject(error),
     refreshModelProviderCatalog: () => Promise.reject(error),
     refreshOfficialQuota: () => Promise.reject(error),
@@ -63,6 +65,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     deleteProviderCapabilityRoute: () => Promise.reject(error),
     setExecutionSettings: () => Promise.reject(error),
     setSkillEnabled: () => Promise.reject(error),
+    setSkillConfigValue: () => Promise.reject(error),
+    setSkillSecret: () => Promise.reject(error),
     subscribeMcpDiagnostics: () => Promise.reject(error),
     listenMcpDiagnosticBatches: () => Promise.reject(error),
     unsubscribeMcpDiagnostics: () => Promise.reject(error),

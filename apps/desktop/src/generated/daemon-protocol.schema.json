@@ -752,6 +752,23 @@
         {
           "type": "object",
           "properties": {
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "list_skill_reference_candidates"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "type": {
               "type": "string",
               "const": "list_memory_items"
@@ -4137,6 +4154,26 @@
         {
           "type": "object",
           "properties": {
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillReferenceCandidate"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "skill_reference_candidates"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "skills"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "items": {
               "type": "array",
               "items": {
@@ -4680,6 +4717,26 @@
     },
     "SkillId": {
       "type": "string"
+    },
+    "SkillReferenceCandidate": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "skillId": {
+          "$ref": "#/$defs/SkillId"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSourceKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "skillId",
+        "label",
+        "source"
+      ]
     },
     "SkillSourceKind": {
       "oneOf": [

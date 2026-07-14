@@ -15,8 +15,10 @@ use harness_contracts::{
     ProviderSecretsRecord, ProviderSelectionRecord, SkillId, SkillSelectionRecord, SkillStatus,
     ToolProfile, TrustLevel,
 };
-use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver};
-use harness_plugin::{PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName};
+use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver, SkillReferenceCandidateService};
+use harness_plugin::{
+    PluginCapabilities, PluginLifecycleState, PluginManifest, PluginName, SkillManifestEntry,
+};
 use jyowo_harness_sdk::{skill_config::SecretString, SkillConfigStoreError, SkillSecretStore};
 use serde::Serialize;
 use tempfile::TempDir;
@@ -206,6 +208,85 @@ async fn wrong_typed_required_value_from_global_document_marks_skill_missing() {
         Some(SkillStatus::PrerequisiteMissing { config_keys, .. })
             if config_keys == &["region".to_owned()]
     ));
+}
+
+#[tokio::test]
+async fn skill_reference_candidates_use_effective_visibility_and_prerequisites() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_project_skill("ready", "Ready body.");
+    fixture.write_project_skill_with_frontmatter(
+        "missing-config",
+        "config:\n  - key: token\n    type: string\n    required: true",
+        "Missing config body.",
+    );
+    fixture.write_project_skill_with_frontmatter(
+        "hidden",
+        "allowlist_agents: [\"00000000000000000000000002\"]",
+        "Hidden body.",
+    );
+    let package_root = fixture.workspace().join(".jyowo/skills/packages");
+    let index = ["ready", "missing-config", "hidden"]
+        .into_iter()
+        .map(|id| {
+            let content_hash = jyowo_harness_sdk::ext::hash_skill_package(&package_root.join(id))
+                .expect("hash skill package");
+            serde_json::json!({ "id": id, "contentHash": content_hash })
+        })
+        .collect::<Vec<_>>();
+    write_json(
+        &fixture.workspace().join(".jyowo/skills/index.json"),
+        &index,
+    );
+    fixture.write_project(
+        "skills.json",
+        &SkillSelectionRecord {
+            enabled: vec!["ready".into(), "missing-config".into(), "hidden".into()],
+        },
+    );
+
+    let response = SkillReferenceCandidateService::new(
+        RuntimeConfigResolver::new(fixture.config_root())
+            .with_skill_secret_store(Arc::new(MemorySecretStore::default())),
+    )
+    .list(fixture.workspace())
+    .await
+    .expect("list skill reference candidates");
+
+    assert_eq!(response.skills.len(), 1);
+    assert_eq!(response.skills[0].skill_id.0, "workspace:ready");
+    assert_eq!(response.skills[0].label, "ready");
+    assert_eq!(
+        response.skills[0].source,
+        harness_contracts::SkillSourceKind::Workspace
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn skill_reference_candidates_include_activated_plugin_skills() {
+    let fixture = RuntimeFixture::new();
+    fixture.write_global_provider_files();
+    fixture.write_global_sidecar_skill_plugin("candidate-plugin", "plugin-candidate");
+
+    let response =
+        SkillReferenceCandidateService::new(RuntimeConfigResolver::new(fixture.config_root()))
+            .list(fixture.workspace())
+            .await
+            .expect("list plugin skill reference candidates");
+
+    let candidate = response
+        .skills
+        .iter()
+        .find(|candidate| candidate.label == "plugin-candidate")
+        .expect("activated plugin skill candidate");
+    assert_eq!(candidate.skill_id.0, "plugin:plugin-candidate");
+    assert_eq!(
+        candidate.source,
+        harness_contracts::SkillSourceKind::Plugin(harness_contracts::PluginId(
+            "candidate-plugin@0.1.0".into()
+        ))
+    );
 }
 
 #[test]
@@ -1611,6 +1692,59 @@ exit 2
             .permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(binary, permissions).expect("global plugin sidecar executable");
+    }
+
+    #[cfg(unix)]
+    fn write_global_sidecar_skill_plugin(&self, name: &str, skill_name: &str) {
+        self.write_global_sidecar_plugin(name);
+        let package = self.home.join("plugins/packages").join(name);
+        let mut capabilities = PluginCapabilities::default();
+        capabilities.skills.push(SkillManifestEntry {
+            name: skill_name.to_owned(),
+        });
+        write_json(
+            &package.join("plugin.json"),
+            &PluginManifest {
+                name: PluginName::new(name).expect("plugin name"),
+                version: semver::Version::parse("0.1.0").expect("plugin version"),
+                trust_level: TrustLevel::UserControlled,
+                description: Some("global sidecar skill plugin".into()),
+                authors: Vec::new(),
+                repository: None,
+                signature: None,
+                capabilities,
+                dependencies: Vec::new(),
+                min_harness_version: semver::VersionReq::parse(">=0.0.0")
+                    .expect("version requirement"),
+            },
+        );
+        let binary = package.join(format!("jyowo-plugin-{name}"));
+        fs::write(
+            binary,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--harness-runtime" ]; then
+request=$(cat)
+case "$request" in
+  *\"method\":\"activate\"*)
+    printf '{{"jsonrpc":"2.0","id":1,"result":{{"registered_tools":[],"registered_hooks":[],"registered_skills":[],"registered_mcp":[],"occupied_slots":[]}}}}'
+    exit 0
+    ;;
+  *\"method\":\"skill.read\"*)
+    printf '%s' '{{"jsonrpc":"2.0","id":1,"result":{{"markdown":"---\nname: {skill_name}\ndescription: Plugin candidate\n---\nPlugin candidate body."}}}}'
+    exit 0
+    ;;
+  *\"method\":\"deactivate\"*)
+    printf '{{"jsonrpc":"2.0","id":1,"result":null}}'
+    exit 0
+    ;;
+esac
+fi
+exit 2
+"#
+            ),
+        )
+        .expect("global plugin skill sidecar");
     }
 
     #[cfg(unix)]

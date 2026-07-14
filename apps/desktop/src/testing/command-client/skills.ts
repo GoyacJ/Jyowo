@@ -133,6 +133,11 @@ export const fixtureSkillDetail: GetSkillDetailResponse = {
         required: true,
       },
     ],
+    prerequisites: {
+      missingConfigKeys: [],
+      missingEnvVars: [],
+    },
+    scripts: [],
     summary: fixtureWorkspaceSkill,
   },
 }

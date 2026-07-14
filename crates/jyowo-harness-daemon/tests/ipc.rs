@@ -6,13 +6,15 @@ use harness_contracts::{
     CreateTaskCommand, DaemonPermissionKind, DeltaChunk, EndReason, Event, HandshakeRequest,
     MessageContent, MessageId, NoopRedactor, PermissionOption, QueueItemId, RequestId,
     ResolvePermissionCommand, RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason,
-    ServerMessage, SessionId, StopMode, StopReason, StopRunCommand, TaskState, TenantId, ToolUseId,
-    UsageSnapshot, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES, PROTOCOL_VERSION,
+    ServerMessage, SessionId, StopMode, StopReason, StopRunCommand, TaskId, TaskState, TenantId,
+    ToolUseId, UsageSnapshot, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_BLOB_BYTES,
+    PROTOCOL_VERSION,
 };
 use harness_daemon::{
     encode_frame, IpcConnection, IpcServerConfig, JsonFrameDecoder, LocalIpcServer, MemoryService,
     PermissionRequestDraft, RecoveryService, RunCoordinatorFactory, RunningSegment,
-    RuntimeConfigResolver, StartSegmentRequest, Supervisor, SupervisorQuotas, MAX_FRAME_BYTES,
+    RuntimeConfigResolver, SkillReferenceCandidateService, StartSegmentRequest, Supervisor,
+    SupervisorQuotas, MAX_FRAME_BYTES,
 };
 use harness_engine::{RunControlHandle, SafePointDecision, TurnOutcome};
 use harness_journal::{

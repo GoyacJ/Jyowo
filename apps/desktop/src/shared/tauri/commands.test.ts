@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 import { createTestCommandClient } from '@/testing/command-client'
 import {
   clearMcpDiagnostics,
+  clearSkillSecret,
   createInvokeCommandClient,
   type DeleteAgentProfileRequest,
   deleteAgentProfile,
@@ -27,6 +28,7 @@ import {
   getProviderConfigApiKey,
   getSkillCatalogEntry,
   getSkillCatalogFile,
+  getSkillConfig,
   getSkillDetail,
   getSkillFile,
   importSkill,
@@ -69,7 +71,9 @@ import {
   setMcpServerEnabled,
   setPluginEnabled,
   setProjectPluginsEnabled,
+  setSkillConfigValue,
   setSkillEnabled,
+  setSkillSecret,
   subscribeMcpDiagnostics,
   TauriCommandPayloadError,
   type ToolProfile,
@@ -1879,6 +1883,30 @@ describe('CommandClient', () => {
                 required: true,
               },
             ],
+            prerequisites: {
+              missingConfigKeys: ['CHANGELOG_TOKEN'],
+              missingEnvVars: ['GIT_AUTHOR_NAME'],
+            },
+            scripts: [
+              {
+                env: [
+                  {
+                    configKey: 'CHANGELOG_TOKEN',
+                    name: 'CHANGELOG_TOKEN',
+                    secret: true,
+                  },
+                ],
+                id: 'collect',
+                maxArtifactBytes: 4096,
+                maxArtifactCount: 4,
+                maxOutputBytes: 8192,
+                maxStderrBytes: 2048,
+                maxStdoutBytes: 4096,
+                network: 'deny',
+                path: 'scripts/collect.sh',
+                timeoutSeconds: 30,
+              },
+            ],
             summary: {
               description: 'Creates release notes from recent changes.',
               enabled: true,
@@ -1949,6 +1977,11 @@ describe('CommandClient', () => {
       skill: {
         bodyPreview: 'Write concise release notes.',
         files: [{ path: 'SKILL.md' }, { path: 'references' }, { path: 'references/style.md' }],
+        prerequisites: {
+          missingConfigKeys: ['CHANGELOG_TOKEN'],
+          missingEnvVars: ['GIT_AUTHOR_NAME'],
+        },
+        scripts: [{ id: 'collect', network: 'deny' }],
       },
     })
     await expect(getSkillFile('skill-001', 'references/style.md', client)).resolves.toMatchObject({
@@ -1986,6 +2019,98 @@ describe('CommandClient', () => {
       id: 'skill-001',
     })
     expect(invoke).toHaveBeenCalledWith('delete_skill', { id: 'skill-001' })
+  })
+
+  it('models public skill config and secret presence without returning secret values', async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'get_skill_config') {
+        return {
+          config: {
+            secrets: { apiToken: { configured: true } },
+            values: { region: 'cn-east' },
+          },
+          declarations: [
+            {
+              description: 'Service region.',
+              key: 'region',
+              required: true,
+              secret: false,
+              valueType: 'string',
+            },
+            {
+              key: 'apiToken',
+              required: true,
+              secret: true,
+              valueType: 'string',
+            },
+          ],
+          skillId: 'user:example',
+        }
+      }
+      return {
+        configured: command !== 'clear_skill_secret',
+        key: command === 'set_skill_config_value' ? 'region' : 'apiToken',
+        skillId: 'user:example',
+      }
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    const config = await getSkillConfig('user:example', client)
+    expect(config.config).toEqual({
+      secrets: { apiToken: { configured: true } },
+      values: { region: 'cn-east' },
+    })
+    expect(JSON.stringify(config)).not.toContain('secret-value')
+    await expect(setSkillConfigValue('user:example', 'region', 'us-west', client)).resolves.toEqual(
+      {
+        configured: true,
+        key: 'region',
+        skillId: 'user:example',
+      },
+    )
+    await expect(
+      setSkillSecret('user:example', 'apiToken', 'secret-value', client),
+    ).resolves.toEqual({
+      configured: true,
+      key: 'apiToken',
+      skillId: 'user:example',
+    })
+    await expect(clearSkillSecret('user:example', 'apiToken', client)).resolves.toEqual({
+      configured: false,
+      key: 'apiToken',
+      skillId: 'user:example',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('get_skill_config', { skillId: 'user:example' })
+    expect(invoke).toHaveBeenCalledWith('set_skill_config_value', {
+      key: 'region',
+      skillId: 'user:example',
+      value: 'us-west',
+    })
+    expect(invoke).toHaveBeenCalledWith('set_skill_secret', {
+      key: 'apiToken',
+      skillId: 'user:example',
+      value: 'secret-value',
+    })
+    expect(invoke).toHaveBeenCalledWith('clear_skill_secret', {
+      key: 'apiToken',
+      skillId: 'user:example',
+    })
+  })
+
+  it('rejects secret plaintext and unknown config response fields', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        config: {
+          secrets: { apiToken: { configured: true, value: 'secret-value' } },
+          values: {},
+        },
+        declarations: [],
+        skillId: 'user:example',
+      }),
+    )
+
+    await expect(getSkillConfig('user:example', client)).rejects.toThrow(TauriCommandPayloadError)
   })
 
   it('rejects invalid skill command args and payloads', async () => {
@@ -2417,6 +2542,47 @@ describe('CommandClient', () => {
       sourceId: 'anthropic',
       version: 'main',
     })
+  })
+
+  it('accepts open non-empty catalog source ids', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      sources: [
+        {
+          description: 'Internal reviewed catalog.',
+          id: 'company-reviewed',
+          installable: true,
+          label: 'Company catalog',
+          trustLevel: 'curated',
+        },
+      ],
+    })
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(listSkillCatalogSources(client)).resolves.toHaveProperty(
+      'sources.0.id',
+      'company-reviewed',
+    )
+  })
+
+  it('rejects malformed catalog task timestamps', async () => {
+    const client = createInvokeCommandClient(
+      vi.fn().mockResolvedValue({
+        tasks: [
+          {
+            entryId: 'company:review',
+            operationId: 'operation-1',
+            percent: 10,
+            sourceId: 'company-reviewed',
+            stage: 'downloading',
+            startedAt: 'yesterday',
+            status: 'running',
+            updatedAt: '2026-07-14T12:00:00',
+          },
+        ],
+      }),
+    )
+
+    await expect(listSkillCatalogInstallTasks(client)).rejects.toThrow(TauriCommandPayloadError)
   })
 
   it('listens to validated skill catalog install progress events', async () => {

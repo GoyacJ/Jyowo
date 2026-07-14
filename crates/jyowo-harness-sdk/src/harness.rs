@@ -195,7 +195,7 @@ pub use self::types::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
     ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
     ConversationTurnRequest, HarnessOptions, McpConfig, RuntimeSkillConfig, RuntimeSkillParameter,
-    RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
+    RuntimeSkillScript, RuntimeSkillScriptEnv, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
 #[derive(Clone)]

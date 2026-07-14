@@ -267,7 +267,18 @@ describe('daemon client', () => {
       files: [{ label: 'src/main.ts', path: 'src/main.ts' }],
       memories: [],
       mcpServers: [],
-      skills: [],
+      skills: [
+        {
+          id: 'workspace:review',
+          label: 'review',
+          source: 'workspace',
+        },
+        {
+          id: 'plugin:release-notes',
+          label: 'release-notes',
+          source: { plugin: 'publisher@1.0.0' },
+        },
+      ],
       tools: [],
     }
     const invoke = vi.fn().mockResolvedValue(payload)
@@ -275,6 +286,23 @@ describe('daemon client', () => {
 
     await expect(client.listReferenceCandidates(taskId)).resolves.toEqual(payload)
     expect(invoke).toHaveBeenCalledWith('daemon_list_reference_candidates', { taskId })
+  })
+
+  it('rejects skill reference candidates without native source identity', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      artifacts: [],
+      conversations: [],
+      files: [],
+      memories: [],
+      mcpServers: [],
+      skills: [{ id: 'workspace:review', label: 'review' }],
+      tools: [],
+    })
+    const client = createDaemonClient(transport(invoke))
+
+    await expect(client.listReferenceCandidates(taskId)).rejects.toThrow(
+      'Invalid task reference candidate',
+    )
   })
 
   it('rejects absolute paths from the task reference bridge', async () => {

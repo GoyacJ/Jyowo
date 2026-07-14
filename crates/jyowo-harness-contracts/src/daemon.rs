@@ -16,8 +16,8 @@ use crate::{
     ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
     MemoryId, MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode,
     QueueItemId, RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId,
-    RunSegmentId, SessionId, SubagentId, TaskId, UpdateMemorySettingsRequest,
-    UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    RunSegmentId, SessionId, SkillId, SkillSourceKind, SubagentId, TaskId,
+    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
     UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
@@ -89,6 +89,9 @@ pub enum ClientRequest {
     ListTasks,
     ListRuntimeTools {
         workspace_root: Option<String>,
+    },
+    ListSkillReferenceCandidates {
+        task_id: TaskId,
     },
     ListMemoryItems {
         workspace_root: Option<String>,
@@ -209,6 +212,7 @@ pub enum ServerMessage {
     TaskEventPage(TaskEventPage),
     TaskList { tasks: Vec<TaskProjection> },
     RuntimeTools(ListRuntimeToolsResponse),
+    SkillReferenceCandidates(ListSkillReferenceCandidatesResponse),
     MemoryItems(ListMemoryItemsResponse),
     MemoryItem(GetMemoryItemResponse),
     MemoryUpdated(UpdateMemoryItemResponse),
@@ -275,6 +279,20 @@ pub struct RuntimeToolServiceBindingSummary {
     pub provider_id: String,
     pub operation_id: String,
     pub route_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSkillReferenceCandidatesResponse {
+    pub skills: Vec<SkillReferenceCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillReferenceCandidate {
+    pub skill_id: SkillId,
+    pub label: String,
+    pub source: SkillSourceKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

@@ -332,9 +332,8 @@ pub async fn daemon_list_reference_candidates(
     task_id: TaskId,
     state: State<'_, DaemonBridgeState>,
 ) -> Result<ListReferenceCandidatesResponse, String> {
-    let frame = state
-        .client()
-        .await?
+    let client = state.client().await?;
+    let frame = client
         .request(ClientRequest::LoadTask { task_id })
         .await
         .map_err(|error| error.to_string())?;
@@ -348,9 +347,29 @@ pub async fn daemon_list_reference_candidates(
     let workspace = projection
         .workspace
         .ok_or_else(|| "task workspace is unavailable".to_owned())?;
-    tokio::task::spawn_blocking(move || reference_candidates_from_workspace(&workspace.root))
+    let skill_frame = client
+        .request(ClientRequest::ListSkillReferenceCandidates { task_id })
         .await
-        .map_err(|error| format!("reference candidate scan failed: {error}"))?
+        .map_err(|error| error.to_string())?;
+    let skills = match skill_frame.message {
+        ServerMessage::SkillReferenceCandidates(response) => response.skills,
+        ServerMessage::Error(error) => return Err(error.message),
+        _ => return Err("daemon returned an unexpected skill reference response".into()),
+    };
+    let mut candidates =
+        tokio::task::spawn_blocking(move || reference_candidates_from_workspace(&workspace.root))
+            .await
+            .map_err(|error| format!("reference candidate scan failed: {error}"))??;
+    candidates.skills = skills
+        .into_iter()
+        .map(|skill| ReferenceCandidatePayload {
+            id: Some(skill.skill_id.0),
+            label: skill.label,
+            path: None,
+            source: Some(skill.source),
+        })
+        .collect();
+    Ok(candidates)
 }
 
 fn reference_candidates_from_workspace(
@@ -372,6 +391,7 @@ fn reference_candidates_from_workspace(
             id: None,
             label: path.clone(),
             path: Some(path),
+            source: None,
         })
         .collect();
     Ok(ListReferenceCandidatesResponse {

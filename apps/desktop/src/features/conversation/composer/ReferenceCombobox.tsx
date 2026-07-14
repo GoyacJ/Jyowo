@@ -193,6 +193,7 @@ export function referenceGroups(
             label: candidate.label,
             parameters: {},
             skillId: candidate.id ?? '',
+            source: candidate.source,
             version: 1,
           } satisfies ContextReference,
         })),

@@ -116,6 +116,102 @@ fn handshake_reports_daemon_agent_capabilities() {
     assert!(response.agent_capabilities.background_agents);
 }
 
+#[tokio::test]
+async fn skill_candidate_request_resolves_workspace_from_the_task_store() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let config_root = root.path().join("config");
+    std::fs::create_dir(&config_root).unwrap();
+    let service = Arc::new(SkillReferenceCandidateService::new(
+        RuntimeConfigResolver::new(config_root),
+    ));
+    let mut connection = IpcConnection::new(Arc::clone(&store), config())
+        .with_skill_reference_candidate_service(service);
+    connection.handle(handshake("token-a")).unwrap();
+
+    let created = connection
+        .handle(create(
+            "create-candidates",
+            CommandId::new(),
+            "candidate-task",
+        ))
+        .unwrap();
+    let ServerMessage::CommandAccepted(created) = &created[0].message else {
+        panic!("task creation must succeed");
+    };
+    let response = connection
+        .handle_async(frame(
+            "skill-candidates",
+            ClientRequest::ListSkillReferenceCandidates {
+                task_id: created.task_id,
+            },
+        ))
+        .await
+        .unwrap();
+
+    let ServerMessage::Error(error) = &response[0].message else {
+        panic!("incomplete runtime fixture must return a sanitized error");
+    };
+    assert_eq!(error.code, harness_contracts::ProtocolErrorCode::Internal);
+    assert_eq!(error.message, "skill reference candidates are unavailable");
+    assert!(!error.message.contains("config"));
+}
+
+#[tokio::test]
+async fn skill_candidate_request_rejects_missing_or_workspaceless_tasks() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(TaskStore::open(root.path().join("tasks.sqlite")).unwrap());
+    let config_root = root.path().join("config");
+    std::fs::create_dir(&config_root).unwrap();
+    let service = Arc::new(SkillReferenceCandidateService::new(
+        RuntimeConfigResolver::new(config_root),
+    ));
+    let mut connection = IpcConnection::new(Arc::clone(&store), config())
+        .with_skill_reference_candidate_service(service);
+    connection.handle(handshake("token-a")).unwrap();
+
+    let task_id = TaskId::new();
+    let missing = connection
+        .handle_async(frame(
+            "missing-task-candidates",
+            ClientRequest::ListSkillReferenceCandidates { task_id },
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &missing[0].message,
+        ServerMessage::Error(error)
+            if error.code == harness_contracts::ProtocolErrorCode::NotFound
+    ));
+
+    let command_id = CommandId::new();
+    store
+        .transact_command(
+            AcceptedCommand {
+                command_id,
+                task_id,
+                idempotency_key: "workspaceless-task".into(),
+                expected_stream_version: 0,
+                authority: TaskStore::user_authority(ClientId::new()),
+                payload: serde_json::json!({"kind": "test"}),
+            },
+            |_| Ok(vec![NewTaskEvent::task_created("legacy task")]),
+        )
+        .unwrap();
+    let workspaceless = connection
+        .handle_async(frame(
+            "workspaceless-task-candidates",
+            ClientRequest::ListSkillReferenceCandidates { task_id },
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &workspaceless[0].message,
+        ServerMessage::Error(error)
+            if error.code == harness_contracts::ProtocolErrorCode::NotFound
+    ));
+}
+
 #[test]
 fn ipc_rejects_request_ids_larger_than_the_response_envelope_reserve() {
     let root = tempfile::tempdir().unwrap();

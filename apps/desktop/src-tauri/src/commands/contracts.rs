@@ -950,7 +950,21 @@ pub struct GetSkillConfigRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetSkillConfigResponse {
     pub skill_id: String,
+    pub declarations: Vec<SkillConfigDeclarationPayload>,
     pub config: harness_contracts::SkillConfigEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillConfigDeclarationPayload {
+    pub key: String,
+    pub value_type: String,
+    pub secret: bool,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1056,6 +1070,36 @@ pub struct SkillParameterPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillScriptEnvPayload {
+    pub name: String,
+    pub config_key: String,
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillScriptPayload {
+    pub id: String,
+    pub path: String,
+    pub timeout_seconds: u64,
+    pub network: String,
+    pub env: Vec<SkillScriptEnvPayload>,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+    pub max_output_bytes: u64,
+    pub max_artifact_count: u64,
+    pub max_artifact_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPrerequisitePayload {
+    pub missing_env_vars: Vec<String>,
+    pub missing_config_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillFilePayload {
     pub path: String,
     pub name: String,
@@ -1078,6 +1122,8 @@ pub struct SkillDetailPayload {
     pub summary: SkillSummaryPayload,
     pub parameters: Vec<SkillParameterPayload>,
     pub config_keys: Vec<String>,
+    pub scripts: Vec<SkillScriptPayload>,
+    pub prerequisites: SkillPrerequisitePayload,
     pub files: Vec<SkillFilePayload>,
     pub body_preview: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1657,6 +1703,8 @@ pub struct ReferenceCandidatePayload {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<harness_contracts::SkillSourceKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

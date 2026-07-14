@@ -19,7 +19,8 @@ use tokio::task::JoinHandle;
 use super::IpcError;
 use crate::{
     AutomationScheduler, AutomationSchedulerError, MemoryService, MemoryServiceError,
-    PermissionDecisionInput, QueueCommand, Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
+    PermissionDecisionInput, QueueCommand, SkillReferenceCandidateService, Supervisor,
+    TaskMetadataMutation, ValidatedTaskCommand,
 };
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub struct IpcConnection {
     store: Arc<TaskStore>,
     config: IpcServerConfig,
     supervisor: Option<Arc<Supervisor>>,
+    skill_reference_candidates: Option<Arc<SkillReferenceCandidateService>>,
     memory_service: Option<Arc<MemoryService>>,
     automation_scheduler: Option<Arc<AutomationScheduler>>,
     client_id: Option<ClientId>,
@@ -48,6 +50,7 @@ impl IpcConnection {
             store,
             config,
             supervisor: None,
+            skill_reference_candidates: None,
             memory_service: None,
             automation_scheduler: None,
             client_id: None,
@@ -65,11 +68,21 @@ impl IpcConnection {
             store,
             config,
             supervisor: Some(supervisor),
+            skill_reference_candidates: None,
             memory_service: None,
             automation_scheduler: None,
             client_id: None,
             subscription_offset: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_skill_reference_candidate_service(
+        mut self,
+        service: Arc<SkillReferenceCandidateService>,
+    ) -> Self {
+        self.skill_reference_candidates = Some(service);
+        self
     }
 
     #[must_use]
@@ -93,6 +106,33 @@ impl IpcConnection {
         let valid_runtime_frame =
             valid_request_id(&frame.request_id) && frame.protocol_version == PROTOCOL_VERSION;
         let response = self.handle(frame)?;
+        if let ClientRequest::ListSkillReferenceCandidates { task_id } = &request {
+            if valid_runtime_frame && self.client_id.is_some() {
+                if let Some(service) = self.skill_reference_candidates.as_ref() {
+                    let workspace_root = self
+                        .store
+                        .task_projection(*task_id)?
+                        .filter(|task| !task.removed)
+                        .and_then(|task| task.workspace.map(|workspace| workspace.root));
+                    let message = match workspace_root {
+                        Some(workspace_root) => {
+                            match service.list(std::path::Path::new(&workspace_root)).await {
+                                Ok(response) => ServerMessage::SkillReferenceCandidates(response),
+                                Err(error) => {
+                                    tracing::warn!(error = %error, "skill reference candidate resolution failed");
+                                    protocol_error(
+                                        ProtocolErrorCode::Internal,
+                                        "skill reference candidates are unavailable",
+                                    )
+                                }
+                            }
+                        }
+                        None => protocol_error(ProtocolErrorCode::NotFound, "task not found"),
+                    };
+                    return Ok(vec![server_frame(Some(request_id), message)]);
+                }
+            }
+        }
         if is_memory_request(&request) && valid_runtime_frame && self.client_id.is_some() {
             if let Some(memory_service) = self.memory_service.as_ref() {
                 let message = match memory_service.handle(request).await {
@@ -381,6 +421,7 @@ impl IpcConnection {
                 "command requires the task supervisor",
             ),
             ClientRequest::ListRuntimeTools { .. }
+            | ClientRequest::ListSkillReferenceCandidates { .. }
             | ClientRequest::ListMemoryItems { .. }
             | ClientRequest::GetMemoryItem { .. }
             | ClientRequest::UpdateMemoryItem { .. }

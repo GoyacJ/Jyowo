@@ -126,6 +126,10 @@ export type ClientRequest =
       workspaceRoot?: string | null
     }
   | {
+      taskId: TypedUlid
+      type: 'list_skill_reference_candidates'
+    }
+  | {
       type: 'list_memory_items'
       workspaceRoot?: string | null
     }
@@ -528,6 +532,10 @@ export type ServerMessage =
       generation: number
       tools: RuntimeToolSummary[]
       type: 'runtime_tools'
+    }
+  | {
+      skills: SkillReferenceCandidate[]
+      type: 'skill_reference_candidates'
     }
   | {
       items: DaemonMemoryItemSummary[]
@@ -1446,6 +1454,15 @@ export interface RuntimeToolServiceBindingSummary {
   operationId: string
   providerId: string
   routeKind: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillReferenceCandidate".
+ */
+export interface SkillReferenceCandidate {
+  label: string
+  skillId: SkillId
+  source: SkillSourceKind
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

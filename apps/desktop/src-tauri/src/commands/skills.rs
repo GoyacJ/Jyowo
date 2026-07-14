@@ -56,7 +56,23 @@ pub async fn get_skill_config_with_runtime_state(
             config.values.insert(declaration.key.clone(), value.clone());
         }
     }
-    Ok(GetSkillConfigResponse { config, skill_id })
+    let declarations = view
+        .config
+        .into_iter()
+        .map(|declaration| SkillConfigDeclarationPayload {
+            key: declaration.key,
+            value_type: declaration.value_type,
+            secret: declaration.secret,
+            required: declaration.required,
+            default: declaration.default,
+            description: declaration.description,
+        })
+        .collect();
+    Ok(GetSkillConfigResponse {
+        config,
+        declarations,
+        skill_id,
+    })
 }
 
 pub async fn set_skill_config_value_with_runtime_state(
@@ -902,6 +918,8 @@ pub async fn get_skill_detail_with_runtime_state(
             summary: managed_skill_summary(record, enabled, None),
             parameters: Vec::new(),
             config_keys: Vec::new(),
+            scripts: Vec::new(),
+            prerequisites: SkillPrerequisitePayload::default(),
             files,
             body_preview: String::new(),
             validation_error: record.last_validation_error.clone(),

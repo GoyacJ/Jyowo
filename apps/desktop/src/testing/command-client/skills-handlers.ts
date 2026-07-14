@@ -15,10 +15,12 @@ import {
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
 type SkillCommandKeys =
+  | 'clearSkillSecret'
   | 'deleteSkill'
   | 'getSkillCatalogEntry'
   | 'getSkillCatalogFile'
   | 'getSkillDetail'
+  | 'getSkillConfig'
   | 'getSkillFile'
   | 'importSkill'
   | 'installSkillFromCatalog'
@@ -28,11 +30,17 @@ type SkillCommandKeys =
   | 'listSkills'
   | 'listenSkillCatalogInstallProgress'
   | 'setSkillEnabled'
+  | 'setSkillConfigValue'
+  | 'setSkillSecret'
 
 export function createSkillCommandHandlers(
   state: TestCommandClientState,
 ): TestCommandHandlers<SkillCommandKeys> {
   return {
+    async clearSkillSecret(skillId, key) {
+      await wait(state.options.delayMs)
+      return { configured: false, key, skillId }
+    },
     async deleteSkill(id) {
       await wait(state.options.delayMs)
       return { id, status: 'deleted' }
@@ -61,6 +69,14 @@ export function createSkillCommandHandlers(
           summary,
         },
       } satisfies GetSkillDetailResponse
+    },
+    async getSkillConfig(skillId) {
+      await wait(state.options.delayMs)
+      return {
+        config: { secrets: {}, values: {} },
+        declarations: [],
+        skillId,
+      }
     },
     async getSkillFile(_id, path) {
       await wait(state.options.delayMs)
@@ -137,6 +153,14 @@ export function createSkillCommandHandlers(
           status: enabled ? 'ready' : 'disabled',
         },
       }
+    },
+    async setSkillConfigValue(skillId, key) {
+      await wait(state.options.delayMs)
+      return { configured: true, key, skillId }
+    },
+    async setSkillSecret(skillId, key) {
+      await wait(state.options.delayMs)
+      return { configured: true, key, skillId }
     },
   }
 }

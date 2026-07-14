@@ -585,6 +585,33 @@ fn runtime_skill_view(
                 description: config.description.clone(),
             })
             .collect(),
+        scripts: skill
+            .frontmatter
+            .scripts
+            .iter()
+            .map(|script| super::RuntimeSkillScript {
+                id: script.id.clone(),
+                path: script.path.to_string_lossy().into_owned(),
+                timeout_seconds: script.timeout_seconds,
+                network: match script.network {
+                    harness_skill::SkillScriptNetworkPolicy::Deny => "deny".to_owned(),
+                },
+                env: script
+                    .env
+                    .iter()
+                    .map(|(name, declaration)| super::RuntimeSkillScriptEnv {
+                        name: name.clone(),
+                        config_key: declaration.config.clone(),
+                        secret: declaration.secret,
+                    })
+                    .collect(),
+                max_stdout_bytes: script.max_stdout_bytes,
+                max_stderr_bytes: script.max_stderr_bytes,
+                max_output_bytes: script.max_output_bytes,
+                max_artifact_count: script.max_artifact_count,
+                max_artifact_bytes: script.max_artifact_bytes,
+            })
+            .collect(),
         config_keys: skill
             .frontmatter
             .config
