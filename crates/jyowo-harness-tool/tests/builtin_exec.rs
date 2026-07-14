@@ -354,6 +354,12 @@ async fn bash_budget_overflow_stops_before_later_stdout_chunks_are_consumed() {
 #[tokio::test]
 async fn web_search_uses_network_permission_and_backend() {
     let tool = WebSearchTool::default();
+    assert_eq!(
+        tool.descriptor().required_capabilities,
+        vec![ToolCapability::Custom(
+            WEB_SEARCH_BACKEND_CAPABILITY.to_owned()
+        )]
+    );
     let input = json!({
         "query": "jyowo harness",
         "max_results": 1,

@@ -591,7 +591,7 @@ impl Session {
                 permission_actor_source: permission_actor_source.clone(),
                 interactivity: self.options.interactivity,
                 pending_deferred_tools_delta,
-                context_seed: projection.messages.clone(),
+                context_seed: projection.model_context_messages(),
                 #[cfg(feature = "recall-memory")]
                 memory_thread_settings: self.options.memory_thread_settings.clone(),
                 user_id: self.options.user_id.clone(),

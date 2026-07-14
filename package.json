@@ -18,6 +18,7 @@
     "check:release-version": "node --test scripts/check-release-version.test.mjs && node scripts/check-release-version.mjs",
     "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs",
     "check:tauri-updater": "node --test scripts/tauri-updater-policy.test.mjs",
+    "check:tauri-window": "node --test scripts/tauri-window-policy.test.mjs",
     "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",
     "check:daemon-agent-capability-boundary": "node --test scripts/check-daemon-agent-capability-boundary.test.mjs && node scripts/check-daemon-agent-capability-boundary.mjs",
     "check:tauri-command-registration": "node --test scripts/check-tauri-command-registration.test.mjs && node scripts/check-tauri-command-registration.mjs",
@@ -31,10 +32,10 @@
     "check:rust": "pnpm check:rust-deps && pnpm build:daemon-sidecar && cargo fmt --all --check && cargo check --workspace && cargo test --workspace && cargo test -p jyowo-harness-memory --features testing --test store_audit && cargo test -p jyowo-harness-tool --features builtin-toolset --test memory_tool && cargo test -p jyowo-harness-sdk --features testing memory_tool_response_preserves_action_plan_id",
     "check:frontend:fast": "pnpm -C apps/desktop typecheck && pnpm -C apps/desktop lint && pnpm -C apps/desktop test",
     "check:rust:fast": "pnpm check:daemon-sidecar && cargo fmt --all --check && cargo test -p jyowo-harness-contracts -p jyowo-desktop-shell",
-    "check:quick": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:test-architecture && pnpm check:tauri-command-registration && pnpm check:no-legacy-conversation-surface && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-agent-capability-boundary && pnpm check:design-tokens && pnpm check:daemon-sidecar && pnpm check:frontend:fast && pnpm check:rust:fast",
+    "check:quick": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:tauri-window && pnpm check:test-architecture && pnpm check:tauri-command-registration && pnpm check:no-legacy-conversation-surface && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-agent-capability-boundary && pnpm check:design-tokens && pnpm check:daemon-sidecar && pnpm check:frontend:fast && pnpm check:rust:fast",
     "check:desktop": "pnpm -C apps/desktop check",
     "check:desktop:full": "pnpm build:daemon-sidecar && pnpm -C apps/desktop check:full",
-    "check": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:test-architecture && pnpm check:tauri-command-registration && pnpm check:no-legacy-conversation-surface && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-agent-capability-boundary && pnpm check:daemon-sidecar && pnpm check:desktop && pnpm check:tool-network-broker-boundary && pnpm check:rust",
+    "check": "pnpm check:release-version && pnpm check:release-workflow && pnpm check:tauri-updater && pnpm check:tauri-window && pnpm check:test-architecture && pnpm check:tauri-command-registration && pnpm check:no-legacy-conversation-surface && pnpm check:agent-orchestration-no-fakes && pnpm check:daemon-agent-capability-boundary && pnpm check:daemon-sidecar && pnpm check:desktop && pnpm check:tool-network-broker-boundary && pnpm check:rust",
     "tauri": "pnpm build:daemon-sidecar && tauri"
   },
   "devDependencies": {

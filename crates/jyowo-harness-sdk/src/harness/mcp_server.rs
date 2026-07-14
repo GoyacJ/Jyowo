@@ -1,5 +1,6 @@
 use super::session_runtime::{
-    conversation_run_options_hash, run_model_snapshot, session_options_for_run,
+    conversation_run_options_hash, run_model_snapshot,
+    session_created_after_mcp_activation_prelude, session_options_for_run,
 };
 use super::*;
 
@@ -468,8 +469,8 @@ impl Harness {
                 "session not found: {session_id}"
             )));
         }
-        let Some(Event::SessionCreated(created)) =
-            envelopes.first().map(|envelope| &envelope.payload)
+        let Some((_, created)) = session_created_after_mcp_activation_prelude(&envelopes)
+            .map_err(|error| McpServerError::Internal(error.to_string()))?
         else {
             return Err(McpServerError::Internal(
                 "session event stream does not start with SessionCreated".to_owned(),

@@ -65,7 +65,10 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                             }
                         }
                     }
-                    Err(error) => yield stream_error(error, ErrorClass::Fatal),
+                    Err(error) => {
+                        yield stream_error(error, ErrorClass::Fatal);
+                        return;
+                    }
                 },
                 Err(error) => {
                     yield stream_error(
@@ -77,10 +80,15 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
             }
         }
 
-        for event in parser.finish() {
-            for mapped in state.map_event(&event.data) {
-                yield mapped;
+        match parser.finish() {
+            Ok(events) => {
+                for event in events {
+                    for mapped in state.map_event(&event.data) {
+                        yield mapped;
+                    }
+                }
             }
+            Err(error) => yield stream_error(error, ErrorClass::Fatal),
         }
     })
 }

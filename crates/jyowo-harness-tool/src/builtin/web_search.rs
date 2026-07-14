@@ -62,7 +62,7 @@ impl WebSearchTool {
                 true,
                 false,
                 32_000,
-                Vec::new(),
+                vec![web_search_backend_capability()],
                 super::object_schema(
                     &["query"],
                     json!({

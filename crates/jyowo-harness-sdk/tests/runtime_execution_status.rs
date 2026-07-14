@@ -47,6 +47,38 @@ async fn runtime_execution_status_requires_broker_for_web_fetch() {
 }
 
 #[tokio::test]
+async fn unavailable_web_search_is_not_exposed_to_the_model() {
+    let workspace = std::env::temp_dir().join(format!(
+        "jyowo-runtime-execution-status-{}",
+        SessionId::new()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let model = Arc::new(TestModelProvider::default());
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model_arc(model.clone())
+        .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+        .with_sandbox(UnrestrictedProcessSandbox)
+        .build()
+        .await
+        .expect("harness should build");
+    let session = harness
+        .create_session(SessionOptions::new(&workspace))
+        .await
+        .expect("session should be created");
+
+    session.run_turn("hello").await.expect("turn should run");
+
+    let requests = model.requests().await;
+    let tools = requests[0].tools.as_deref().unwrap_or_default();
+    assert!(
+        tools.iter().all(|tool| tool.name != "WebSearch"),
+        "WebSearch must be filtered before the model request when its backend is absent"
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
 async fn runtime_execution_status_reports_routing_candidate_backend_ids() {
     let child_a: Arc<dyn SandboxBackend> = Arc::new(NamedStatusSandbox::new("local-process"));
     let child_b: Arc<dyn SandboxBackend> = Arc::new(NamedStatusSandbox::new("docker-process"));

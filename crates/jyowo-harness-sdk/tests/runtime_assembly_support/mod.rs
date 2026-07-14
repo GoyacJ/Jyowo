@@ -13,14 +13,14 @@ pub use harness_contracts::{
     ConversationAttachmentReference, ConversationContextReference, ConversationTurnInput, Decision,
     DecisionScope, DeferPolicy, DeferredToolHint, EndReason, Event, FallbackPolicy, HookEventKind,
     InteractivityLevel, ManifestValidationFailure as ContractManifestValidationFailure,
-    McpServerId, McpServerSource, MemoryError, MemoryId, MemoryKind, MemorySessionCtx,
-    MemorySource, MemoryVisibility, MessageId, MessagePart, ModelError, NetworkAccess,
-    PermissionMode, PermissionSubject, PluginId, ProviderRestriction, RedactRules, Redactor,
-    RequestId, RuleSource, SessionCreatedEvent, SessionSummaryView, Severity, SnapshotId,
-    SteeringBody, SteeringKind, SteeringSource, TeamId, TenantId, ToolActionPlan,
-    ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
-    ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties, ToolResult, ToolSearchMode,
-    ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
+    McpActivationFailedEvent, McpActivationFailureReason, McpServerId, McpServerSource,
+    MemoryError, MemoryId, MemoryKind, MemorySessionCtx, MemorySource, MemoryVisibility, MessageId,
+    MessagePart, ModelError, NetworkAccess, PermissionMode, PermissionSubject, PluginId,
+    ProviderRestriction, RedactRules, Redactor, RequestId, RuleSource, SessionCreatedEvent,
+    SessionSummaryView, Severity, SnapshotId, SteeringBody, SteeringKind, SteeringSource, TeamId,
+    TenantId, ToolActionPlan, ToolDeferredPoolChangedEvent, ToolDescriptor, ToolError,
+    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolPoolChangeSource, ToolProfile, ToolProperties,
+    ToolResult, ToolSearchMode, ToolUseId, TrustLevel, UsageSnapshot, WorkspaceAccess,
 };
 pub use harness_hook::HookRegistry;
 pub use harness_journal::{EventStore, ReplayCursor};

@@ -1062,28 +1062,6 @@ pub(crate) fn spawn_mcp_diagnostic_subscription(
     })
 }
 
-pub(crate) async fn mcp_config_from_records(
-    records: Vec<McpServerConfigRecord>,
-    default_session_id: SessionId,
-    default_agent_id: AgentId,
-    diagnostic_store: Arc<dyn McpDiagnosticStore>,
-    authorization_service: Arc<harness_execution::AuthorizationService>,
-    workdir_root: &Path,
-) -> Result<McpConfig, CommandErrorPayload> {
-    mcp_config_from_layered_records(
-        records
-            .into_iter()
-            .map(|record| (record, McpConfigLayer::Global))
-            .collect(),
-        default_session_id,
-        default_agent_id,
-        diagnostic_store,
-        authorization_service,
-        workdir_root,
-    )
-    .await
-}
-
 pub(crate) fn effective_mcp_records(
     global: Vec<McpServerConfigRecord>,
     project: Vec<McpServerConfigRecord>,
@@ -1152,22 +1130,6 @@ pub(crate) async fn mcp_config_from_layered_records(
     })
 }
 
-pub(crate) async fn register_mcp_record_with_settings_runtime(
-    record: &McpServerConfigRecord,
-    settings_runtime: &DesktopSettingsRuntime,
-    default_session_id: SessionId,
-    state: &DesktopRuntimeState,
-) -> Result<McpServerSummaryPayload, CommandErrorPayload> {
-    register_mcp_record_with_settings_runtime_for_layer(
-        record,
-        McpConfigLayer::Global,
-        settings_runtime,
-        default_session_id,
-        state,
-    )
-    .await
-}
-
 pub(crate) async fn register_mcp_record_with_settings_runtime_for_layer(
     record: &McpServerConfigRecord,
     config_layer: McpConfigLayer,
@@ -1220,32 +1182,6 @@ fn mcp_workdir_root_for_state(state: &DesktopRuntimeState) -> &Path {
     state
         .project_workspace_root()
         .unwrap_or_else(|| state.conversation_cwd())
-}
-
-pub(crate) async fn register_mcp_record_with_registry(
-    record: &McpServerConfigRecord,
-    registry: &McpRegistry,
-    default_session_id: SessionId,
-    default_agent_id: AgentId,
-    diagnostic_store: Arc<dyn McpDiagnosticStore>,
-    authorization_service: Arc<harness_execution::AuthorizationService>,
-    workspace_root: &Path,
-    interactivity: InteractivityLevel,
-    allow_config_error_as_failed: bool,
-) -> Result<McpServerId, CommandErrorPayload> {
-    register_mcp_record_with_registry_for_layer(
-        record,
-        McpConfigLayer::Global,
-        registry,
-        default_session_id,
-        default_agent_id,
-        diagnostic_store,
-        authorization_service,
-        workspace_root,
-        interactivity,
-        allow_config_error_as_failed,
-    )
-    .await
 }
 
 pub(crate) async fn register_mcp_record_with_registry_for_layer(
@@ -1427,13 +1363,6 @@ pub(crate) async fn remove_mcp_server_from_settings_runtime(
             Ok(())
         }
     }
-}
-
-pub(crate) fn mcp_server_spec_from_record(
-    record: &McpServerConfigRecord,
-    workspace_root: &Path,
-) -> Result<McpServerSpec, CommandErrorPayload> {
-    mcp_server_spec_from_record_for_layer(record, workspace_root, McpConfigLayer::Global)
 }
 
 pub(crate) fn mcp_server_spec_from_record_for_layer(

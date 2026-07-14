@@ -532,7 +532,10 @@ fn response_to_stream(response: reqwest::Response) -> ModelStream {
                             }
                         }
                     }
-                    Err(error) => yield stream_error(error, ErrorClass::Fatal),
+                    Err(error) => {
+                        yield stream_error(error, ErrorClass::Fatal);
+                        return;
+                    }
                 },
                 Err(error) => {
                     yield stream_error(ModelError::ProviderUnavailable(error.to_string()), ErrorClass::Transient);
@@ -540,10 +543,15 @@ fn response_to_stream(response: reqwest::Response) -> ModelStream {
                 }
             }
         }
-        for event in parser.finish() {
-            for mapped in state.map_chunk(&event.data) {
-                yield mapped;
+        match parser.finish() {
+            Ok(events) => {
+                for event in events {
+                    for mapped in state.map_chunk(&event.data) {
+                        yield mapped;
+                    }
+                }
             }
+            Err(error) => yield stream_error(error, ErrorClass::Fatal),
         }
     })
 }
@@ -690,39 +698,26 @@ struct SseEvent {
 
 #[derive(Debug, Default)]
 struct IncrementalSseParser {
-    buffer: String,
+    decoder: crate::sse::IncrementalSseDecoder,
 }
 
 impl IncrementalSseParser {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, ModelError> {
-        let decoded = std::str::from_utf8(chunk)
-            .map_err(|_| ModelError::UnexpectedResponse("invalid UTF-8 in SSE stream".to_owned()))?
-            .replace("\r\n", "\n");
-        self.buffer.push_str(&decoded);
-        Ok(self.drain_complete_frames())
+        Ok(self
+            .decoder
+            .push(chunk)?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 
-    fn finish(&mut self) -> Vec<SseEvent> {
-        let mut events = self.drain_complete_frames();
-        if !self.buffer.trim().is_empty() {
-            let frame = std::mem::take(&mut self.buffer);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
-    }
-
-    fn drain_complete_frames(&mut self) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..end].to_owned();
-            self.buffer.drain(..end + 2);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
+    fn finish(&mut self) -> Result<Vec<SseEvent>, ModelError> {
+        Ok(self
+            .decoder
+            .finish()?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 }
 

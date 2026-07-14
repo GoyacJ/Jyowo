@@ -484,10 +484,15 @@ fn dashscope_response_to_stream(response: reqwest::Response) -> ModelStream {
                 }
             }
         }
-        for event in parser.finish() {
-            for mapped in state.map_event(&event) {
-                yield mapped;
+        match parser.finish() {
+            Ok(events) => {
+                for event in events {
+                    for mapped in state.map_event(&event) {
+                        yield mapped;
+                    }
+                }
             }
+            Err(error) => yield stream_error(error, ErrorClass::Fatal),
         }
         if state.terminal_seen {
             for event in state.finish() {
@@ -506,39 +511,26 @@ fn dashscope_json_to_stream(value: Value) -> Result<ModelStream, ModelError> {
 
 #[derive(Default)]
 struct SseParser {
-    buffer: String,
+    decoder: crate::sse::IncrementalSseDecoder,
 }
 
 impl SseParser {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, ModelError> {
-        let decoded = std::str::from_utf8(chunk)
-            .map_err(|_| ModelError::UnexpectedResponse("invalid UTF-8 in SSE stream".to_owned()))?
-            .replace("\r\n", "\n");
-        self.buffer.push_str(&decoded);
-        Ok(self.drain())
+        Ok(self
+            .decoder
+            .push(chunk)?
+            .into_iter()
+            .filter_map(|frame| parse_sse_frame(&frame))
+            .collect())
     }
 
-    fn finish(&mut self) -> Vec<String> {
-        let mut events = self.drain();
-        if !self.buffer.trim().is_empty() {
-            let frame = std::mem::take(&mut self.buffer);
-            if let Some(data) = parse_sse_frame(&frame) {
-                events.push(data);
-            }
-        }
-        events
-    }
-
-    fn drain(&mut self) -> Vec<String> {
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..end].to_owned();
-            self.buffer.drain(..end + 2);
-            if let Some(data) = parse_sse_frame(&frame) {
-                events.push(data);
-            }
-        }
-        events
+    fn finish(&mut self) -> Result<Vec<String>, ModelError> {
+        Ok(self
+            .decoder
+            .finish()?
+            .into_iter()
+            .filter_map(|frame| parse_sse_frame(&frame))
+            .collect())
     }
 }
 

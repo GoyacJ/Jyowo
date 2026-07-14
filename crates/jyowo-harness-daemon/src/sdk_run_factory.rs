@@ -206,7 +206,6 @@ fn apply_runtime_snapshot<M, S, SB>(
 async fn mcp_config_from_runtime_snapshot(
     snapshot: &RuntimeConfigSnapshot,
     authorization_service: Arc<AuthorizationService>,
-    event_store: Arc<dyn EventStore>,
     execution_root: &Path,
     session_id: harness_contracts::SessionId,
     run_id: RunId,
@@ -218,8 +217,6 @@ async fn mcp_config_from_runtime_snapshot(
         session_id,
         run_id,
     );
-    let event_writer =
-        spawn_daemon_mcp_event_writer(event_receiver, event_store, session_id, Some(run_id));
     let event_sink: Arc<dyn McpEventSink> = daemon_event_sink.clone();
     let build_result = async {
         let mut server_ids_to_inject = Vec::new();
@@ -289,17 +286,14 @@ async fn mcp_config_from_runtime_snapshot(
                 event_sink,
             },
             event_sink: daemon_event_sink,
-            event_writer: Some(event_writer),
+            event_receiver: Some(event_receiver),
+            event_writer: None,
             shutdown_complete: false,
         }),
         Err(error) => {
             let _ = registry.shutdown_all().await;
             daemon_event_sink.close();
-            let _ = shutdown_daemon_mcp_event_writer(
-                event_writer,
-                DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT,
-            )
-            .await;
+            drop(event_receiver);
             Err(error)
         }
     }
@@ -450,6 +444,7 @@ async fn register_daemon_mcp_activation_failure(
 struct DaemonMcpRuntimeGuard {
     config: McpConfig,
     event_sink: Arc<DaemonMcpEventSink>,
+    event_receiver: Option<mpsc::Receiver<Event>>,
     event_writer: Option<tokio::task::JoinHandle<Result<(), SdkRunFactoryError>>>,
     shutdown_complete: bool,
 }
@@ -459,9 +454,27 @@ impl DaemonMcpRuntimeGuard {
         self.config.clone()
     }
 
+    fn start_event_writer(
+        &mut self,
+        event_store: Arc<dyn EventStore>,
+        session_id: harness_contracts::SessionId,
+        run_id: RunId,
+    ) {
+        let Some(receiver) = self.event_receiver.take() else {
+            return;
+        };
+        self.event_writer = Some(spawn_daemon_mcp_event_writer(
+            receiver,
+            event_store,
+            session_id,
+            Some(run_id),
+        ));
+    }
+
     async fn shutdown(mut self) -> Result<(), SdkRunFactoryError> {
         let registry_result = self.config.registry.shutdown_all().await;
         self.event_sink.close();
+        drop(self.event_receiver.take());
         let writer_result = match self.event_writer.take() {
             Some(writer) => {
                 shutdown_daemon_mcp_event_writer(writer, DAEMON_MCP_EVENT_WRITER_FLUSH_TIMEOUT)
@@ -485,11 +498,13 @@ impl Drop for DaemonMcpRuntimeGuard {
         }
         let registry = self.config.registry.clone();
         let event_sink = Arc::clone(&self.event_sink);
+        let event_receiver = self.event_receiver.take();
         let writer = self.event_writer.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = registry.shutdown_all().await;
                 event_sink.close();
+                drop(event_receiver);
                 if let Some(writer) = writer {
                     let _ = shutdown_daemon_mcp_event_writer(
                         writer,
@@ -500,9 +515,11 @@ impl Drop for DaemonMcpRuntimeGuard {
             });
         } else if let Some(writer) = writer {
             event_sink.close();
+            drop(event_receiver);
             writer.abort();
         } else {
             event_sink.close();
+            drop(event_receiver);
         }
     }
 }
@@ -978,13 +995,13 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
             request.spec.permission_mode,
             execution_defaults.permission_mode,
         );
-        let mcp_runtime = mcp_config_from_runtime_snapshot(
+        let child_run_id = request.child_run_id;
+        let mut mcp_runtime = mcp_config_from_runtime_snapshot(
             &self.runtime.runtime_config,
             Arc::clone(&authorization.service),
-            Arc::clone(&self.context.event_store),
             &workspace_root,
             self.context.session_id,
-            request.child_run_id,
+            child_run_id,
             permission_mode,
         )
         .await
@@ -1042,6 +1059,11 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
                 .prepare_external_subagent_engine(options, run_options)
                 .await
                 .map_err(|error| SubagentError::Engine(error.to_string()))?;
+            mcp_runtime.start_event_writer(
+                Arc::clone(&self.context.event_store),
+                self.context.session_id,
+                child_run_id,
+            );
             engine_factory.run_child_engine(request).await
         }
         .await;
@@ -1214,10 +1236,9 @@ impl SdkRunCoordinatorFactory {
             Arc::clone(&redactor),
             Arc::clone(&runtime_config.provider_credential_resolver),
         )?;
-        let mcp_runtime = mcp_config_from_runtime_snapshot(
+        let mut mcp_runtime = mcp_config_from_runtime_snapshot(
             &runtime_config,
             Arc::clone(&authorization.service),
-            Arc::clone(&event_store),
             &workspace_root,
             request.input.session_id,
             request.input.run_id,
@@ -1313,6 +1334,11 @@ impl SdkRunCoordinatorFactory {
                 .open_or_create_conversation_session(session_options.clone())
                 .await
                 .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))?;
+            mcp_runtime.start_event_writer(
+                Arc::clone(&event_store),
+                request.input.session_id,
+                request.input.run_id,
+            );
 
             let mut input = ConversationTurnInput::ask(request.input.content);
             input.client_message_id = Some(request.segment_id.to_string());
@@ -2007,13 +2033,15 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
             tokio::spawn(async move {
                 let task_id = request.task_id;
                 let segment_id = request.segment_id;
+                let session_id = request.input.session_id;
+                let run_id = request.input.run_id;
                 let execution_control = control.clone();
                 let result = Self::execute_segment(
                     Arc::clone(&store),
                     runtime_configs,
                     blob_root,
                     permissions,
-                    redactor,
+                    Arc::clone(&redactor),
                     provider_continuation_store,
                     request,
                     workspace_tools,
@@ -2028,8 +2056,27 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                         %task_id,
                         %segment_id,
                         error_kind = error.diagnostic_kind(),
+                        error = %error,
                         "SDK segment failed"
                     );
+                    if let Err(diagnostic_error) = append_segment_failure_diagnostic(
+                        Arc::clone(&store),
+                        task_id,
+                        segment_id,
+                        session_id,
+                        run_id,
+                        redactor,
+                        &error,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            %task_id,
+                            %segment_id,
+                            error = %diagnostic_error,
+                            "SDK segment failure diagnostic append failed"
+                        );
+                    }
                     true
                 } else {
                     false
@@ -2077,6 +2124,49 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
         }
         Self::running_segment(key.1, shared)
     }
+}
+
+async fn append_segment_failure_diagnostic(
+    store: Arc<TaskStore>,
+    task_id: TaskId,
+    segment_id: RunSegmentId,
+    session_id: harness_contracts::SessionId,
+    run_id: RunId,
+    redactor: Arc<dyn Redactor>,
+    error: &SdkRunFactoryError,
+) -> Result<(), String> {
+    let event_store =
+        TaskEventStoreAdapter::new(store, task_id, TenantId::SINGLE, session_id, redactor)
+            .with_run_segment_id(segment_id);
+    let has_session_created = event_store
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .map_err(|read_error| read_error.to_string())?
+        .any(|envelope| async move { matches!(envelope.payload, Event::SessionCreated(_)) })
+        .await;
+    if !has_session_created {
+        return Ok(());
+    }
+    event_store
+        .append_with_metadata(
+            TenantId::SINGLE,
+            session_id,
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            &[Event::UnexpectedError(
+                harness_contracts::UnexpectedErrorEvent {
+                    session_id: Some(session_id),
+                    run_id: Some(run_id),
+                    error: error.to_string(),
+                    at: Utc::now(),
+                },
+            )],
+        )
+        .await
+        .map(|_| ())
+        .map_err(|append_error| append_error.to_string())
 }
 
 fn run_terminal_reason(
@@ -3173,6 +3263,7 @@ mod tests {
                 event_sink: event_sink.clone(),
             },
             event_sink,
+            event_receiver: None,
             event_writer: Some(event_writer),
             shutdown_complete: false,
         };
@@ -3221,6 +3312,7 @@ mod tests {
                 event_sink: event_sink.clone(),
             },
             event_sink,
+            event_receiver: None,
             event_writer: Some(event_writer),
             shutdown_complete: false,
         };
@@ -3886,6 +3978,14 @@ mod tests {
                 ..
             })
         ));
+
+        let task_events = fixture
+            .store
+            .task_events_after(fixture.task_id, 0, 64)
+            .expect("read failed segment diagnostics");
+        assert!(task_events
+            .iter()
+            .all(|event| event.event_type != "engine.unexpected_error"));
     }
 
     #[test]
@@ -4552,6 +4652,65 @@ mod tests {
         let encoded = serde_json::to_string(&run_started.payload).unwrap();
         assert!(encoded.contains(&session_id.to_string()));
         assert!(encoded.contains(&run_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn mcp_activation_diagnostic_is_flushed_after_session_creation() {
+        let fixture = Fixture::new();
+        fixture.write_provider_config();
+        write_json(
+            &fixture._root.path().join("config/mcp-servers.json"),
+            &json!([{
+                "enabled": true,
+                "required": false,
+                "displayName": "environment fixture",
+                "id": "optional-env",
+                "scope": "global",
+                "transport": {
+                    "kind": "http",
+                    "url": "https://example.com",
+                    "headers_from_env": [{
+                        "key": "X-Test",
+                        "envVar": "JYOWO_MISSING_MCP_CREDENTIAL_OPTIONAL_ENV"
+                    }]
+                }
+            }]),
+        );
+        crate::RuntimeConfigResolver::new(fixture._root.path().join("config"))
+            .resolve(&fixture.workspace_root, Some("selected"))
+            .expect("fixture runtime configuration");
+        let running = fixture.factory.spawn_idempotent(
+            fixture.request(Some("selected")),
+            fixture.workspace_tools.clone(),
+            Arc::new(UnusedSubagentRunner),
+            unused_agent_starters(),
+        );
+
+        let terminal = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            running.into_events().recv(),
+        )
+        .await
+        .expect("fixture run should terminate");
+
+        let task_events = fixture
+            .store
+            .task_events_after(fixture.task_id, 0, 256)
+            .expect("read task events");
+        let event_types = task_events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>();
+        let session_created = task_events
+            .iter()
+            .position(|event| event.event_type == "engine.session_created")
+            .unwrap_or_else(|| panic!("terminal={terminal:?}, event_types={event_types:?}"));
+        let mcp_diagnostic = task_events
+            .iter()
+            .position(|event| event.event_type == "engine.mcp_activation_failed")
+            .expect("MCP activation diagnostic");
+
+        assert!(session_created < mcp_diagnostic);
     }
 
     #[tokio::test]

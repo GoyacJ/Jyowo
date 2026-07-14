@@ -3,6 +3,7 @@ use futures::StreamExt;
 use harness_contracts::{ModelError, StopReason, UsageSnapshot};
 use serde_json::Value;
 
+use crate::sse::IncrementalSseDecoder;
 use crate::{
     ContentDelta, ContentType, ErrorClass, ErrorHints, ModelStream, ModelStreamEvent, ThinkingDelta,
 };
@@ -15,39 +16,26 @@ pub(super) struct SseEvent {
 
 #[derive(Debug, Default)]
 pub(super) struct IncrementalSseParser {
-    buffer: String,
+    decoder: IncrementalSseDecoder,
 }
 
 impl IncrementalSseParser {
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, ModelError> {
-        let decoded = std::str::from_utf8(chunk)
-            .map_err(|_| ModelError::UnexpectedResponse("invalid UTF-8 in SSE stream".to_owned()))?
-            .replace("\r\n", "\n");
-        self.buffer.push_str(&decoded);
-        Ok(self.drain_complete_frames())
+        Ok(self
+            .decoder
+            .push(chunk)?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 
-    pub(super) fn finish(&mut self) -> Vec<SseEvent> {
-        let mut events = self.drain_complete_frames();
-        if !self.buffer.trim().is_empty() {
-            let frame = std::mem::take(&mut self.buffer);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
-    }
-
-    fn drain_complete_frames(&mut self) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..end].to_owned();
-            self.buffer.drain(..end + 2);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
+    pub(super) fn finish(&mut self) -> Result<Vec<SseEvent>, ModelError> {
+        Ok(self
+            .decoder
+            .finish()?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 }
 
@@ -67,6 +55,7 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
                     }
                     Err(error) => {
                         yield stream_error(error, ErrorClass::Fatal, None);
+                        return;
                     }
                 },
                 Err(error) => {
@@ -80,10 +69,15 @@ pub(super) fn response_to_stream(response: reqwest::Response) -> ModelStream {
             }
         }
 
-        for event in parser.finish() {
-            for mapped in map_sse_event(event) {
-                yield mapped;
+        match parser.finish() {
+            Ok(events) => {
+                for event in events {
+                    for mapped in map_sse_event(event) {
+                        yield mapped;
+                    }
+                }
             }
+            Err(error) => yield stream_error(error, ErrorClass::Fatal, None),
         }
     })
 }
@@ -380,7 +374,7 @@ mod tests {
             .expect("partial frame should buffer");
 
         assert_eq!(
-            parser.finish(),
+            parser.finish().expect("partial frame should flush"),
             vec![SseEvent {
                 event: Some("message_stop".to_owned()),
                 data: "{\"type\":\"message_stop\"}".to_owned(),

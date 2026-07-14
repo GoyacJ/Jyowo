@@ -46,6 +46,7 @@ pub mod qwen;
 pub mod registry;
 #[cfg(feature = "doubao")]
 pub mod seedance;
+mod sse;
 pub mod stream_aggregator;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

@@ -815,6 +815,70 @@ async fn conversation_facade_delete_cancels_active_run_and_blocks_late_appends()
 }
 
 #[tokio::test]
+async fn conversation_facade_recovers_mcp_activation_diagnostic_prelude() {
+    let workspace = unique_workspace("sdk-conversation-mcp-diagnostic-prelude");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let store = Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)));
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(store.clone())
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let options = SessionOptions::new(&workspace).with_session_id(session_id);
+
+    store
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[Event::McpActivationFailed(McpActivationFailedEvent {
+                session_id: Some(session_id),
+                run_id: Some(run_id),
+                server_id: McpServerId("optional-server".to_owned()),
+                server_source: McpServerSource::User,
+                required: false,
+                reason: McpActivationFailureReason::CredentialUnavailable,
+                at: harness_contracts::now(),
+            })],
+        )
+        .await
+        .expect("diagnostic prelude should be written");
+
+    harness
+        .open_or_create_conversation_session(options.clone())
+        .await
+        .expect("diagnostic prelude must not block session creation");
+    harness
+        .submit_conversation_turn(conversation_turn_request(
+            options,
+            ConversationTurnInput::ask("hello"),
+            None,
+            None,
+            None,
+        ))
+        .await
+        .expect("diagnostic prelude must not block session resume");
+
+    let events = store
+        .read(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .expect("session events should be readable")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(
+        events.first(),
+        Some(Event::McpActivationFailed(_))
+    ));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::SessionCreated(_))));
+}
+
+#[tokio::test]
 async fn conversation_facade_hides_and_deletes_malformed_session_streams() {
     let workspace = unique_workspace("sdk-conversation-malformed-stream");
     std::fs::create_dir_all(&workspace).unwrap();

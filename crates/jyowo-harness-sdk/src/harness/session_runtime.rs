@@ -12,6 +12,23 @@ pub(super) struct SessionEngine {
     pub(super) runtime_prompt_context_hash: [u8; 32],
 }
 
+pub(super) fn session_created_after_mcp_activation_prelude(
+    envelopes: &[EventEnvelope],
+) -> Result<Option<(usize, &harness_contracts::SessionCreatedEvent)>, SessionError> {
+    for (index, envelope) in envelopes.iter().enumerate() {
+        match &envelope.payload {
+            Event::SessionCreated(created) => return Ok(Some((index, created))),
+            Event::McpActivationFailed(_) => {}
+            _ => {
+                return Err(SessionError::Message(
+                    "session event stream does not start with SessionCreated".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
 impl Harness {
     #[cfg(feature = "agents-subagent")]
     pub async fn prepare_external_subagent_engine(
@@ -191,6 +208,12 @@ impl Harness {
         if envelopes.is_empty() {
             return Ok(None);
         }
+        if session_created_after_mcp_activation_prelude(&envelopes)
+            .map_err(HarnessError::Session)?
+            .is_none()
+        {
+            return Ok(None);
+        }
         self.enforce_sdk_session_options_hash(options, &envelopes)?;
         let projection =
             SessionProjection::replay(envelopes.clone()).map_err(HarnessError::Session)?;
@@ -202,22 +225,22 @@ impl Harness {
         tenant_id: TenantId,
         session_id: SessionId,
     ) -> Result<bool, HarnessError> {
-        let envelopes = self
+        let mut envelopes = self
             .inner
             .event_store
             .read_envelopes(tenant_id, session_id, ReplayCursor::FromStart)
             .await
-            .map_err(HarnessError::Journal)?
-            .take(1)
-            .collect::<Vec<_>>()
-            .await;
-        let Some(envelope) = envelopes.first() else {
-            return Ok(false);
-        };
-        let Event::SessionCreated(created) = &envelope.payload else {
-            return Ok(false);
-        };
-        Ok(created.tenant_id == tenant_id && created.session_id == session_id)
+            .map_err(HarnessError::Journal)?;
+        while let Some(envelope) = envelopes.next().await {
+            match envelope.payload {
+                Event::SessionCreated(created) => {
+                    return Ok(created.tenant_id == tenant_id && created.session_id == session_id);
+                }
+                Event::McpActivationFailed(_) => {}
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn enforce_sdk_session_options_hash(
@@ -225,8 +248,9 @@ impl Harness {
         options: &SessionOptions,
         envelopes: &[EventEnvelope],
     ) -> Result<(), HarnessError> {
-        let Some(Event::SessionCreated(created)) =
-            envelopes.first().map(|envelope| &envelope.payload)
+        let Some((created_index, created)) =
+            session_created_after_mcp_activation_prelude(envelopes)
+                .map_err(HarnessError::Session)?
         else {
             return Err(HarnessError::Session(SessionError::Message(
                 "session event stream does not start with SessionCreated".to_owned(),
@@ -260,7 +284,7 @@ impl Harness {
             ));
         }
         let session_created_options_hash = created.options_hash;
-        for envelope in envelopes.iter().skip(1) {
+        for envelope in envelopes.iter().skip(created_index + 1) {
             let Event::SessionCreated(created) = &envelope.payload else {
                 continue;
             };

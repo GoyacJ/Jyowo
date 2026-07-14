@@ -1,10 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use harness_contracts::{
-    Decision, DecisionScope, DeferredToolsDeltaAttachment, EndReason, Event, JournalOffset,
-    Message, MessageContent, MessagePart, MessageRole, PermissionDecisionOption, PermissionSubject,
-    RequestId, SessionError, SessionId, SnapshotId, TenantId, ToolErrorPayload, ToolName,
-    ToolResult, ToolUseId, UsageSnapshot,
+    Decision, DecisionScope, DeferredToolsDeltaAttachment, DenyReason, EndReason, Event,
+    JournalOffset, Message, MessageContent, MessageId, MessagePart, MessageRole,
+    PermissionDecisionOption, PermissionSubject, RequestId, SessionError, SessionId, SnapshotId,
+    TenantId, ToolErrorPayload, ToolName, ToolResult, ToolUseId, UsageSnapshot,
 };
 use harness_journal::EventEnvelope;
 use serde::{Deserialize, Serialize};
@@ -159,6 +159,27 @@ impl SessionProjection {
                     record.error = Some(event.error);
                 }
             }
+            Event::ToolUseDenied(event) => {
+                if let Some(record) = self.tool_uses.get_mut(&event.tool_use_id) {
+                    record.error.get_or_insert_with(|| ToolErrorPayload {
+                        code: "permission_denied".to_owned(),
+                        message: denied_tool_result_message(&event.reason),
+                        retriable: false,
+                    });
+                }
+            }
+            Event::SandboxPreflightFailed(event) => {
+                if let Some(record) = event
+                    .tool_use_id
+                    .and_then(|tool_use_id| self.tool_uses.get_mut(&tool_use_id))
+                {
+                    record.error = Some(ToolErrorPayload {
+                        code: "sandbox_preflight_failed".to_owned(),
+                        message: format!("sandbox preflight failed: {}", event.reason),
+                        retriable: false,
+                    });
+                }
+            }
             Event::PermissionRequested(event) => {
                 pending_permissions.insert(
                     event.request_id,
@@ -242,6 +263,62 @@ impl SessionProjection {
         self.refresh_snapshot_id();
     }
 
+    /// Rebuilds provider-facing history with a result for every historical tool call.
+    ///
+    /// `messages` remains the visible conversation transcript. Tool outcomes are
+    /// stored separately in `tool_uses`, so they must be reinserted before the
+    /// transcript is sent back to a model on a later turn.
+    #[must_use]
+    pub fn model_context_messages(&self) -> Vec<Message> {
+        let mut context =
+            Vec::with_capacity(self.messages.len().saturating_add(self.tool_uses.len()));
+        for message in &self.messages {
+            context.push(message.clone());
+            if message.role != MessageRole::Assistant {
+                continue;
+            }
+            for part in &message.parts {
+                let MessagePart::ToolUse { id, .. } = part else {
+                    continue;
+                };
+                context.push(self.model_tool_result_message(*id, message.created_at));
+            }
+        }
+        context
+    }
+
+    fn model_tool_result_message(
+        &self,
+        tool_use_id: ToolUseId,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> Message {
+        let content = self
+            .tool_uses
+            .get(&tool_use_id)
+            .and_then(|record| {
+                record.result.clone().or_else(|| {
+                    record
+                        .error
+                        .as_ref()
+                        .map(|error| ToolResult::Text(error.message.clone()))
+                })
+            })
+            .unwrap_or_else(|| {
+                ToolResult::Text(
+                    "tool execution did not complete before the previous run ended".to_owned(),
+                )
+            });
+        Message {
+            id: tool_result_message_id(tool_use_id),
+            role: MessageRole::Tool,
+            parts: vec![MessagePart::ToolResult {
+                tool_use_id,
+                content,
+            }],
+            created_at,
+        }
+    }
+
     pub(crate) fn refresh_snapshot_id(&mut self) {
         self.snapshot_id = crate::snapshot::projection_snapshot_id(self);
     }
@@ -266,6 +343,25 @@ impl SessionProjection {
                 self.pending_deferred_tools_delta = None;
             }
         }
+    }
+}
+
+fn tool_result_message_id(tool_use_id: ToolUseId) -> MessageId {
+    MessageId::from_u128(u128::from_be_bytes(tool_use_id.as_bytes()))
+}
+
+fn denied_tool_result_message(reason: &DenyReason) -> String {
+    match reason {
+        DenyReason::UserDenied => "tool use denied by user".to_owned(),
+        DenyReason::RuleDenied => "tool use denied by rule".to_owned(),
+        DenyReason::DefaultModeDenied => "tool use denied by permission mode".to_owned(),
+        DenyReason::HookBlocked { handler_id } => {
+            format!("tool use blocked by hook `{handler_id}`")
+        }
+        DenyReason::SubagentBlocked => "tool use denied for subagent".to_owned(),
+        DenyReason::PolicyDenied => "tool use denied by runtime policy".to_owned(),
+        DenyReason::Other(message) => format!("tool use denied: {message}"),
+        _ => "tool use denied".to_owned(),
     }
 }
 

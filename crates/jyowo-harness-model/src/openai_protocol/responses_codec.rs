@@ -6,6 +6,7 @@ use harness_contracts::{ModelError, StopReason, UsageSnapshot};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::sse::IncrementalSseDecoder;
 use crate::{
     ContentDelta, ContentType, ErrorClass, ErrorHints, InferContext, ModelRequest, ModelStream,
     ModelStreamEvent, ReasoningSummaryDelta, ThinkingDelta,
@@ -90,39 +91,26 @@ struct SseEvent {
 
 #[derive(Debug, Default)]
 struct IncrementalSseParser {
-    buffer: String,
+    decoder: IncrementalSseDecoder,
 }
 
 impl IncrementalSseParser {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, ModelError> {
-        let decoded = std::str::from_utf8(chunk)
-            .map_err(|_| ModelError::UnexpectedResponse("invalid UTF-8 in SSE stream".to_owned()))?
-            .replace("\r\n", "\n");
-        self.buffer.push_str(&decoded);
-        Ok(self.drain_complete_frames())
+        Ok(self
+            .decoder
+            .push(chunk)?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 
-    fn finish(&mut self) -> Vec<SseEvent> {
-        let mut events = self.drain_complete_frames();
-        if !self.buffer.trim().is_empty() {
-            let frame = std::mem::take(&mut self.buffer);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
-    }
-
-    fn drain_complete_frames(&mut self) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..end].to_owned();
-            self.buffer.drain(..end + 2);
-            if let Some(event) = parse_frame(&frame) {
-                events.push(event);
-            }
-        }
-        events
+    fn finish(&mut self) -> Result<Vec<SseEvent>, ModelError> {
+        Ok(self
+            .decoder
+            .finish()?
+            .into_iter()
+            .filter_map(|frame| parse_frame(&frame))
+            .collect())
     }
 }
 
@@ -147,7 +135,10 @@ pub(super) fn response_to_stream(
                             }
                         }
                     }
-                    Err(error) => yield stream_error(error, ErrorClass::Fatal),
+                    Err(error) => {
+                        yield stream_error(error, ErrorClass::Fatal);
+                        return;
+                    }
                 },
                 Err(error) => {
                     yield stream_error(
@@ -159,10 +150,15 @@ pub(super) fn response_to_stream(
             }
         }
 
-        for event in parser.finish() {
-            for mapped in state.map_event(event) {
-                yield mapped;
+        match parser.finish() {
+            Ok(events) => {
+                for event in events {
+                    for mapped in state.map_event(event) {
+                        yield mapped;
+                    }
+                }
             }
+            Err(error) => yield stream_error(error, ErrorClass::Fatal),
         }
 
     })
@@ -1036,7 +1032,10 @@ mod tests {
     use serde_json::json;
 
     use super::super::continuation::OpenAiResponsesContinuationCapture;
-    use super::{json_response_to_stream, response_to_stream, ResponsesStreamState, SseEvent};
+    use super::{
+        json_response_to_stream, response_to_stream, IncrementalSseParser, ResponsesStreamState,
+        SseEvent,
+    };
     use crate::{ContentDelta, ContentType, ModelStreamEvent};
 
     #[test]
@@ -1050,6 +1049,24 @@ mod tests {
 
         assert!(events.contains(&ModelStreamEvent::MessageStop));
         assert!(state.stopped);
+    }
+
+    #[test]
+    fn sse_parser_accepts_multibyte_text_split_at_every_byte_boundary() {
+        let frame = "event: response.output_text.delta\ndata: {\"delta\":\"你好𠮷\"}\n\n";
+
+        for split in 1..frame.len() {
+            let mut parser = IncrementalSseParser::default();
+            assert!(parser.push(&frame.as_bytes()[..split]).unwrap().is_empty());
+            assert_eq!(
+                parser.push(&frame.as_bytes()[split..]).unwrap(),
+                vec![SseEvent {
+                    event: Some("response.output_text.delta".to_owned()),
+                    data: "{\"delta\":\"你好𠮷\"}".to_owned(),
+                }],
+                "failed at byte boundary {split}",
+            );
+        }
     }
 
     #[tokio::test]

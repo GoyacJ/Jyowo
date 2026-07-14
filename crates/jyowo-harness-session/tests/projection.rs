@@ -4,14 +4,15 @@ use futures::StreamExt;
 use harness_contracts::{
     ActionPlanHash, AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
     CompactionAppliedEvent, DecidedBy, Decision, DecisionId, DecisionLifetime, DecisionMatcherKind,
-    DecisionMatcherSummary, DecisionScope, DeferPolicy, DeferredToolHint, EndReason, Event,
-    EventId, MessageContent, MessageId, MessageMetadata, NoopRedactor, PermissionActorSource,
-    PermissionDecisionOption, PermissionMode, PermissionOptionId, PermissionRequestedEvent,
-    PermissionResolvedEvent, PermissionReview, PermissionSubject, RequestId, RunEndedEvent, RunId,
-    SandboxPolicySummary, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity, StopReason,
-    TenantId, ToolDeferredPoolChangedEvent, ToolPoolChangeSource, ToolProperties, ToolResult,
-    ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent,
-    UsageSnapshot,
+    DecisionMatcherSummary, DecisionScope, DeferPolicy, DeferredToolHint, DenyReason, EndReason,
+    Event, EventId, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole,
+    NoopRedactor, PermissionActorSource, PermissionDecisionOption, PermissionMode,
+    PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, PermissionReview,
+    PermissionSubject, RequestId, RunEndedEvent, RunId, SandboxPolicySummary, SessionCreatedEvent,
+    SessionEndedEvent, SessionId, Severity, StopReason, TenantId, ToolDeferredPoolChangedEvent,
+    ToolErrorPayload, ToolPoolChangeSource, ToolProperties, ToolResult,
+    ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent,
+    ToolUseId, ToolUseRequestedEvent, ToolUseSummary, UsageSnapshot,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
 use harness_session::SessionProjection;
@@ -146,6 +147,141 @@ async fn projection_replay_is_idempotent() {
     assert_eq!(first.allowlist.len(), 1);
     assert_eq!(first.usage.output_tokens, 7);
     assert_eq!(first.end_reason, None);
+}
+
+#[tokio::test]
+async fn model_context_rebuilds_all_historical_tool_outcomes_in_call_order() {
+    let tenant = TenantId::SINGLE;
+    let session = SessionId::new();
+    let run = RunId::new();
+    let completed = ToolUseId::new();
+    let failed = ToolUseId::new();
+    let denied = ToolUseId::new();
+    let interrupted = ToolUseId::new();
+    let calls = [
+        (completed, "completed"),
+        (failed, "failed"),
+        (denied, "denied"),
+        (interrupted, "interrupted"),
+    ];
+    let tool_parts = calls
+        .iter()
+        .map(|(id, name)| MessagePart::ToolUse {
+            id: *id,
+            name: (*name).to_owned(),
+            input: json!({}),
+        })
+        .collect::<Vec<_>>();
+    let tool_summaries = calls
+        .iter()
+        .map(|(id, name)| ToolUseSummary {
+            tool_use_id: *id,
+            tool_name: (*name).to_owned(),
+        })
+        .collect::<Vec<_>>();
+    let mut events = vec![
+        Event::SessionCreated(SessionCreatedEvent {
+            session_id: session,
+            tenant_id: tenant,
+            options_hash: [0; 32],
+            snapshot_id: harness_contracts::SnapshotId::from_u128(1),
+            effective_config_hash: harness_contracts::ConfigHash([0; 32]),
+            created_at: harness_contracts::now(),
+        }),
+        Event::UserMessageAppended(harness_contracts::UserMessageAppendedEvent {
+            run_id: run,
+            message_id: MessageId::new(),
+            content: MessageContent::Text("run tools".to_owned()),
+            metadata: MessageMetadata::default(),
+            attachments: Vec::new(),
+            at: harness_contracts::now(),
+        }),
+        Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+            run_id: run,
+            message_id: MessageId::new(),
+            content: MessageContent::Multimodal(tool_parts),
+            tool_uses: tool_summaries,
+            usage: UsageSnapshot::default(),
+            pricing_snapshot_id: None,
+            stop_reason: StopReason::ToolUse,
+            at: harness_contracts::now(),
+        }),
+    ];
+    events.extend(
+        calls
+            .iter()
+            .map(|(id, name)| tool_requested(run, *id, name)),
+    );
+    events.extend([
+        Event::ToolUseCompleted(ToolUseCompletedEvent {
+            tool_use_id: completed,
+            result: ToolResult::Text("completed result".to_owned()),
+            usage: None,
+            duration_ms: 1,
+            at: harness_contracts::now(),
+        }),
+        Event::ToolUseFailed(ToolUseFailedEvent {
+            tool_use_id: failed,
+            error: ToolErrorPayload {
+                code: "failed".to_owned(),
+                message: "failed result".to_owned(),
+                retriable: false,
+            },
+            at: harness_contracts::now(),
+        }),
+        Event::ToolUseDenied(ToolUseDeniedEvent {
+            tool_use_id: denied,
+            reason: DenyReason::PolicyDenied,
+            at: harness_contracts::now(),
+        }),
+        Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+            run_id: run,
+            message_id: MessageId::new(),
+            content: MessageContent::Text("done".to_owned()),
+            tool_uses: Vec::new(),
+            usage: UsageSnapshot::default(),
+            pricing_snapshot_id: None,
+            stop_reason: StopReason::EndTurn,
+            at: harness_contracts::now(),
+        }),
+    ]);
+
+    let replayed = envelopes(tenant, session, events).await;
+    let first = SessionProjection::replay(replayed.clone()).unwrap();
+    let second = SessionProjection::replay(replayed).unwrap();
+    let context = first.model_context_messages();
+
+    assert_eq!(
+        first.messages.len(),
+        3,
+        "visible transcript must not change"
+    );
+    assert_eq!(context, second.model_context_messages());
+    assert_eq!(
+        context
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        vec![
+            MessageRole::User,
+            MessageRole::Assistant,
+            MessageRole::Tool,
+            MessageRole::Tool,
+            MessageRole::Tool,
+            MessageRole::Tool,
+            MessageRole::Assistant,
+        ]
+    );
+    assert_eq!(tool_result_text(&context[2]), "completed result");
+    assert_eq!(tool_result_text(&context[3]), "failed result");
+    assert_eq!(
+        tool_result_text(&context[4]),
+        "tool use denied by runtime policy"
+    );
+    assert_eq!(
+        tool_result_text(&context[5]),
+        "tool execution did not complete before the previous run ended"
+    );
 }
 
 #[tokio::test]
@@ -412,6 +548,17 @@ fn tool_requested(run: RunId, tool_use_id: ToolUseId, tool_name: &str) -> Event 
         causation_id: EventId::new(),
         at: harness_contracts::now(),
     })
+}
+
+fn tool_result_text(message: &harness_contracts::Message) -> &str {
+    let [MessagePart::ToolResult {
+        content: ToolResult::Text(text),
+        ..
+    }] = message.parts.as_slice()
+    else {
+        panic!("expected one text tool result, got {:?}", message.parts);
+    };
+    text
 }
 
 fn blob_ref() -> harness_contracts::BlobRef {
