@@ -3900,6 +3900,7 @@ export interface CommandClient {
   listSkillCatalogInstallTasks: () => Promise<ListSkillCatalogInstallTasksResponse>
   listenSkillCatalogInstallProgress: (
     onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
+    onError?: (error: unknown) => void,
   ) => Promise<() => void>
   getExecutionSettings: (
     request?: GetExecutionSettingsRequest,
@@ -4149,15 +4150,23 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command),
       )
     },
-    async listenSkillCatalogInstallProgress(onProgress) {
+    async listenSkillCatalogInstallProgress(onProgress, onError) {
       const unlisten = await tauriListen<unknown>('skill_catalog_install_progress', (event) => {
-        onProgress(
-          parsePayload(
-            'skill_catalog_install_progress',
-            skillCatalogInstallProgressPayloadSchema,
-            event.payload,
-          ),
-        )
+        try {
+          onProgress(
+            parsePayload(
+              'skill_catalog_install_progress',
+              skillCatalogInstallProgressPayloadSchema,
+              event.payload,
+            ),
+          )
+        } catch (error) {
+          if (onError) {
+            onError(error)
+            return
+          }
+          throw error
+        }
       })
 
       return unlisten
@@ -4763,8 +4772,9 @@ export function listSkillCatalogInstallTasks(
 export function listenSkillCatalogInstallProgress(
   onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
   client: CommandClient = tauriCommandClient,
+  onError?: (error: unknown) => void,
 ): Promise<() => void> {
-  return client.listenSkillCatalogInstallProgress(onProgress)
+  return client.listenSkillCatalogInstallProgress(onProgress, onError)
 }
 
 export function importSkill(

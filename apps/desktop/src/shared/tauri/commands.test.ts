@@ -2685,9 +2685,16 @@ describe('CommandClient', () => {
       return vi.fn()
     })
     const progressEvents: unknown[] = []
-    await listenSkillCatalogInstallProgress((progress) => {
-      progressEvents.push(progress)
-    }, client)
+    const progressErrors: unknown[] = []
+    await listenSkillCatalogInstallProgress(
+      (progress) => {
+        progressEvents.push(progress)
+      },
+      client,
+      (error) => {
+        progressErrors.push(error)
+      },
+    )
     expect(() =>
       tauriEventHandler?.({
         payload: {
@@ -2698,8 +2705,10 @@ describe('CommandClient', () => {
           stage: 'downloaded',
         },
       }),
-    ).toThrow(TauriCommandPayloadError)
+    ).not.toThrow()
     expect(progressEvents).toEqual([])
+    expect(progressErrors).toHaveLength(1)
+    expect(progressErrors[0]).toBeInstanceOf(TauriCommandPayloadError)
   })
 })
 

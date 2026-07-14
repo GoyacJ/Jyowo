@@ -1,6 +1,7 @@
 import type {
   GetSkillCatalogEntryResponse,
   GetSkillCatalogFileResponse,
+  GetSkillConfigResponse,
   GetSkillDetailResponse,
   GetSkillFileResponse,
   ListSkillCatalogEntriesResponse,
@@ -140,6 +141,52 @@ export const fixtureSkillDetail: GetSkillDetailResponse = {
     scripts: [],
     summary: fixtureWorkspaceSkill,
   },
+}
+
+export const fixtureSkillConfig: GetSkillConfigResponse = {
+  config: {
+    secrets: {
+      apiToken: { configured: true },
+    },
+    values: {
+      region: 'cn-east',
+      retries: 3,
+      useCache: true,
+    },
+  },
+  declarations: [
+    {
+      description: 'Region used for API requests.',
+      key: 'region',
+      required: true,
+      secret: false,
+      valueType: 'string',
+    },
+    {
+      default: 3,
+      description: 'Maximum request attempts.',
+      key: 'retries',
+      required: false,
+      secret: false,
+      valueType: 'number',
+    },
+    {
+      default: true,
+      description: 'Use cached responses when available.',
+      key: 'useCache',
+      required: false,
+      secret: false,
+      valueType: 'boolean',
+    },
+    {
+      description: 'API access token.',
+      key: 'apiToken',
+      required: true,
+      secret: true,
+      valueType: 'string',
+    },
+  ],
+  skillId: fixtureWorkspaceSkill.id,
 }
 
 export const fixtureSkillEntryFile: GetSkillFileResponse = {

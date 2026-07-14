@@ -7,6 +7,7 @@ import type {
   GetProviderConfigApiKeyResponse,
   GetSkillCatalogEntryResponse,
   GetSkillCatalogFileResponse,
+  GetSkillConfigResponse,
   GetSkillDetailResponse,
   GetSkillFileResponse,
   InstallSkillFromCatalogResponse,
@@ -192,6 +193,7 @@ export interface TestCommandClientOptions {
   skillCatalogInstallTasks?: ListSkillCatalogInstallTasksResponse
   skillCatalogSources?: ListSkillCatalogSourcesResponse
   skillCatalogInstall?: InstallSkillFromCatalogResponse
+  skillConfig?: GetSkillConfigResponse
   skills?: ListSkillsResponse
   delayMs?: number
 }

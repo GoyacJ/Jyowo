@@ -1,16 +1,22 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SkillSettingsPage } from '@/features/settings/SkillSettings'
+import {
+  catalogInstallTaskFromProgress,
+  findCatalogInstallTask,
+  reduceCatalogInstallTask,
+} from '@/features/skills/components/catalog-task-reducer'
 import { AppI18nProvider } from '@/shared/i18n/i18n'
 import type {
   CommandClient,
   GetSkillCatalogEntryResponse,
   InstallSkillFromCatalogResponse,
   ListSkillsResponse,
+  SkillCatalogEntry,
   SkillCatalogInstallProgressPayload,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
@@ -160,7 +166,7 @@ describe('SkillsPage', () => {
 
     fireEvent.mouseDown(within(detail).getByRole('tab', { name: '配置' }))
 
-    expect(await within(detail).findByText('CHANGELOG_TOKEN')).toBeInTheDocument()
+    expect(await within(detail).findByText('region')).toBeInTheDocument()
   })
 
   it('paginates the skill list', async () => {
@@ -219,6 +225,44 @@ describe('SkillsPage', () => {
       expect(openDialogSpy).toHaveBeenCalledWith({ directory: true, multiple: false }),
     )
     await waitFor(() => expect(importSkill).toHaveBeenCalledWith('/tmp/release-notes'))
+  })
+
+  it('surfaces rejected installed-skill mutations without unhandled promises', async () => {
+    openDialogSpy.mockResolvedValue('/tmp/release-notes')
+    const client = {
+      ...createTestCommandClient(),
+      deleteSkill: vi.fn().mockRejectedValue({ message: 'delete rejected' }),
+      importSkill: vi.fn().mockRejectedValue({ message: 'import rejected' }),
+      setSkillEnabled: vi.fn().mockRejectedValue({ message: 'toggle rejected' }),
+    }
+
+    renderSkillsPage(client)
+
+    fireEvent.click(screen.getByRole('button', { name: '导入' }))
+    expect(await screen.findByText('import rejected')).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('switch', { name: '停用 release-notes' }))
+    expect(await screen.findByText('toggle rejected')).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: '删除 release-notes' }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
+    expect(await screen.findByText('delete rejected')).toBeInTheDocument()
+  })
+
+  it('renders an explicit installed-skill file read error', async () => {
+    const client = {
+      ...createTestCommandClient(),
+      getSkillFile: vi.fn().mockRejectedValue({ message: 'file read rejected' }),
+    }
+
+    renderSkillsPage(client)
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Creates release notes from recent changes/ }),
+    )
+    const detail = await screen.findByRole('region', { name: '技能详情' })
+    fireEvent.mouseDown(within(detail).getByRole('tab', { name: '文件' }))
+
+    expect(await within(detail).findByText('file read rejected')).toBeInTheDocument()
   })
 
   it('installs a skill from the catalog', async () => {
@@ -378,6 +422,209 @@ describe('SkillsPage', () => {
 
     rendered.unmount()
     await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1))
+  })
+
+  it('surfaces invalid catalog progress payloads', async () => {
+    let progressListener: (progress: SkillCatalogInstallProgressPayload) => void = () => {
+      throw new Error('catalog install progress listener was not registered')
+    }
+    const client = {
+      ...createTestCommandClient(),
+      listenSkillCatalogInstallProgress: vi.fn(
+        async (listener: (progress: SkillCatalogInstallProgressPayload) => void) => {
+          progressListener = listener
+          return () => undefined
+        },
+      ),
+    }
+
+    renderSkillsPage(client)
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    await waitFor(() => expect(client.listenSkillCatalogInstallProgress).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      progressListener({ percent: 101 } as SkillCatalogInstallProgressPayload)
+    })
+
+    expect(await screen.findByText('Invalid catalog install progress payload')).toBeInTheDocument()
+  })
+
+  it('preserves separate catalog operations and ignores older updates per operation', () => {
+    const entry: SkillCatalogEntry = {
+      description: 'Create distinctive frontend interfaces.',
+      entryId: 'anthropic:frontend-design',
+      installable: true,
+      installed: false,
+      name: 'frontend-design',
+      sourceId: 'anthropic',
+      sourceLabel: 'Anthropic Skills',
+      tags: [],
+      trustLevel: 'official',
+      version: 'main',
+    }
+    const operationOne = {
+      entryId: entry.entryId,
+      operationId: 'operation-1',
+      percent: 45,
+      sourceId: entry.sourceId,
+      stage: 'downloading',
+      startedAt: '2026-07-14T00:00:00Z',
+      status: 'running',
+      updatedAt: '2026-07-14T00:00:02Z',
+      version: entry.version,
+    } as const
+    const olderOperationOne = {
+      ...operationOne,
+      percent: 10,
+      updatedAt: '2026-07-14T00:00:01Z',
+    } as const
+    const operationTwo = {
+      ...operationOne,
+      operationId: 'operation-2',
+      percent: 5,
+      updatedAt: '2026-07-14T00:00:03Z',
+    } as const
+
+    const first = reduceCatalogInstallTask(undefined, operationOne)
+    const withOlderUpdate = reduceCatalogInstallTask(first, olderOperationOne)
+    const withBothOperations = reduceCatalogInstallTask(withOlderUpdate, operationTwo)
+
+    expect(withBothOperations.tasks).toHaveLength(2)
+    expect(
+      withBothOperations.tasks.find((task) => task.operationId === 'operation-1')?.percent,
+    ).toBe(45)
+    expect(findCatalogInstallTask(withBothOperations.tasks, entry)?.operationId).toBe('operation-2')
+
+    const completed = catalogInstallTaskFromProgress(
+      {
+        entryId: entry.entryId,
+        operationId: operationOne.operationId,
+        percent: 100,
+        sourceId: entry.sourceId,
+        stage: 'completed',
+        version: entry.version,
+      },
+      operationOne,
+      '2026-07-14T00:00:04Z',
+    )
+    const delayedRunning = catalogInstallTaskFromProgress(
+      {
+        entryId: entry.entryId,
+        operationId: operationOne.operationId,
+        percent: 90,
+        sourceId: entry.sourceId,
+        stage: 'reloading',
+        version: entry.version,
+      },
+      completed,
+      '2026-07-14T00:00:05Z',
+    )
+
+    expect(delayedRunning).toBe(completed)
+    expect(delayedRunning.status).toBe('completed')
+  })
+
+  it('allows reinstall after a completed operation', async () => {
+    const installSkillFromCatalog = vi.fn().mockResolvedValue({
+      task: {
+        entryId: 'anthropic:frontend-design',
+        operationId: 'catalog-install-new',
+        percent: 5,
+        sourceId: 'anthropic',
+        stage: 'preparing',
+        startedAt: '2026-07-14T01:00:00Z',
+        status: 'running',
+        updatedAt: '2026-07-14T01:00:00Z',
+        version: 'main',
+      },
+    })
+    const client = {
+      ...createTestCommandClient({
+        skillCatalogInstallTasks: {
+          tasks: [
+            {
+              entryId: 'anthropic:frontend-design',
+              operationId: 'catalog-install-completed',
+              percent: 100,
+              sourceId: 'anthropic',
+              stage: 'completed',
+              startedAt: '2026-07-14T00:00:00Z',
+              status: 'completed',
+              updatedAt: '2026-07-14T00:00:10Z',
+              version: 'main',
+            },
+          ],
+        },
+      }),
+      installSkillFromCatalog,
+    }
+
+    renderSkillsPage(client)
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /frontend-design/ }))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '安装' })).toBeEnabled())
+    fireEvent.click(within(dialog).getByRole('button', { name: '安装' }))
+
+    await waitFor(() => expect(installSkillFromCatalog).toHaveBeenCalledTimes(1))
+  })
+
+  it('refreshes installed skills and catalog entries after terminal polling', async () => {
+    const baseClient = createTestCommandClient()
+    const listSkillCatalogInstallTasks = vi
+      .fn()
+      .mockResolvedValueOnce({
+        tasks: [
+          {
+            entryId: 'anthropic:frontend-design',
+            operationId: 'catalog-install-polling',
+            percent: 45,
+            sourceId: 'anthropic',
+            stage: 'downloading',
+            startedAt: '2026-07-14T00:00:00Z',
+            status: 'running',
+            updatedAt: '2026-07-14T00:00:01Z',
+            version: 'main',
+          },
+        ],
+      })
+      .mockResolvedValue({
+        tasks: [
+          {
+            entryId: 'anthropic:frontend-design',
+            operationId: 'catalog-install-polling',
+            percent: 100,
+            sourceId: 'anthropic',
+            stage: 'completed',
+            startedAt: '2026-07-14T00:00:00Z',
+            status: 'completed',
+            updatedAt: '2026-07-14T00:00:02Z',
+            version: 'main',
+          },
+        ],
+      })
+    const listSkills = vi.fn(baseClient.listSkills)
+    const listSkillCatalogEntries = vi.fn(baseClient.listSkillCatalogEntries)
+    const client = {
+      ...baseClient,
+      listSkillCatalogEntries,
+      listSkillCatalogInstallTasks,
+      listSkills,
+    }
+
+    renderSkillsPage(client)
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '技能目录' }))
+
+    await waitFor(
+      () => expect(listSkillCatalogInstallTasks.mock.calls.length).toBeGreaterThanOrEqual(2),
+      {
+        timeout: 2500,
+      },
+    )
+    await waitFor(() => {
+      expect(listSkills.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(listSkillCatalogEntries.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
   })
 
   it('shows blocked catalog validation instead of a detail load error', async () => {

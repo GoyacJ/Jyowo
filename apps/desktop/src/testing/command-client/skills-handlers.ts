@@ -1,6 +1,6 @@
-import type { GetSkillDetailResponse } from '@/shared/tauri/commands'
+import type { GetSkillConfigResponse, GetSkillDetailResponse } from '@/shared/tauri/commands'
 
-import { wait } from './base'
+import { cloneResponse, wait } from './base'
 import {
   fixtureListSkills,
   fixtureSkillCatalogEntries,
@@ -8,6 +8,7 @@ import {
   fixtureSkillCatalogFile,
   fixtureSkillCatalogInstallTasks,
   fixtureSkillCatalogSources,
+  fixtureSkillConfig,
   fixtureSkillDetail,
   fixtureSkillEntryFile,
   fixtureWorkspaceSkill,
@@ -36,9 +37,27 @@ type SkillCommandKeys =
 export function createSkillCommandHandlers(
   state: TestCommandClientState,
 ): TestCommandHandlers<SkillCommandKeys> {
+  const initialConfig = state.options.skillConfig ?? fixtureSkillConfig
+  const configs = new Map<string, GetSkillConfigResponse>([
+    [initialConfig.skillId, cloneResponse(initialConfig)],
+  ])
+  const getConfig = (skillId: string): GetSkillConfigResponse => {
+    const configured = configs.get(skillId)
+    if (configured) return configured
+
+    const emptyConfig = {
+      config: { secrets: {}, values: {} },
+      declarations: [],
+      skillId,
+    } satisfies GetSkillConfigResponse
+    configs.set(skillId, emptyConfig)
+    return emptyConfig
+  }
+
   return {
     async clearSkillSecret(skillId, key) {
       await wait(state.options.delayMs)
+      getConfig(skillId).config.secrets[key] = { configured: false }
       return { configured: false, key, skillId }
     },
     async deleteSkill(id) {
@@ -72,11 +91,7 @@ export function createSkillCommandHandlers(
     },
     async getSkillConfig(skillId) {
       await wait(state.options.delayMs)
-      return {
-        config: { secrets: {}, values: {} },
-        declarations: [],
-        skillId,
-      }
+      return cloneResponse(getConfig(skillId))
     },
     async getSkillFile(_id, path) {
       await wait(state.options.delayMs)
@@ -154,12 +169,14 @@ export function createSkillCommandHandlers(
         },
       }
     },
-    async setSkillConfigValue(skillId, key) {
+    async setSkillConfigValue(skillId, key, value) {
       await wait(state.options.delayMs)
+      getConfig(skillId).config.values[key] = cloneResponse(value)
       return { configured: true, key, skillId }
     },
     async setSkillSecret(skillId, key) {
       await wait(state.options.delayMs)
+      getConfig(skillId).config.secrets[key] = { configured: true }
       return { configured: true, key, skillId }
     },
   }
