@@ -56,8 +56,11 @@ pub(crate) fn normalize_probe_timeout_ms(timeout_ms: Option<u64>) -> u64 {
 }
 
 const MODEL_USAGE_ROLLUP_SCHEMA_VERSION: u32 = 3;
-const MODEL_USAGE_HISTORY_PAGE_LIMIT: u16 = 500;
+const MODEL_USAGE_HISTORY_PAGE_LIMIT: u16 = 1_000;
+const MODEL_USAGE_HISTORY_PAGES_PER_REQUEST: usize = 4;
 const MODEL_USAGE_HISTORY_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MODEL_CATALOG_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const MODEL_CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_OPENROUTER_MODELS_API_BYTES: usize = 2 * 1024 * 1024;
 static MODEL_USAGE_ROLLUP_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -164,7 +167,7 @@ async fn usage_summary_slice_from_history(
 ) -> ModelSettingsPageSlice<GetModelUsageSummaryResponse> {
     let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
     let timezone = workspace_timezone_resolver();
-    match project_model_usage_with_source(
+    match catch_up_model_usage_with_source(
         runtime_state.model_usage_rollup_store.as_ref(),
         source,
         now,
@@ -241,7 +244,8 @@ async fn fetch_anthropic_models_api_json(
     api_key: &str,
 ) -> Result<serde_json::Value, CommandErrorPayload> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .connect_timeout(MODEL_CATALOG_CONNECT_TIMEOUT)
+        .timeout(MODEL_CATALOG_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| {
             runtime_operation_failed(format!("Anthropic model catalog client failed: {error}"))
@@ -268,9 +272,11 @@ async fn fetch_anthropic_models_api_json(
         ));
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        runtime_operation_failed(format!("Anthropic model catalog read failed: {error}"))
-    })? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| model_catalog_read_error("Anthropic model catalog", error))?
+    {
         if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
             return Err(runtime_operation_failed(
                 "Anthropic model catalog response is too large".to_owned(),
@@ -285,7 +291,8 @@ async fn fetch_anthropic_models_api_json(
 
 async fn fetch_openrouter_models_api_json() -> Result<serde_json::Value, CommandErrorPayload> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .connect_timeout(MODEL_CATALOG_CONNECT_TIMEOUT)
+        .timeout(MODEL_CATALOG_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| {
             runtime_operation_failed(format!("provider catalog client failed: {error}"))
@@ -310,9 +317,11 @@ async fn fetch_openrouter_models_api_json() -> Result<serde_json::Value, Command
         ));
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        runtime_operation_failed(format!("provider catalog read failed: {error}"))
-    })? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| model_catalog_read_error("provider catalog", error))?
+    {
         if bytes.len().saturating_add(chunk.len()) > MAX_OPENROUTER_MODELS_API_BYTES {
             return Err(runtime_operation_failed(
                 "provider catalog response is too large".to_owned(),
@@ -323,6 +332,13 @@ async fn fetch_openrouter_models_api_json() -> Result<serde_json::Value, Command
     serde_json::from_slice(&bytes).map_err(|error| {
         runtime_operation_failed(format!("provider catalog parse failed: {error}"))
     })
+}
+
+fn model_catalog_read_error(context: &str, error: reqwest::Error) -> CommandErrorPayload {
+    if error.is_timeout() {
+        return runtime_operation_failed(format!("{context} response timed out"));
+    }
+    runtime_operation_failed(format!("{context} read failed: {error}"))
 }
 
 fn slice_from_result<T>(result: Result<T, CommandErrorPayload>) -> ModelSettingsPageSlice<T> {
@@ -830,6 +846,22 @@ pub async fn project_model_usage_with_source(
     Ok(candidate)
 }
 
+pub async fn catch_up_model_usage_with_source(
+    store: &dyn ModelUsageRollupStore,
+    source: &dyn ModelUsageHistorySource,
+    now: DateTime<Utc>,
+    timezone: &(dyn WorkspaceTimezoneResolver + Sync),
+) -> Result<ModelUsageRollupRecord, CommandErrorPayload> {
+    let mut record = project_model_usage_with_source(store, source, now, timezone).await?;
+    for _ in 1..MODEL_USAGE_HISTORY_PAGES_PER_REQUEST {
+        if !record.dirty && !record.rebuilding {
+            break;
+        }
+        record = project_model_usage_with_source(store, source, now, timezone).await?;
+    }
+    Ok(record)
+}
+
 fn validate_model_usage_history_page(
     page: &TaskEventHistoryPage,
     requested_after: u64,
@@ -1312,7 +1344,7 @@ pub(crate) async fn get_model_usage_summary_with_history_store(
     let _guard = MODEL_USAGE_ROLLUP_LOCK.lock().await;
     let now = Utc::now();
     let timezone = workspace_timezone_resolver();
-    let record = project_model_usage_with_source(store, source, now, &timezone).await?;
+    let record = catch_up_model_usage_with_source(store, source, now, &timezone).await?;
     if record.dirty || record.rebuilding {
         return Err(runtime_operation_failed(
             "model usage summary is rebuilding".to_owned(),

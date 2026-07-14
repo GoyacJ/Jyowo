@@ -225,9 +225,9 @@ pub use mcp::{
     unsubscribe_mcp_diagnostics_with_runtime_state,
 };
 pub use model_settings::{
-    get_model_settings_page_with_history_source, get_model_settings_page_with_runtime_state,
-    get_model_usage_summary_with_history_source, get_model_usage_summary_with_runtime_state,
-    list_official_quota_snapshots_with_runtime_state,
+    catch_up_model_usage_with_source, get_model_settings_page_with_history_source,
+    get_model_settings_page_with_runtime_state, get_model_usage_summary_with_history_source,
+    get_model_usage_summary_with_runtime_state, list_official_quota_snapshots_with_runtime_state,
     list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
     probe_provider_config_with_runtime_state, project_model_usage_with_source,
     refresh_model_provider_catalog_with_runtime_state, refresh_official_quota_with_runtime_state,

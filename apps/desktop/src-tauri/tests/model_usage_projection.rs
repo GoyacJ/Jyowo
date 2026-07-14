@@ -12,8 +12,9 @@ use harness_contracts::{
 };
 use harness_observability::IanaTimezoneResolver;
 use jyowo_desktop_shell::commands::{
-    project_model_usage_with_source, CommandErrorPayload, DesktopModelUsageRollupStore,
-    ModelUsageHistorySource, ModelUsageRollupRecord, ModelUsageRollupStore,
+    catch_up_model_usage_with_source, project_model_usage_with_source, CommandErrorPayload,
+    DesktopModelUsageRollupStore, ModelUsageHistorySource, ModelUsageRollupRecord,
+    ModelUsageRollupStore,
 };
 
 #[derive(Default)]
@@ -428,6 +429,71 @@ async fn cursor_and_pending_run_start_survive_restart_between_pages() {
         resumed.summary.activity.longest_task_duration_ms,
         7 * 60 * 1_000
     );
+}
+
+#[tokio::test]
+async fn catch_up_processes_multiple_pages_without_frontend_round_trips() {
+    let store = Arc::new(MemoryStore::default());
+    let timezone = IanaTimezoneResolver::try_from_iana("UTC").unwrap();
+    let source = ScriptedSource::new(vec![
+        Ok(page(
+            0,
+            3,
+            vec![usage_event(
+                1,
+                at(12, 10),
+                "openai",
+                "gpt-5",
+                false,
+                UsageSnapshot {
+                    input_tokens: 10,
+                    ..UsageSnapshot::default()
+                },
+            )],
+        )),
+        Ok(page(
+            1,
+            3,
+            vec![usage_event(
+                2,
+                at(12, 11),
+                "openai",
+                "gpt-5",
+                false,
+                UsageSnapshot {
+                    output_tokens: 5,
+                    ..UsageSnapshot::default()
+                },
+            )],
+        )),
+        Ok(page(
+            2,
+            3,
+            vec![usage_event(
+                3,
+                at(12, 12),
+                "openai",
+                "gpt-5",
+                false,
+                UsageSnapshot {
+                    cache_read_tokens: 3,
+                    ..UsageSnapshot::default()
+                },
+            )],
+        )),
+    ]);
+
+    let record = catch_up_model_usage_with_source(store.as_ref(), &source, at(12, 12), &timezone)
+        .await
+        .unwrap();
+
+    assert_eq!(*source.requested_after.lock().unwrap(), vec![0, 1, 2]);
+    assert_eq!(record.last_global_offset, 3);
+    assert!(!record.dirty);
+    assert!(!record.rebuilding);
+    assert_eq!(record.summary.all_time.total.input_tokens, 10);
+    assert_eq!(record.summary.all_time.total.output_tokens, 5);
+    assert_eq!(record.summary.all_time.total.cache_read_tokens, 3);
 }
 
 #[tokio::test]

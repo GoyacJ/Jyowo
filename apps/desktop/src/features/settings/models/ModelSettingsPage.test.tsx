@@ -845,7 +845,7 @@ describe('ModelSettingsPage', () => {
 
       page = readyModelSettingsPage()
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_000)
+        await vi.advanceTimersByTimeAsync(250)
       })
       expect(getModelSettingsPage).toHaveBeenCalledTimes(2)
 

@@ -49,7 +49,7 @@ function useModelSettingsPageQuery() {
     queryKey: modelSettingsQueryKeys.page(),
     queryFn: () => getModelSettingsPage(commandClient),
     refetchInterval: (query) =>
-      query.state.data?.usageSummary.status === 'rebuilding' ? 1_000 : false,
+      query.state.data?.usageSummary.status === 'rebuilding' ? 250 : false,
   })
 }
 
