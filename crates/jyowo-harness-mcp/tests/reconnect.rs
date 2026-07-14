@@ -1,11 +1,14 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use harness_contracts::{
     Event, McpConnectionLostReason, McpServerId, McpServerSource, SessionId, TrustLevel,
 };
@@ -207,6 +210,288 @@ async fn managed_connection_records_connection_and_reconnect_metrics() {
 }
 
 #[tokio::test]
+async fn mark_unhealthy_starts_reconnect_and_recovers() {
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![
+            Ok(TestConnection::default()),
+            Ok(TestConnection::default()),
+        ]),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+
+    managed
+        .mark_unhealthy("cancel acknowledgement timed out".into())
+        .await
+        .expect("mark unhealthy");
+
+    wait_for_ready(&managed).await;
+    assert_eq!(managed.attempts_so_far(), 1);
+}
+
+#[tokio::test]
+async fn mark_unhealthy_cannot_reopen_a_closed_connection() {
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(TestConnection::default())]),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+    managed.shutdown().await.expect("shutdown");
+
+    managed
+        .mark_unhealthy("late cancellation timeout".into())
+        .await
+        .expect("late mark unhealthy");
+
+    assert_eq!(managed.state().await, McpConnectionState::Closed);
+}
+
+#[tokio::test]
+async fn shutdown_cancels_pending_recovered_schema_probe_and_shuts_candidate_down() {
+    let reconnect_started = Arc::new(Notify::new());
+    let release_reconnect = Arc::new(Notify::new());
+    let schema_probe_started = Arc::new(Notify::new());
+    let candidate_shutdown_started = Arc::new(Notify::new());
+    let release_candidate_shutdown = Arc::new(Notify::new());
+    let candidate_shutdowns = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::new(RecordingSink::default());
+    let transport = GatedReconnectTransport {
+        outcomes: Arc::new(Mutex::new(VecDeque::from([
+            Ok(TestConnection::with_results(vec![Err(
+                McpError::Connection("lost".into()),
+            )])),
+            Ok(TestConnection {
+                list_tools_started: Some(Arc::clone(&schema_probe_started)),
+                list_tools_pending: true,
+                shutdown_started: Some(Arc::clone(&candidate_shutdown_started)),
+                shutdown_release: Some(Arc::clone(&release_candidate_shutdown)),
+                shutdowns: Arc::clone(&candidate_shutdowns),
+                ..Default::default()
+            }),
+        ]))),
+        attempts: Arc::new(AtomicUsize::new(0)),
+        reconnect_started: Arc::clone(&reconnect_started),
+        release_reconnect: Arc::clone(&release_reconnect),
+    };
+    let managed = ManagedMcpConnection::connect(
+        Arc::new(transport),
+        spec(policy(0)),
+        McpServerScope::Session(SessionId::new()),
+        sink.clone(),
+    )
+    .await
+    .expect("managed connection");
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    reconnect_started.notified().await;
+    release_reconnect.notify_one();
+    schema_probe_started.notified().await;
+    let first_shutdown_managed = managed.clone();
+    let second_shutdown_managed = managed.clone();
+    let mut first_shutdown = tokio::spawn(async move { first_shutdown_managed.shutdown().await });
+    let mut second_shutdown = tokio::spawn(async move { second_shutdown_managed.shutdown().await });
+    candidate_shutdown_started.notified().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut first_shutdown)
+            .await
+            .is_err(),
+        "first managed shutdown must wait for candidate cleanup"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut second_shutdown)
+            .await
+            .is_err(),
+        "concurrent managed shutdown must wait for candidate cleanup"
+    );
+    release_candidate_shutdown.notify_one();
+    tokio::time::timeout(Duration::from_millis(100), &mut first_shutdown)
+        .await
+        .expect("first managed shutdown must finish after candidate cleanup")
+        .expect("first shutdown task")
+        .expect("first shutdown");
+    tokio::time::timeout(Duration::from_millis(100), &mut second_shutdown)
+        .await
+        .expect("second managed shutdown must finish after candidate cleanup")
+        .expect("second shutdown task")
+        .expect("second shutdown");
+    assert_eq!(managed.state().await, McpConnectionState::Closed);
+    assert_eq!(managed.attempts_so_far(), 0);
+    assert_eq!(candidate_shutdowns.load(Ordering::SeqCst), 1);
+    assert!(!sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::McpConnectionRecovered(recovered) if !recovered.was_first
+        )
+    }));
+}
+
+#[tokio::test]
+async fn managed_shutdown_propagates_candidate_cleanup_error() {
+    let reconnect_started = Arc::new(Notify::new());
+    let release_reconnect = Arc::new(Notify::new());
+    let schema_probe_started = Arc::new(Notify::new());
+    let candidate_shutdown_started = Arc::new(Notify::new());
+    let release_candidate_shutdown = Arc::new(Notify::new());
+    let transport = GatedReconnectTransport {
+        outcomes: Arc::new(Mutex::new(VecDeque::from([
+            Ok(TestConnection::with_results(vec![Err(
+                McpError::Connection("lost".into()),
+            )])),
+            Ok(TestConnection {
+                list_tools_started: Some(Arc::clone(&schema_probe_started)),
+                list_tools_pending: true,
+                shutdown_started: Some(Arc::clone(&candidate_shutdown_started)),
+                shutdown_release: Some(Arc::clone(&release_candidate_shutdown)),
+                shutdown_error: Some("candidate cleanup failed".into()),
+                ..Default::default()
+            }),
+        ]))),
+        attempts: Arc::new(AtomicUsize::new(0)),
+        reconnect_started: Arc::clone(&reconnect_started),
+        release_reconnect: Arc::clone(&release_reconnect),
+    };
+    let managed = ManagedMcpConnection::connect(
+        Arc::new(transport),
+        spec(policy(0)),
+        McpServerScope::Session(SessionId::new()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .expect("managed connection");
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    reconnect_started.notified().await;
+    release_reconnect.notify_one();
+    schema_probe_started.notified().await;
+
+    let first_shutdown_managed = managed.clone();
+    let first_shutdown = tokio::spawn(async move { first_shutdown_managed.shutdown().await });
+    candidate_shutdown_started.notified().await;
+    first_shutdown.abort();
+    let _ = first_shutdown.await;
+
+    let second_shutdown_managed = managed.clone();
+    let mut second_shutdown = tokio::spawn(async move { second_shutdown_managed.shutdown().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut second_shutdown)
+            .await
+            .is_err(),
+        "a later shutdown must keep waiting after the first caller is cancelled"
+    );
+    release_candidate_shutdown.notify_one();
+
+    let expected = Err(McpError::Connection("candidate cleanup failed".into()));
+    assert_eq!(
+        second_shutdown.await.expect("second shutdown task"),
+        expected
+    );
+    assert_eq!(managed.shutdown().await, expected);
+    assert_eq!(managed.state().await, McpConnectionState::Closed);
+}
+
+#[tokio::test]
+async fn managed_shutdown_converts_candidate_cleanup_panic_to_cached_error() {
+    let reconnect_started = Arc::new(Notify::new());
+    let release_reconnect = Arc::new(Notify::new());
+    let schema_probe_started = Arc::new(Notify::new());
+    let transport = GatedReconnectTransport {
+        outcomes: Arc::new(Mutex::new(VecDeque::from([
+            Ok(TestConnection::with_results(vec![Err(
+                McpError::Connection("lost".into()),
+            )])),
+            Ok(TestConnection {
+                list_tools_started: Some(Arc::clone(&schema_probe_started)),
+                list_tools_pending: true,
+                shutdown_panics: true,
+                ..Default::default()
+            }),
+        ]))),
+        attempts: Arc::new(AtomicUsize::new(0)),
+        reconnect_started: Arc::clone(&reconnect_started),
+        release_reconnect: Arc::clone(&release_reconnect),
+    };
+    let managed = ManagedMcpConnection::connect(
+        Arc::new(transport),
+        spec(policy(0)),
+        McpServerScope::Session(SessionId::new()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await
+    .expect("managed connection");
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    reconnect_started.notified().await;
+    release_reconnect.notify_one();
+    schema_probe_started.notified().await;
+
+    let first_error = tokio::time::timeout(Duration::from_millis(100), managed.shutdown())
+        .await
+        .expect("cleanup panic must not hang shutdown")
+        .expect_err("cleanup panic must become an error");
+    assert!(first_error.to_string().contains("panicked"));
+    assert_eq!(managed.shutdown().await, Err(first_error));
+}
+
+#[tokio::test]
+async fn managed_shutdown_converts_active_cleanup_panic_to_cached_error() {
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(TestConnection {
+            shutdown_panics: true,
+            ..Default::default()
+        })]),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+
+    let first_error = tokio::time::timeout(Duration::from_millis(100), managed.shutdown())
+        .await
+        .expect("active cleanup panic must not hang shutdown")
+        .expect_err("active cleanup panic must become an error");
+    assert!(first_error.to_string().contains("panicked"));
+    assert_eq!(managed.shutdown().await, Err(first_error));
+}
+
+#[tokio::test]
+async fn shutdown_cancels_and_joins_a_pending_reconnect_attempt() {
+    let reconnect_started = Arc::new(Notify::new());
+    let reconnect_cancelled = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::new(RecordingSink::default());
+    let transport = PendingReconnectTransport {
+        attempts: Arc::new(AtomicUsize::new(0)),
+        reconnect_started: Arc::clone(&reconnect_started),
+        reconnect_cancelled: Arc::clone(&reconnect_cancelled),
+    };
+    let managed = ManagedMcpConnection::connect(
+        Arc::new(transport),
+        spec(policy(0)),
+        McpServerScope::Session(SessionId::new()),
+        sink.clone(),
+    )
+    .await
+    .expect("managed connection");
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    reconnect_started.notified().await;
+    tokio::time::timeout(Duration::from_millis(100), managed.shutdown())
+        .await
+        .expect("shutdown must cancel a pending reconnect")
+        .expect("shutdown");
+
+    assert_eq!(managed.state().await, McpConnectionState::Closed);
+    assert_eq!(managed.attempts_so_far(), 0);
+    assert_eq!(reconnect_cancelled.load(Ordering::SeqCst), 1);
+    assert!(!sink.events().iter().any(|event| {
+        matches!(
+            event,
+            Event::McpConnectionRecovered(recovered) if !recovered.was_first
+        )
+    }));
+}
+
+#[tokio::test]
 async fn managed_connection_reports_schema_changed_after_reconnect() {
     let notify = Arc::new(Notify::new());
     let sink = Arc::new(RecordingSink::default());
@@ -254,6 +539,112 @@ async fn managed_connection_reports_schema_changed_after_reconnect() {
                     && recovered.schema_changed
         )
     }));
+}
+
+#[tokio::test]
+async fn stable_change_stream_forwards_new_generation_and_suppresses_old_generation() {
+    let notify = Arc::new(Notify::new());
+    let (initial, mut initial_changes) =
+        TestConnection::with_change_channel(vec![Err(McpError::Connection("lost".into()))]);
+    let (reconnected, mut reconnected_changes) =
+        TestConnection::with_change_channel(vec![Ok(McpToolResult::text("after"))]);
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(initial), Ok(reconnected)]).with_attempt_notify(notify.clone()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+    let mut changes = managed
+        .subscribe_changes()
+        .await
+        .expect("stable change stream");
+
+    initial_changes
+        .send(McpChange::ResourcesListChanged)
+        .await
+        .expect("initial generation notification");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), changes.next())
+            .await
+            .expect("initial notification timeout"),
+        Some(McpChange::ResourcesListChanged)
+    );
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    notify.notified().await;
+    wait_for_ready(&managed).await;
+
+    let _ = initial_changes
+        .send(McpChange::ResourceUpdated {
+            uri: "jyowo://stale".to_owned(),
+        })
+        .await;
+    reconnected_changes
+        .send(McpChange::PromptsListChanged)
+        .await
+        .expect("reconnected generation notification");
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), changes.next())
+            .await
+            .expect("reconnected notification timeout"),
+        Some(McpChange::PromptsListChanged)
+    );
+}
+
+#[tokio::test]
+async fn reconnect_shuts_down_the_replaced_connection() {
+    let notify = Arc::new(Notify::new());
+    let initial_shutdowns = Arc::new(AtomicUsize::new(0));
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![
+            Ok(TestConnection {
+                tools: vec![tool("search")],
+                results: Mutex::new(VecDeque::from([Err(McpError::Connection("lost".into()))])),
+                shutdowns: initial_shutdowns.clone(),
+                ..Default::default()
+            }),
+            Ok(TestConnection::default()),
+        ])
+        .with_attempt_notify(notify.clone()),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+
+    assert!(managed.call_tool("search", json!({})).await.is_err());
+    notify.notified().await;
+    wait_for_ready(&managed).await;
+    for _ in 0..50 {
+        if initial_shutdowns.load(Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(initial_shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shutdown_terminates_the_generation_change_forwarder() {
+    let (connection, mut connection_changes) = TestConnection::with_change_channel(Vec::new());
+    let managed = managed_connection(
+        policy(0),
+        TestTransport::new(vec![Ok(connection)]),
+        Arc::new(RecordingSink::default()),
+    )
+    .await;
+    let _changes = managed
+        .subscribe_changes()
+        .await
+        .expect("stable change stream");
+
+    managed.shutdown().await.expect("shutdown");
+
+    assert!(connection_changes
+        .send(McpChange::ToolsListChanged)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -430,6 +821,9 @@ fn tool(name: &str) -> McpToolDescriptor {
 fn tool_with_schema(name: &str, input_schema: Value) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.into(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema,
         output_schema: None,
@@ -478,6 +872,68 @@ struct TestTransport {
     attempt_notify: Option<Arc<Notify>>,
 }
 
+#[derive(Clone)]
+struct GatedReconnectTransport {
+    outcomes: Arc<Mutex<VecDeque<Result<TestConnection, McpError>>>>,
+    attempts: Arc<AtomicUsize>,
+    reconnect_started: Arc<Notify>,
+    release_reconnect: Arc<Notify>,
+}
+
+#[derive(Clone)]
+struct PendingReconnectTransport {
+    attempts: Arc<AtomicUsize>,
+    reconnect_started: Arc<Notify>,
+    reconnect_cancelled: Arc<AtomicUsize>,
+}
+
+struct PendingReconnectGuard(Arc<AtomicUsize>);
+
+impl Drop for PendingReconnectGuard {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl McpTransport for PendingReconnectTransport {
+    fn transport_id(&self) -> &'static str {
+        "pending-reconnect-test"
+    }
+
+    async fn connect(&self, _spec: McpServerSpec) -> Result<Arc<dyn McpConnection>, McpError> {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(Arc::new(TestConnection::with_results(vec![Err(
+                McpError::Connection("lost".into()),
+            )])));
+        }
+
+        let _guard = PendingReconnectGuard(Arc::clone(&self.reconnect_cancelled));
+        self.reconnect_started.notify_one();
+        futures::future::pending::<()>().await;
+        unreachable!("pending reconnect is cancelled by shutdown")
+    }
+}
+
+#[async_trait]
+impl McpTransport for GatedReconnectTransport {
+    fn transport_id(&self) -> &'static str {
+        "gated-test"
+    }
+
+    async fn connect(&self, _spec: McpServerSpec) -> Result<Arc<dyn McpConnection>, McpError> {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) > 0 {
+            self.reconnect_started.notify_one();
+            self.release_reconnect.notified().await;
+        }
+        self.outcomes
+            .lock()
+            .pop_front()
+            .unwrap_or_else(|| Err(McpError::Connection("no test outcome".into())))
+            .map(|connection| Arc::new(connection) as Arc<dyn McpConnection>)
+    }
+}
+
 impl TestTransport {
     fn new(outcomes: Vec<Result<TestConnection, McpError>>) -> Self {
         Self {
@@ -514,6 +970,14 @@ impl McpTransport for TestTransport {
 struct TestConnection {
     tools: Vec<McpToolDescriptor>,
     results: Mutex<VecDeque<Result<McpToolResult, McpError>>>,
+    list_tools_started: Option<Arc<Notify>>,
+    list_tools_pending: bool,
+    shutdown_started: Option<Arc<Notify>>,
+    shutdown_release: Option<Arc<Notify>>,
+    shutdown_error: Option<String>,
+    shutdown_panics: bool,
+    shutdowns: Arc<AtomicUsize>,
+    changes: Mutex<Option<mpsc::Receiver<McpChange>>>,
 }
 
 impl TestConnection {
@@ -521,6 +985,7 @@ impl TestConnection {
         Self {
             tools: vec![tool("search")],
             results: Mutex::new(VecDeque::from(results)),
+            ..Default::default()
         }
     }
 
@@ -531,7 +996,23 @@ impl TestConnection {
         Self {
             tools: vec![tool_with_schema("search", schema)],
             results: Mutex::new(VecDeque::from(results)),
+            ..Default::default()
         }
+    }
+
+    fn with_change_channel(
+        results: Vec<Result<McpToolResult, McpError>>,
+    ) -> (Self, mpsc::Sender<McpChange>) {
+        let (sender, receiver) = mpsc::channel(8);
+        (
+            Self {
+                tools: vec![tool("search")],
+                results: Mutex::new(VecDeque::from(results)),
+                changes: Mutex::new(Some(receiver)),
+                ..Default::default()
+            },
+            sender,
+        )
     }
 }
 
@@ -542,6 +1023,12 @@ impl McpConnection for TestConnection {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        if let Some(started) = &self.list_tools_started {
+            started.notify_one();
+        }
+        if self.list_tools_pending {
+            futures::future::pending::<()>().await;
+        }
         Ok(self.tools.clone())
     }
 
@@ -553,12 +1040,24 @@ impl McpConnection for TestConnection {
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
-        Ok(Box::pin(futures::stream::iter([
-            McpChange::ToolsListChanged,
-        ])))
+        Ok(match self.changes.lock().take() {
+            Some(changes) => Box::pin(changes),
+            None => Box::pin(futures::stream::empty()),
+        })
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        if let Some(started) = &self.shutdown_started {
+            started.notify_one();
+        }
+        if let Some(release) = &self.shutdown_release {
+            release.notified().await;
+        }
+        if let Some(error) = &self.shutdown_error {
+            return Err(McpError::Connection(error.clone()));
+        }
+        assert!(!self.shutdown_panics, "candidate shutdown panic");
         Ok(())
     }
 }

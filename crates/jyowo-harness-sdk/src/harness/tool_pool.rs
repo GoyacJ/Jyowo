@@ -1,9 +1,11 @@
 use super::*;
 
 impl Harness {
-    pub(super) async fn inject_mcp_tools(&self) -> Result<(), HarnessError> {
+    pub(super) async fn inject_mcp_tools(
+        &self,
+    ) -> Result<Vec<McpToolInjectionOutcome>, HarnessError> {
         let Some(config) = &self.inner.mcp_config else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let mut server_ids = config.server_ids_to_inject.clone();
         for server_id in config.registry.ready_plugin_server_ids().await {
@@ -11,14 +13,51 @@ impl Harness {
                 server_ids.push(server_id);
             }
         }
-        for server_id in &server_ids {
-            config
+        let mut outcomes = Vec::with_capacity(server_ids.len());
+        for server_id in server_ids {
+            let configured = config.server_ids_to_inject.contains(&server_id);
+            let required = if configured {
+                config
+                    .registry
+                    .server_spec(&server_id)
+                    .await
+                    .is_some_and(|spec| spec.required)
+            } else {
+                true
+            };
+            match config
                 .registry
-                .inject_tools_into(&self.inner.tool_registry, server_id)
+                .inject_tools_into(&self.inner.tool_registry, &server_id)
                 .await
-                .map_err(|error| HarnessError::Other(error.to_string()))?;
+            {
+                Ok(tool_names) => outcomes.push(McpToolInjectionOutcome::Injected {
+                    server_id,
+                    tool_names,
+                }),
+                Err(_) => {
+                    let reason = "MCP tool injection failed".to_owned();
+                    let _ = config
+                        .registry
+                        .set_tool_sync_error(&server_id, Some(reason.clone()))
+                        .await;
+                    config.event_sink.emit(Event::UnexpectedError(
+                        harness_contracts::UnexpectedErrorEvent {
+                            session_id: None,
+                            run_id: None,
+                            error: reason.clone(),
+                            at: now(),
+                        },
+                    ));
+                    if required {
+                        return Err(HarnessError::Other(
+                            "required MCP server failed during tool injection".to_owned(),
+                        ));
+                    }
+                    outcomes.push(McpToolInjectionOutcome::SkippedOptional { server_id, reason });
+                }
+            }
         }
-        Ok(())
+        Ok(outcomes)
     }
 
     #[cfg(feature = "tool-search")]
@@ -821,6 +860,108 @@ pub(super) fn loaded_tool_names(tools: &ToolPool) -> BTreeSet<String> {
         .into_iter()
         .map(|descriptor| descriptor.name)
         .collect()
+}
+
+#[cfg(test)]
+mod mcp_injection_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use harness_contracts::NoopRedactor;
+    use harness_contracts::{McpServerId, McpServerScope, McpServerSource};
+    use harness_journal::InMemoryEventStore;
+    use harness_mcp::{
+        McpConnection, McpError, McpRegistry, McpServerSpec, McpToolDescriptor, McpToolResult,
+        NoopMcpEventSink, TransportChoice,
+    };
+    use harness_model::TestModelProvider;
+    use harness_sandbox::NoopSandbox;
+    use std::sync::Arc;
+
+    struct FailingListConnection;
+
+    #[async_trait]
+    impl McpConnection for FailingListConnection {
+        fn connection_id(&self) -> &str {
+            "failing-list"
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+            Err(McpError::Protocol("fixture list failure".to_owned()))
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: serde_json::Value,
+        ) -> Result<McpToolResult, McpError> {
+            unreachable!("tool calls are not part of this fixture")
+        }
+
+        async fn shutdown(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    async fn harness_with_failing_mcp(required: bool) -> (Harness, McpServerId) {
+        let registry = McpRegistry::new();
+        let server_id = McpServerId("fixture".to_owned());
+        let mut spec = McpServerSpec::new(
+            server_id.clone(),
+            "fixture",
+            TransportChoice::InProcess,
+            McpServerSource::User,
+        );
+        spec.required = required;
+        registry
+            .add_ready_server(
+                spec,
+                McpServerScope::Global,
+                Arc::new(FailingListConnection),
+            )
+            .await
+            .expect("register MCP fixture");
+        let harness = Harness::builder()
+            .with_model(TestModelProvider::default())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_mcp_config(McpConfig {
+                registry,
+                server_ids_to_inject: vec![server_id.clone()],
+                event_sink: Arc::new(NoopMcpEventSink),
+            })
+            .build()
+            .await
+            .expect("build harness");
+        (harness, server_id)
+    }
+
+    #[tokio::test]
+    async fn optional_mcp_list_failure_returns_skipped_outcome() {
+        let (harness, server_id) = harness_with_failing_mcp(false).await;
+
+        let outcomes = harness
+            .inject_mcp_tools()
+            .await
+            .expect("optional list failure must not abort injection");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [McpToolInjectionOutcome::SkippedOptional { server_id: failed, .. }]
+                if failed == &server_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn required_mcp_list_failure_aborts_injection() {
+        let (harness, _) = harness_with_failing_mcp(true).await;
+
+        let error = harness
+            .inject_mcp_tools()
+            .await
+            .expect_err("required list failure must abort injection");
+
+        assert!(!error.to_string().contains("fixture list failure"));
+    }
 }
 
 #[cfg(all(test, feature = "agents-team"))]

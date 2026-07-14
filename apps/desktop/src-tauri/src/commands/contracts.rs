@@ -552,11 +552,21 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpConfigLayer {
+    #[default]
+    Global,
+    Project,
+}
+
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SaveMcpServerRequest {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub required: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -567,6 +577,7 @@ impl std::fmt::Debug for SaveMcpServerRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SaveMcpServerRequest")
             .field("enabled", &self.enabled)
+            .field("required", &self.required)
             .field("display_name", &self.display_name)
             .field("id", &self.id)
             .field("scope", &self.scope)
@@ -693,7 +704,12 @@ pub enum McpServerConfigTransportPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfigPayload {
+    pub config_layer: McpConfigLayer,
+    pub effective: bool,
     pub enabled: bool,
+    pub manageable: bool,
+    pub overrides_global: bool,
+    pub required: bool,
     pub display_name: String,
     pub id: String,
     pub scope: String,
@@ -760,6 +776,14 @@ pub enum McpDiagnosticSeverity {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpDiagnosticPlane {
+    #[default]
+    Settings,
+    Task,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpDiagnosticRecord {
@@ -769,13 +793,34 @@ pub struct McpDiagnosticRecord {
     pub severity: McpDiagnosticSeverity,
     pub summary: String,
     pub timestamp: String,
+    #[serde(default)]
+    pub plane: McpDiagnosticPlane,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_segment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTaskDiagnosticClearWatermarks {
+    pub all: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub servers: BTreeMap<String, DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerSummaryPayload {
+    pub config_layer: McpConfigLayer,
     pub display_name: String,
     pub enabled: bool,
+    pub effective: bool,
+    pub required: bool,
     pub exposed_tool_count: u32,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -787,17 +832,20 @@ pub struct McpServerSummaryPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub manageable: bool,
+    pub overrides_global: bool,
     pub origin: &'static str,
     pub scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_plugin_id: Option<String>,
     pub status: &'static str,
+    pub status_source: &'static str,
     pub transport: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListMcpServersResponse {
+    pub config_layer: McpConfigLayer,
     pub servers: Vec<McpServerSummaryPayload>,
 }
 
@@ -816,6 +864,7 @@ pub struct GetMcpServerConfigResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteMcpServerResponse {
+    pub config_layer: McpConfigLayer,
     pub id: String,
     pub status: &'static str,
 }
@@ -893,6 +942,7 @@ pub struct BrowserMcpPresetSummaryPayload {
     pub enabled: bool,
     pub id: BrowserMcpPresetId,
     pub server_id: &'static str,
+    pub version: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1323,7 +1373,14 @@ pub trait McpServerStore: Send + Sync {
 pub trait McpDiagnosticStore: Send + Sync {
     fn load_records(&self) -> Result<Vec<McpDiagnosticRecord>, CommandErrorPayload>;
     fn append_record(&self, record: &McpDiagnosticRecord) -> Result<(), CommandErrorPayload>;
-    fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload>;
+    fn load_task_clear_watermarks(
+        &self,
+    ) -> Result<McpTaskDiagnosticClearWatermarks, CommandErrorPayload>;
+    fn clear_records(
+        &self,
+        server_id: Option<&str>,
+        task_cleared_at: DateTime<Utc>,
+    ) -> Result<(), CommandErrorPayload>;
 }
 
 pub trait SkillStore: Send + Sync {
@@ -2848,6 +2905,7 @@ mod debug_redaction_tests {
     fn mcp_debug_redacts_inline_env_and_headers() {
         let request = SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Server".to_owned(),
             id: "server".to_owned(),
             scope: "workspace".to_owned(),
@@ -2867,6 +2925,7 @@ mod debug_redaction_tests {
         };
         let record = McpServerConfigRecord {
             enabled: request.enabled,
+            required: request.required,
             display_name: request.display_name.clone(),
             id: request.id.clone(),
             scope: request.scope.clone(),

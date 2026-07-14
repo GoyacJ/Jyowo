@@ -293,7 +293,7 @@ async fn jsonrpc_sampling_create_message_denies_by_default_and_emits_event() {
                 "request_id": RequestId::from_u128(3),
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": []
             })),
         ))
@@ -307,7 +307,6 @@ async fn jsonrpc_sampling_create_message_denies_by_default_and_emits_event() {
         sink.events().first(),
         Some(Event::McpSamplingRequested(event))
             if event.server_id == McpServerId("github".to_owned())
-                && event.request_id == RequestId::from_u128(3)
                 && matches!(
                     event.outcome,
                     SamplingOutcome::Denied {
@@ -341,7 +340,7 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
                 "request_id": RequestId::from_u128(3),
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": [{ "role": "user", "content": { "type": "text", "text": "hello" } }]
             })),
         ))
@@ -371,6 +370,79 @@ async fn jsonrpc_sampling_create_message_invokes_provider_and_records_token_metr
 }
 
 #[tokio::test]
+async fn sampling_create_message_uses_the_2025_11_25_wire_model() {
+    let sink = Arc::new(CollectingSink::default());
+    let provider = Arc::new(RecordingSamplingProvider::default());
+    let broker = Arc::new(FixedPermissionBroker::new(Decision::AllowOnce));
+    let handler = SamplingJsonRpcHandler::new(SamplingPolicy::allow_auto(), sink.clone())
+        .with_session_id(SessionId::from_u128(1))
+        .with_run_id(Some(RunId::from_u128(2)))
+        .with_server_id(McpServerId("github".to_owned()))
+        .with_server_trust(TrustLevel::AdminTrusted)
+        .with_authorization_context(sampling_authorization_context(broker, sink))
+        .with_provider(provider.clone());
+
+    let response = handler
+        .handle_request(JsonRpcRequest::new(
+            json!(11),
+            "sampling/createMessage",
+            Some(json!({
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hello" }]
+                }],
+                "modelPreferences": {
+                    "hints": [{ "name": "claude-sonnet" }],
+                    "costPriority": 0.2,
+                    "speedPriority": 0.3,
+                    "intelligencePriority": 0.9
+                },
+                "systemPrompt": "Be precise",
+                "includeContext": "none",
+                "temperature": 0.4,
+                "maxTokens": 64,
+                "stopSequences": ["STOP"],
+                "metadata": { "provider": "test" },
+                "tools": [{
+                    "name": "lookup",
+                    "description": "Lookup a value",
+                    "inputSchema": { "type": "object" }
+                }],
+                "toolChoice": { "mode": "required" }
+            })),
+        ))
+        .await;
+
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let request = provider.last_request().expect("provider request");
+    assert_eq!(request.model_id.as_deref(), Some("claude-sonnet"));
+    assert_eq!(request.max_output_tokens, 64);
+    assert_eq!(
+        request.params["modelPreferences"]["hints"][0]["name"],
+        "claude-sonnet"
+    );
+    assert_eq!(request.params["toolChoice"]["mode"], "required");
+}
+
+#[tokio::test]
+async fn sampling_create_message_rejects_legacy_snake_case_wire_fields() {
+    let handler = SamplingJsonRpcHandler::new(
+        SamplingPolicy::denied(),
+        Arc::new(CollectingSink::default()),
+    );
+
+    let response = handler
+        .handle_request(JsonRpcRequest::new(
+            json!(12),
+            "sampling/createMessage",
+            Some(json!({ "messages": [], "max_tokens": 64 })),
+        ))
+        .await;
+
+    assert_eq!(response.error.expect("invalid params").code, -32602);
+}
+
+#[tokio::test]
 async fn jsonrpc_sampling_create_message_rejects_auto_allow_without_authoritative_run_id() {
     let sink = Arc::new(CollectingSink::default());
     let provider = Arc::new(RecordingSamplingProvider::default());
@@ -392,7 +464,7 @@ async fn jsonrpc_sampling_create_message_rejects_auto_allow_without_authoritativ
                 "run_id": RunId::from_u128(99).to_string(),
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": []
             })),
         ))
@@ -442,7 +514,7 @@ async fn jsonrpc_sampling_create_message_waits_for_approval_before_provider_call
                 "server_id": "spoofed",
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": []
             })),
         ))
@@ -502,7 +574,7 @@ async fn jsonrpc_sampling_create_message_rejects_approval_without_authoritative_
                 "run_id": RunId::from_u128(99).to_string(),
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": []
             })),
         ))
@@ -542,7 +614,7 @@ async fn jsonrpc_sampling_create_message_does_not_call_provider_when_approval_de
                 "request_id": RequestId::from_u128(5),
                 "model": "claude-3-5-sonnet",
                 "input_tokens": 2,
-                "max_tokens": 4,
+                "maxTokens": 4,
                 "messages": []
             })),
         ))

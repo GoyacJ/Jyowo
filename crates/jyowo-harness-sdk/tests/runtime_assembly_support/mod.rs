@@ -380,6 +380,9 @@ pub fn mcp_tool(name: &str, always_load: bool) -> McpToolDescriptor {
     }
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} mcp tool")),
         input_schema: json!({ "type": "object" }),
         output_schema: None,
@@ -390,12 +393,17 @@ pub fn mcp_tool(name: &str, always_load: bool) -> McpToolDescriptor {
 
 pub struct TestMcpConnection {
     pub tools: Vec<McpToolDescriptor>,
+    pub state: McpConnectionState,
 }
 
 #[async_trait]
 impl McpConnection for TestMcpConnection {
     fn connection_id(&self) -> &'static str {
         "test-mcp"
+    }
+
+    async fn connection_state(&self) -> McpConnectionState {
+        self.state.clone()
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
@@ -778,6 +786,7 @@ impl Plugin for McpRuntimePlugin {
                 ),
                 Arc::new(TestMcpConnection {
                     tools: vec![mcp_tool("echo", false)],
+                    state: McpConnectionState::Ready,
                 }),
             )
             .await?;

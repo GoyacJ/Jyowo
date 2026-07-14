@@ -12,10 +12,10 @@ use std::{
 
 #[cfg(feature = "oauth")]
 use harness_contracts::{Event, McpOAuthRefreshOutcome, McpOAuthRefreshPhase};
-use harness_contracts::{McpServerId, McpServerSource, RequestId};
+use harness_contracts::{McpServerId, McpServerSource};
 use harness_mcp::{
-    DirectElicitationHandler, ElicitationError, HttpTransport, McpClient, McpClientAuth,
-    McpConnectContext, McpError, McpServerSpec, TransportChoice, MCP_ELICITATION_REQUIRED_CODE,
+    DirectElicitationHandler, HttpTransport, McpClient, McpClientAuth, McpConnectContext, McpError,
+    McpServerSpec, TransportChoice, MCP_ELICITATION_REQUIRED_CODE,
 };
 #[cfg(feature = "oauth")]
 use harness_mcp::{McpEventSink, McpMetric, McpMetricOutcome, McpMetricsSink};
@@ -29,9 +29,17 @@ use wiremock::{
 
 mod support;
 
+async fn mount_get_unsupported(server: &MockServer) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("x-mcp-client", "jyowo"))
         .and(header("authorization", "Bearer token"))
@@ -110,8 +118,9 @@ async fn http_transport_posts_jsonrpc_with_headers_and_auth() {
 }
 
 #[tokio::test]
-async fn http_transport_decodes_elicitation_required_error() {
+async fn http_transport_decodes_url_elicitation_required_error() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -143,13 +152,12 @@ async fn http_transport_decodes_elicitation_required_error() {
                 "code": MCP_ELICITATION_REQUIRED_CODE,
                 "message": "more input required",
                 "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": {
-                        "type": "object",
-                        "properties": { "token": { "type": "string" } }
-                    }
+                    "elicitations": [{
+                        "mode": "url",
+                        "message": "authorize access",
+                        "elicitationId": "auth-42",
+                        "url": "https://example.com/authorize"
+                    }]
                 }
             }
         })))
@@ -176,16 +184,18 @@ async fn http_transport_decodes_elicitation_required_error() {
         .await
         .expect_err("elicitation required");
 
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message)
-            if message.contains("credentials") && !message.contains("github")
-    ));
+    let McpError::UrlElicitationRequired(elicitations) = error else {
+        panic!("expected structured URL elicitation error");
+    };
+    assert_eq!(elicitations.len(), 1);
+    assert_eq!(elicitations[0].elicitation_id, "auth-42");
+    assert_eq!(elicitations[0].url, "https://example.com/authorize");
 }
 
 #[tokio::test]
-async fn http_transport_continues_tool_call_after_elicitation_resolution() {
+async fn http_transport_does_not_retry_legacy_form_elicitation_errors() {
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "method": "initialize" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -225,7 +235,7 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
                 "message": "more input required",
                 "data": {
                     "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
+                    "request_id": "legacy-42",
                     "subject": "credentials",
                     "schema": {
                         "type": "object",
@@ -254,265 +264,7 @@ async fn http_transport_continues_tool_call_after_elicitation_resolution() {
                 "isError": false
             }
         })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Ok(json!({ "token": "resolved" })) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let result = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect("tool call continues");
-    assert_eq!(result, harness_mcp::McpToolResult::text("found"));
-}
-
-#[tokio::test]
-async fn http_transport_fails_closed_when_elicitation_is_declined() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "tools/call" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Err(ElicitationError::UserDeclined) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let error = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect_err("declined elicitation fails closed");
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("user declined")
-    ));
-}
-
-#[tokio::test]
-async fn http_transport_fails_closed_when_elicitation_times_out() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "tools/call" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let spec = McpServerSpec::new(
-        McpServerId("http".into()),
-        "http fixture",
-        TransportChoice::Http {
-            url: server.uri(),
-            headers: BTreeMap::new(),
-        },
-        McpServerSource::Workspace,
-    );
-    let handler =
-        DirectElicitationHandler::new(|_request| async { Err(ElicitationError::Timeout) });
-    let connection = McpClient::new(Arc::new(HttpTransport::new()))
-        .connect_with_context(
-            spec,
-            support::with_transport_authorization(
-                McpConnectContext::default().with_elicitation_handler(Arc::new(handler)),
-            ),
-        )
-        .await
-        .expect("http connects");
-
-    let error = connection
-        .call_tool("search", json!({ "q": "mcp" }))
-        .await
-        .expect_err("timed-out elicitation fails closed");
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("timed out")
-    ));
-}
-
-#[tokio::test]
-async fn http_transport_does_not_loop_on_repeated_elicitation() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({ "method": "initialize" })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "fixture", "version": "0.1.0" }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(
-            json!({ "method": "notifications/initialized" }),
-        ))
-        .respond_with(ResponseTemplate::new(202))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "q": "mcp" }
-            }
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(42),
-                    "subject": "credentials",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(body_partial_json(json!({
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "q": "mcp", "token": "resolved" }
-            }
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "error": {
-                "code": MCP_ELICITATION_REQUIRED_CODE,
-                "message": "more input still required",
-                "data": {
-                    "server_id": "http",
-                    "request_id": RequestId::from_u128(43),
-                    "subject": "second-secret",
-                    "schema": { "type": "object" }
-                }
-            }
-        })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -544,12 +296,9 @@ async fn http_transport_does_not_loop_on_repeated_elicitation() {
     let error = connection
         .call_tool("search", json!({ "q": "mcp" }))
         .await
-        .expect_err("repeated elicitation fails closed");
-    assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(
-        error,
-        McpError::Elicitation(message) if message.contains("second-secret")
-    ));
+        .expect_err("legacy form elicitation errors are not retried");
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(error, McpError::Protocol(message) if message.contains("-32042")));
 }
 
 #[tokio::test]
@@ -574,6 +323,7 @@ async fn http_transport_refreshes_oauth_and_posts_with_access_token() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer oauth-access"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -639,7 +389,7 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
                 "refresh_token": "refresh"
             }))
         })
-        .expect(3)
+        .expect(4)
         .mount(&token_server)
         .await;
 
@@ -669,13 +419,17 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(header("authorization", "Bearer short-3"))
         .and(body_partial_json(json!({ "method": "tools/list" })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0",
             "id": 2,
             "result": { "tools": [] }
         })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(405))
         .expect(1)
         .mount(&server)
         .await;
@@ -707,11 +461,20 @@ async fn http_transport_refreshes_oauth_before_short_lived_token_expires() {
     .expect("http oauth connects");
     let tools = connection.list_tools().await.expect("tools list");
 
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while refreshes.load(Ordering::SeqCst) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("GET channel authorization refresh completes");
+
     assert!(tools.is_empty());
-    assert_eq!(refreshes.load(Ordering::SeqCst), 3);
+    assert_eq!(refreshes.load(Ordering::SeqCst), 4);
     assert_eq!(
         metrics.oauth_refresh_outcomes(),
         vec![
+            McpMetricOutcome::Success,
             McpMetricOutcome::Success,
             McpMetricOutcome::Success,
             McpMetricOutcome::Success
@@ -740,6 +503,7 @@ async fn http_transport_retries_once_after_unauthorized_when_oauth_refresh_succe
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer retry-1"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -834,6 +598,7 @@ async fn http_transport_emits_oauth_refresh_lifecycle_events() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer fresh"))
         .and(body_partial_json(json!({ "method": "initialize" })))
@@ -935,6 +700,7 @@ async fn http_transport_fails_closed_when_unauthorized_oauth_refresh_fails() {
         .await;
 
     let server = MockServer::start().await;
+    mount_get_unsupported(&server).await;
     Mock::given(method("POST"))
         .and(header("authorization", "Bearer stale"))
         .and(body_partial_json(json!({ "method": "initialize" })))

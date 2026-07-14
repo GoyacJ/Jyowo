@@ -1,13 +1,16 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use harness_contracts::PermissionMode;
 use serde_json::Value;
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::{
+    net::TcpStream,
+    sync::{broadcast, mpsc, watch, Mutex},
+    task::JoinHandle,
+};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::{
-    connect_async,
+    client_async_tls,
     tungstenite::{
         client::IntoClientRequest,
         http::{HeaderName, HeaderValue, StatusCode},
@@ -17,37 +20,58 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    authorize_mcp_transport_connect, call_tool_request, client_auth,
-    continue_after_elicitation_response, decode_empty_result, decode_list_prompts,
-    decode_list_resources, decode_list_tools, decode_prompt_messages, decode_read_resource,
-    decode_tool_result, get_prompt_request, initialize_request, initialized_notification,
+    authorize_mcp_transport_connect, call_tool_request, client_auth, client_inbound_support,
+    decode_empty_result, decode_list_prompts, decode_list_resources, decode_list_tools,
+    decode_prompt_messages, decode_read_resource, decode_tool_result, get_prompt_request,
     list_prompts_request, list_resources_request, list_tools_request, notification_change,
     read_resource_request, response_key, subscribe_resource_request, tool_call_event_from_change,
-    unsubscribe_resource_request, ElicitationHandler, JsonRpcNotification, JsonRpcPeer,
-    JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpConnectContext, McpConnection,
-    McpError, McpMetricsSink, McpPrompt, McpPromptMessages, McpResource, McpResourceContents,
-    McpServerSpec, McpToolCallEvent, McpToolCallStream, McpToolDescriptor, McpToolResult,
-    McpTransport, NoopMcpMetricsSink, TransportChoice,
+    unsubscribe_resource_request, JsonRpcNotification, JsonRpcPeer, JsonRpcRequest,
+    JsonRpcResponse, ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError,
+    McpImplementation, McpListPage, McpMessage, McpMessageSink, McpOrderedNotificationHandler,
+    McpOutboundMessage, McpPeer, McpPrompt, McpPromptMessages, McpReadResourceResult, McpResource,
+    McpServerSpec, McpSession, McpToolCallEvent, McpToolCallStream, McpToolDescriptor,
+    McpToolResult, McpTransport, NoopMcpMetricsSink, TransportChoice,
 };
+
+#[cfg(test)]
+use crate::McpClientCapabilities;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsWriter = futures::stream::SplitSink<WsStream, Message>;
-type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Result<JsonRpcResponse, McpError>>>>>;
-type PendingReceiver = oneshot::Receiver<Result<JsonRpcResponse, McpError>>;
+type WsReader = futures::stream::SplitStream<WsStream>;
+
+const OUTBOUND_CAPACITY: usize = 64;
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub struct WebsocketTransport {
-    metrics_sink: Arc<dyn McpMetricsSink>,
+    metrics_sink: Arc<dyn crate::McpMetricsSink>,
+    pinned_resolutions: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl WebsocketTransport {
     pub fn new() -> Self {
         Self {
             metrics_sink: Arc::new(NoopMcpMetricsSink),
+            pinned_resolutions: Vec::new(),
         }
     }
 
-    pub fn with_metrics_sink(metrics_sink: Arc<dyn McpMetricsSink>) -> Self {
-        Self { metrics_sink }
+    pub fn with_metrics_sink(metrics_sink: Arc<dyn crate::McpMetricsSink>) -> Self {
+        Self {
+            metrics_sink,
+            pinned_resolutions: Vec::new(),
+        }
+    }
+
+    pub fn with_pinned_resolution(
+        mut self,
+        host: impl Into<String>,
+        addrs: Vec<SocketAddr>,
+    ) -> Self {
+        let host = host.into();
+        let host = super::network_endpoint::normalize_endpoint_host_key(&host).unwrap_or(host);
+        self.pinned_resolutions.push((host, addrs));
+        self
     }
 }
 
@@ -76,47 +100,192 @@ impl McpTransport for WebsocketTransport {
         authorize_mcp_transport_connect(&context, &spec).await?;
         let TransportChoice::WebSocket { url, headers } = spec.transport.clone() else {
             return Err(McpError::Unsupported(
-                "WebsocketTransport requires TransportChoice::WebSocket".into(),
+                "WebsocketTransport requires TransportChoice::WebSocket".to_owned(),
             ));
         };
+        let endpoint = parse_websocket_endpoint(&url)?;
+        validate_websocket_headers(&headers)?;
 
         let auth_provider = client_auth::McpClientAuthProvider::new(&spec.auth)
             .with_metrics_sink(context.metrics_sink_or(Arc::clone(&self.metrics_sink)));
-        let request = websocket_request(&url, &headers, &auth_provider).await?;
-        let (socket, _) = match connect_async(request).await {
-            Ok(connection) => connection,
-            Err(error) if is_auth_expired_handshake(&error) && auth_provider.can_refresh() => {
-                auth_provider.force_refresh_authorization_header().await?;
-                let request = websocket_request(&url, &headers, &auth_provider).await?;
-                connect_async(request)
-                    .await
-                    .map_err(|error| McpError::Transport(error.to_string()))?
+        let handshake = async {
+            let resolved = super::network_endpoint::resolve_network_endpoint(
+                &endpoint,
+                self.pinned_resolutions
+                    .iter()
+                    .rev()
+                    .find(|(host, _)| host.eq_ignore_ascii_case(&endpoint.host))
+                    .map(|(_, addrs)| addrs.as_slice()),
+            )
+            .await?;
+            let request =
+                websocket_request(endpoint.url.as_str(), &headers, &auth_provider).await?;
+            match websocket_handshake(request, &resolved).await {
+                Ok(connection) => Ok(connection),
+                Err(error) if is_auth_expired_handshake(&error) && auth_provider.can_refresh() => {
+                    auth_provider.force_refresh_authorization_header().await?;
+                    let request =
+                        websocket_request(endpoint.url.as_str(), &headers, &auth_provider).await?;
+                    websocket_handshake(request, &resolved)
+                        .await
+                        .map_err(|error| McpError::Transport(error.to_string()))
+                }
+                Err(error) => Err(McpError::Transport(error.to_string())),
             }
-            Err(error) => return Err(McpError::Transport(error.to_string())),
         };
+        let (socket, _) = tokio::time::timeout(spec.timeouts.handshake, handshake)
+            .await
+            .map_err(|_| McpError::Connection("websocket handshake timed out".to_owned()))??;
         let (writer, reader) = socket.split();
-        let pending = Arc::new(Mutex::new(HashMap::new()));
         let (changes, _) = broadcast::channel(64);
-        spawn_reader(reader, Arc::clone(&pending), changes.clone());
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+        let sink = Arc::new(WebsocketMessageSink::new(outbound_tx));
+        let support = client_inbound_support(&spec, &context);
+        let session = McpSession::new(
+            spec.capabilities_expected,
+            support.capabilities,
+            McpImplementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        );
+        let notification_handler = Arc::new(WebsocketNotificationHandler {
+            changes: changes.clone(),
+        });
+        let mut peer_builder = McpPeer::builder(sink.clone(), session);
+        if let Some(handler) = support.sampling {
+            peer_builder = peer_builder.sampling_handler(handler);
+        }
+        if let Some(handler) = support.elicitation {
+            peer_builder = peer_builder.elicitation_handler(handler);
+        }
+        for method in change_notification_methods() {
+            peer_builder =
+                peer_builder.ordered_notification_handler(method, notification_handler.clone());
+        }
+        let peer = peer_builder.build()?;
+        let (cancel, cancel_rx) = watch::channel(false);
+        let writer_task = tokio::spawn(run_writer(
+            writer,
+            outbound_rx,
+            peer.clone(),
+            cancel.clone(),
+            cancel_rx,
+        ));
+        let reader_task = tokio::spawn(run_reader(
+            reader,
+            peer.clone(),
+            cancel.clone(),
+            cancel.subscribe(),
+        ));
 
-        let connection = Arc::new(WebsocketConnection {
+        if let Err(error) = peer.initialize(spec.timeouts.handshake).await {
+            cancel.send_replace(true);
+            sink.close().await;
+            writer_task.abort();
+            reader_task.abort();
+            peer.close(format!("websocket initialize failed: {error}"))
+                .await;
+            return Err(error);
+        }
+
+        Ok(Arc::new(WebsocketConnection {
             connection_id: format!("websocket:{}", spec.server_id.0),
-            writer: Arc::new(Mutex::new(writer)),
-            pending,
             changes,
             timeout: spec.timeouts.call_default,
-            peer: JsonRpcPeer::new(),
-            elicitation_handler: context.elicitation_handler,
-            permission_mode: context.permission_mode,
-        });
-        connection
-            .send(initialize_request(&connection.peer))
-            .await?;
-        connection
-            .send_notification(initialized_notification())
-            .await?;
-        Ok(connection)
+            peer,
+            sink,
+            cancel,
+            writer_task: Mutex::new(Some(writer_task)),
+            reader_task: Mutex::new(Some(reader_task)),
+            legacy_request_builder: JsonRpcPeer::new(),
+        }))
     }
+}
+
+fn parse_websocket_endpoint(
+    raw: &str,
+) -> Result<super::network_endpoint::ParsedNetworkEndpoint, McpError> {
+    let mut url = url::Url::parse(raw)
+        .map_err(|_| McpError::Protocol("invalid MCP WebSocket endpoint URL".to_owned()))?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must use ws or wss".to_owned(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must not contain userinfo".to_owned(),
+        ));
+    }
+    if url.fragment().is_some() {
+        return Err(McpError::Protocol(
+            "MCP WebSocket endpoint must not contain a fragment".to_owned(),
+        ));
+    }
+    let (host, kind) = super::network_endpoint::normalize_endpoint_host(
+        url.host()
+            .ok_or_else(|| McpError::Protocol("MCP WebSocket endpoint has no host".to_owned()))?,
+    )?;
+    if matches!(
+        kind,
+        super::network_endpoint::NetworkHostKind::Localhost
+            | super::network_endpoint::NetworkHostKind::DnsName
+    ) {
+        url.set_host(Some(&host))
+            .map_err(|_| McpError::Protocol("invalid MCP WebSocket endpoint host".to_owned()))?;
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| McpError::Protocol("MCP WebSocket endpoint has no valid port".to_owned()))?;
+    Ok(super::network_endpoint::ParsedNetworkEndpoint {
+        url,
+        host,
+        port,
+        kind,
+    })
+}
+
+fn validate_websocket_headers(
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<(), McpError> {
+    for key in headers.keys() {
+        let name = HeaderName::try_from(key.as_str())
+            .map_err(|error| McpError::Transport(error.to_string()))?;
+        if is_websocket_transport_owned_header(&name) {
+            return Err(McpError::Protocol(format!(
+                "WebSocket header {name} is owned by the MCP transport"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn websocket_handshake(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    resolved: &[SocketAddr],
+) -> Result<
+    (
+        WsStream,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    WebSocketError,
+> {
+    let stream = connect_resolved(resolved).await?;
+    client_async_tls(request, stream).await
+}
+
+async fn connect_resolved(resolved: &[SocketAddr]) -> Result<TcpStream, WebSocketError> {
+    let mut last_error = None;
+    for address in resolved {
+        match TcpStream::connect(address).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(WebSocketError::Io(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "WebSocket endpoint resolved to no addresses",
+        )
+    })))
 }
 
 async fn websocket_request(
@@ -142,6 +311,19 @@ async fn websocket_request(
     Ok(request)
 }
 
+fn is_websocket_transport_owned_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "authorization"
+            | "connection"
+            | "content-length"
+            | "host"
+            | "proxy-authorization"
+            | "transfer-encoding"
+            | "upgrade"
+    ) || name.as_str().starts_with("sec-websocket-")
+}
+
 fn is_auth_expired_handshake(error: &WebSocketError) -> bool {
     matches!(
         error,
@@ -153,80 +335,135 @@ fn is_auth_expired_handshake(error: &WebSocketError) -> bool {
     )
 }
 
+struct WebsocketMessageSink {
+    sender: Mutex<Option<mpsc::Sender<McpOutboundMessage>>>,
+}
+
+impl WebsocketMessageSink {
+    fn new(sender: mpsc::Sender<McpOutboundMessage>) -> Self {
+        Self {
+            sender: Mutex::new(Some(sender)),
+        }
+    }
+
+    async fn close(&self) {
+        self.sender.lock().await.take();
+    }
+}
+
+#[async_trait]
+impl McpMessageSink for WebsocketMessageSink {
+    async fn send(&self, message: McpOutboundMessage) -> Result<(), McpError> {
+        let sender = self
+            .sender
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| McpError::Connection("websocket writer is closed".to_owned()))?;
+        let permit = sender
+            .reserve_owned()
+            .await
+            .map_err(|_| McpError::Connection("websocket writer is closed".to_owned()))?;
+        permit.send(message);
+        Ok(())
+    }
+}
+
+struct WebsocketNotificationHandler {
+    changes: broadcast::Sender<McpChange>,
+}
+
+impl McpOrderedNotificationHandler for WebsocketNotificationHandler {
+    fn handle_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError> {
+        if let Some(change) =
+            notification_change(&notification.method, notification.params.as_ref())
+        {
+            let _ = self.changes.send(change);
+        }
+        Ok(())
+    }
+}
+
 pub struct WebsocketConnection {
     connection_id: String,
-    writer: Arc<Mutex<WsWriter>>,
-    pending: PendingMap,
     changes: broadcast::Sender<McpChange>,
-    timeout: std::time::Duration,
-    peer: JsonRpcPeer,
-    elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
-    permission_mode: PermissionMode,
+    timeout: Duration,
+    peer: McpPeer,
+    sink: Arc<WebsocketMessageSink>,
+    cancel: watch::Sender<bool>,
+    writer_task: Mutex<Option<JoinHandle<()>>>,
+    reader_task: Mutex<Option<JoinHandle<()>>>,
+    legacy_request_builder: JsonRpcPeer,
 }
 
 impl WebsocketConnection {
     async fn send(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let method = request.method.clone();
-        let key = response_key(&request.id);
-        let receiver = self.begin_send(request).await?;
-
-        match tokio::time::timeout(self.timeout, receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(McpError::Connection(
-                "websocket response channel closed".into(),
-            )),
-            Err(_) => {
-                self.pending.lock().await.remove(&key);
-                Err(McpError::Connection(format!(
-                    "websocket request timed out: {method}"
-                )))
-            }
+        let id = request.id;
+        match self
+            .peer
+            .request_optional(request.method, request.params, self.timeout)
+            .await
+        {
+            Ok(result) => Ok(JsonRpcResponse::success(id, result)),
+            Err(McpError::RemoteJsonRpc(error)) => Ok(JsonRpcResponse::failure(id, error)),
+            Err(error) => Err(error),
         }
-    }
-
-    async fn begin_send(&self, request: JsonRpcRequest) -> Result<PendingReceiver, McpError> {
-        let key = response_key(&request.id);
-        let (sender, receiver) = oneshot::channel();
-        self.pending.lock().await.insert(key.clone(), sender);
-
-        let payload = serde_json::to_string(&request)
-            .map_err(|error| McpError::InvalidResponse(error.to_string()))?;
-        if let Err(error) = self.writer.lock().await.send(Message::Text(payload)).await {
-            self.pending.lock().await.remove(&key);
-            return Err(McpError::Transport(error.to_string()));
-        }
-
-        Ok(receiver)
     }
 
     async fn send_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError> {
-        let payload = serde_json::to_string(&notification)
-            .map_err(|error| McpError::InvalidResponse(error.to_string()))?;
-        self.writer
-            .lock()
-            .await
-            .send(Message::Text(payload))
-            .await
-            .map_err(|error| McpError::Transport(error.to_string()))
+        match notification.params {
+            Some(params) => self.peer.notify(notification.method, params).await,
+            None => self.peer.notify_without_params(notification.method).await,
+        }
     }
 
-    async fn send_with_elicitation(
+    async fn call_tool_events_inner(
         &self,
-        request: JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, McpError> {
-        let response = self.send(request.clone()).await?;
-        if let Some(retry) = continue_after_elicitation_response(
-            &response,
-            &request,
-            &self.peer,
-            self.elicitation_handler.as_ref(),
-            self.permission_mode,
-        )
-        .await?
-        {
-            return self.send(retry).await;
-        }
-        Ok(response)
+        name: &str,
+        args: Value,
+    ) -> Result<McpToolCallStream, McpError> {
+        let request = call_tool_request(&self.legacy_request_builder, name, args);
+        let mut changes = BroadcastStream::new(self.changes.subscribe());
+        let pending = self
+            .peer
+            .start_request_optional(request.method, request.params, self.timeout)
+            .await?;
+        let key = response_key(pending.request_id());
+
+        Ok(Box::pin(async_stream::stream! {
+            let response = pending.wait();
+            tokio::pin!(response);
+            let mut changes_open = true;
+            loop {
+                if changes_open {
+                    tokio::select! {
+                        biased;
+                        change = changes.next() => match change {
+                            Some(Ok(change)) => {
+                                if let Some(event) = tool_call_event_from_change(&key, change) {
+                                    yield event;
+                                }
+                            },
+                            Some(Err(_)) => {},
+                            None => changes_open = false,
+                        },
+                        result = &mut response => {
+                            match decode_peer_tool_result(result) {
+                                Ok(result) => yield McpToolCallEvent::Final(result),
+                                Err(error) => yield McpToolCallEvent::Error(error),
+                            }
+                            break;
+                        },
+                    }
+                } else {
+                    match decode_peer_tool_result((&mut response).await) {
+                        Ok(result) => yield McpToolCallEvent::Final(result),
+                        Err(error) => yield McpToolCallEvent::Error(error),
+                    }
+                    break;
+                }
+            }
+        }))
     }
 }
 
@@ -237,12 +474,22 @@ impl McpConnection for WebsocketConnection {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
-        decode_list_tools(self.send(list_tools_request(&self.peer)).await?)
+        self.list_tools_all().await
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+        decode_list_tools(
+            self.send(list_tools_request(&self.legacy_request_builder, cursor))
+                .await?,
+        )
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult, McpError> {
         decode_tool_result(
-            self.send_with_elicitation(call_tool_request(&self.peer, name, args))
+            self.send(call_tool_request(&self.legacy_request_builder, name, args))
                 .await?,
         )
     }
@@ -267,184 +514,408 @@ impl McpConnection for WebsocketConnection {
         name: &str,
         args: Value,
     ) -> Result<McpToolCallStream, McpError> {
-        let request = call_tool_request(&self.peer, name, args);
-        let key = response_key(&request.id);
-        let mut changes = BroadcastStream::new(self.changes.subscribe());
-        let receiver = self.begin_send(request).await?;
-        let timeout = self.timeout;
-        let pending = Arc::clone(&self.pending);
-        let timeout_key = key.clone();
-
-        Ok(Box::pin(async_stream::stream! {
-            let response = tokio::time::timeout(timeout, receiver);
-            tokio::pin!(response);
-            let mut changes_open = true;
-            loop {
-                if changes_open {
-                    tokio::select! {
-                        biased;
-                        change = changes.next() => match change {
-                            Some(Ok(change)) => {
-                                if let Some(event) = tool_call_event_from_change(&key, change) {
-                                    yield event;
-                                }
-                            },
-                            Some(Err(_)) => {},
-                            None => {
-                                changes_open = false;
-                            },
-                        },
-                        result = &mut response => {
-                            match result {
-                                Ok(Ok(Ok(response))) => match decode_tool_result(response) {
-                                    Ok(result) => yield McpToolCallEvent::Final(result),
-                                    Err(error) => yield McpToolCallEvent::Error(error),
-                                },
-                                Ok(Ok(Err(error))) => yield McpToolCallEvent::Error(error),
-                                Ok(Err(_)) => yield McpToolCallEvent::Error(McpError::Connection(
-                                    "websocket response channel closed".into(),
-                                )),
-                                Err(_) => {
-                                    pending.lock().await.remove(&timeout_key);
-                                    yield McpToolCallEvent::Error(McpError::Connection(
-                                        "websocket request timed out: tools/call".into(),
-                                    ));
-                                },
-                            }
-                            break;
-                        },
-                    }
-                } else {
-                    match (&mut response).await {
-                        Ok(Ok(Ok(response))) => match decode_tool_result(response) {
-                            Ok(result) => yield McpToolCallEvent::Final(result),
-                            Err(error) => yield McpToolCallEvent::Error(error),
-                        },
-                        Ok(Ok(Err(error))) => yield McpToolCallEvent::Error(error),
-                        Ok(Err(_)) => yield McpToolCallEvent::Error(McpError::Connection(
-                            "websocket response channel closed".into(),
-                        )),
-                        Err(_) => {
-                            pending.lock().await.remove(&timeout_key);
-                            yield McpToolCallEvent::Error(McpError::Connection(
-                                "websocket request timed out: tools/call".into(),
-                            ));
-                        },
-                    }
-                    break;
-                }
-            }
-        }))
+        self.call_tool_events_inner(name, args).await
     }
 
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpError> {
-        decode_list_resources(self.send(list_resources_request(&self.peer)).await?)
+        self.list_resources_all().await
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
-        decode_read_resource(self.send(read_resource_request(&self.peer, uri)).await?)
+    async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpResource>, McpError> {
+        decode_list_resources(
+            self.send(list_resources_request(&self.legacy_request_builder, cursor))
+                .await?,
+        )
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
+        decode_read_resource(
+            self.send(read_resource_request(&self.legacy_request_builder, uri))
+                .await?,
+        )
     }
 
     async fn subscribe_resource(&self, uri: &str) -> Result<(), McpError> {
         decode_empty_result(
-            self.send(subscribe_resource_request(&self.peer, uri))
-                .await?,
+            self.send(subscribe_resource_request(
+                &self.legacy_request_builder,
+                uri,
+            ))
+            .await?,
         )
     }
 
     async fn unsubscribe_resource(&self, uri: &str) -> Result<(), McpError> {
         decode_empty_result(
-            self.send(unsubscribe_resource_request(&self.peer, uri))
-                .await?,
+            self.send(unsubscribe_resource_request(
+                &self.legacy_request_builder,
+                uri,
+            ))
+            .await?,
         )
     }
 
     async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpError> {
-        decode_list_prompts(self.send(list_prompts_request(&self.peer)).await?)
+        self.list_prompts_all().await
+    }
+
+    async fn list_prompts_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpPrompt>, McpError> {
+        decode_list_prompts(
+            self.send(list_prompts_request(&self.legacy_request_builder, cursor))
+                .await?,
+        )
     }
 
     async fn get_prompt(&self, name: &str, args: Value) -> Result<McpPromptMessages, McpError> {
         decode_prompt_messages(
-            self.send(get_prompt_request(&self.peer, name, args))
+            self.send(get_prompt_request(&self.legacy_request_builder, name, args))
                 .await?,
         )
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
+        self.peer.ensure_open()?;
         let stream = BroadcastStream::new(self.changes.subscribe())
             .filter_map(|event| async move { event.ok() });
         Ok(Box::pin(stream))
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
-        self.send_notification(JsonRpcNotification::new("shutdown", None))
-            .await
+        self.cancel.send_replace(true);
+        self.peer.close("websocket connection shutting down").await;
+        self.sink.close().await;
+        finish_writer(&self.writer_task).await;
+        stop_task(&self.reader_task).await;
+        Ok(())
     }
 }
 
-fn spawn_reader(
-    mut reader: futures::stream::SplitStream<WsStream>,
-    pending: PendingMap,
-    changes: broadcast::Sender<McpChange>,
-) {
-    tokio::spawn(async move {
-        while let Some(message) = reader.next().await {
-            let text = match message {
-                Ok(Message::Text(text)) => text,
-                Ok(Message::Binary(bytes)) => match String::from_utf8(bytes) {
-                    Ok(text) => text,
-                    Err(error) => {
-                        notify_all(&pending, McpError::InvalidResponse(error.to_string())).await;
-                        break;
-                    }
-                },
-                Ok(Message::Close(_)) => break,
-                Ok(_) => continue,
-                Err(error) => {
-                    notify_all(&pending, McpError::Transport(error.to_string())).await;
-                    break;
-                }
-            };
-
-            let value = match serde_json::from_str::<Value>(&text) {
-                Ok(value) => value,
-                Err(error) => {
-                    notify_all(&pending, McpError::InvalidResponse(error.to_string())).await;
-                    break;
-                }
-            };
-
-            if let Some(method) = value.get("method").and_then(Value::as_str) {
-                if let Some(change) = notification_change(method, value.get("params")) {
-                    let _ = changes.send(change);
-                }
-                continue;
-            }
-
-            let response = match serde_json::from_value::<JsonRpcResponse>(value) {
-                Ok(response) => response,
-                Err(error) => {
-                    notify_all(&pending, McpError::InvalidResponse(error.to_string())).await;
-                    break;
-                }
-            };
-            let key = response_key(&response.id);
-            if let Some(sender) = pending.lock().await.remove(&key) {
-                let _ = sender.send(Ok(response));
-            }
+impl Drop for WebsocketConnection {
+    fn drop(&mut self) {
+        self.cancel.send_replace(true);
+        if let Some(task) = self.writer_task.get_mut().take() {
+            task.abort();
         }
-        notify_all(&pending, McpError::Connection("websocket closed".into())).await;
-    });
+        if let Some(task) = self.reader_task.get_mut().take() {
+            task.abort();
+        }
+    }
 }
 
-async fn notify_all(pending: &PendingMap, error: McpError) {
-    let senders = pending
-        .lock()
+async fn run_writer(
+    mut writer: WsWriter,
+    mut outbound: mpsc::Receiver<McpOutboundMessage>,
+    peer: McpPeer,
+    cancel_tx: watch::Sender<bool>,
+    mut cancel: watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = wait_for_cancel(&mut cancel) => {
+                let _ = writer.send(Message::Close(None)).await;
+                let _ = writer.close().await;
+                return;
+            }
+            message = outbound.recv() => {
+                let Some(message) = message else {
+                    let _ = writer.send(Message::Close(None)).await;
+                    let _ = writer.close().await;
+                    return;
+                };
+                let payload = match serde_json::to_string(message.as_message()) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        fail_writer(
+                            &peer,
+                            &cancel_tx,
+                            format!("websocket encode failed: {error}"),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                if let Err(error) = writer.send(Message::text(payload)).await {
+                    fail_writer(
+                        &peer,
+                        &cancel_tx,
+                        format!("websocket write failed: {error}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn fail_writer(peer: &McpPeer, cancel: &watch::Sender<bool>, reason: impl Into<String>) {
+    cancel.send_replace(true);
+    peer.close(reason.into()).await;
+}
+
+async fn run_reader(
+    mut reader: WsReader,
+    peer: McpPeer,
+    cancel_tx: watch::Sender<bool>,
+    mut cancel: watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = wait_for_cancel(&mut cancel) => return,
+            frame = reader.next() => {
+                let message = match frame {
+                    Some(Ok(Message::Text(text))) => serde_json::from_str::<McpMessage>(text.as_ref()),
+                    Some(Ok(Message::Binary(bytes))) => serde_json::from_slice::<McpMessage>(bytes.as_ref()),
+                    Some(Ok(Message::Close(_))) | None => {
+                        cancel_tx.send_replace(true);
+                        peer.close("websocket closed").await;
+                        return;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => {
+                        cancel_tx.send_replace(true);
+                        peer.close(format!("websocket read failed: {error}")).await;
+                        return;
+                    }
+                };
+                match message {
+                    Ok(message) => {
+                        if let Err(error) = peer.receive(message).await {
+                            cancel_tx.send_replace(true);
+                            peer.close(format!("websocket message failed: {error}")).await;
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        cancel_tx.send_replace(true);
+                        peer.close(format!("websocket JSON failed: {error}")).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn finish_writer(task: &Mutex<Option<JoinHandle<()>>>) {
+    let Some(mut task) = task.lock().await.take() else {
+        return;
+    };
+    if tokio::time::timeout(CLOSE_TIMEOUT, &mut task)
         .await
-        .drain()
-        .map(|(_, sender)| sender)
-        .collect::<Vec<_>>();
-    for sender in senders {
-        let _ = sender.send(Err(error.clone()));
+        .is_err()
+    {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn stop_task(task: &Mutex<Option<JoinHandle<()>>>) {
+    if let Some(task) = task.lock().await.take() {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+fn change_notification_methods() -> [&'static str; 10] {
+    [
+        "tools/list_changed",
+        "notifications/tools/list_changed",
+        "resources/list_changed",
+        "notifications/resources/list_changed",
+        "resources/updated",
+        "notifications/resources/updated",
+        "prompts/list_changed",
+        "notifications/prompts/list_changed",
+        "notifications/cancelled",
+        "notifications/progress",
+    ]
+}
+
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
+    while !*cancel.borrow_and_update() {
+        if cancel.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+fn decode_peer_tool_result(result: Result<Value, McpError>) -> Result<McpToolResult, McpError> {
+    let response = match result {
+        Ok(result) => JsonRpcResponse::success(Value::Null, result),
+        Err(McpError::RemoteJsonRpc(error)) => JsonRpcResponse::failure(Value::Null, error),
+        Err(error) => return Err(error),
+    };
+    decode_tool_result(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    struct TaskDropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for TaskDropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
+        }
+    }
+
+    struct NoopSink;
+
+    #[async_trait]
+    impl McpMessageSink for NoopSink {
+        async fn send(&self, _message: McpOutboundMessage) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    fn test_peer() -> McpPeer {
+        McpPeer::builder(
+            Arc::new(NoopSink),
+            McpSession::new(
+                Default::default(),
+                McpClientCapabilities::default(),
+                McpImplementation::new("test", "0"),
+            ),
+        )
+        .build()
+        .expect("peer")
+    }
+
+    #[test]
+    fn endpoint_parser_accepts_ws_wss_and_explicit_local_addresses() {
+        let ws = parse_websocket_endpoint("ws://127.0.0.1:3000/socket").expect("ws endpoint");
+        assert_eq!(ws.port, 3000);
+        assert!(matches!(
+            ws.kind,
+            super::super::network_endpoint::NetworkHostKind::IpLiteral(ip)
+                if ip.is_loopback()
+        ));
+
+        let wss =
+            parse_websocket_endpoint("wss://public.example.test/socket").expect("wss endpoint");
+        assert_eq!(wss.port, 443);
+        assert!(matches!(
+            wss.kind,
+            super::super::network_endpoint::NetworkHostKind::DnsName
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_dns_pins_are_accepted_without_changing_the_url_port() {
+        let endpoint =
+            parse_websocket_endpoint("wss://public.example.test:8443/socket").expect("endpoint");
+        let pinned = ["8.8.8.8:53".parse().expect("public address")];
+
+        let resolved =
+            super::super::network_endpoint::resolve_network_endpoint(&endpoint, Some(&pinned))
+                .await
+                .expect("public DNS pin");
+
+        assert_eq!(
+            resolved,
+            ["8.8.8.8:8443".parse().expect("resolved address")]
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_sink_is_cancellation_safe_while_waiting_for_capacity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let sink = Arc::new(WebsocketMessageSink::new(sender));
+        sink.send(
+            McpOutboundMessage::notification_without_params("notifications/first")
+                .expect("first message"),
+        )
+        .await
+        .expect("first send");
+
+        let blocked_sink = Arc::clone(&sink);
+        let blocked = tokio::spawn(async move {
+            blocked_sink
+                .send(
+                    McpOutboundMessage::notification_without_params("notifications/second")
+                        .expect("second message"),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished());
+        blocked.abort();
+        let _ = blocked.await;
+
+        let first = receiver.recv().await.expect("first queued message");
+        assert!(matches!(
+            first.as_message(),
+            McpMessage::Notification(notification)
+                if notification.method == "notifications/first"
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn writer_failure_cancels_transport_and_closes_peer() {
+        let peer = test_peer();
+        let (cancel_tx, _) = watch::channel(false);
+
+        fail_writer(&peer, &cancel_tx, "test failure").await;
+
+        assert!(*cancel_tx.borrow());
+        assert!(peer.ensure_open().is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_connection_aborts_tasks_that_ignore_cancellation() {
+        let (writer_dropped_tx, writer_dropped_rx) = oneshot::channel();
+        let (writer_started_tx, writer_started_rx) = oneshot::channel();
+        let writer_task = tokio::spawn(async move {
+            let _signal = TaskDropSignal(Some(writer_dropped_tx));
+            let _ = writer_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let (reader_dropped_tx, reader_dropped_rx) = oneshot::channel();
+        let (reader_started_tx, reader_started_rx) = oneshot::channel();
+        let reader_task = tokio::spawn(async move {
+            let _signal = TaskDropSignal(Some(reader_dropped_tx));
+            let _ = reader_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let (outbound_tx, _outbound_rx) = mpsc::channel(1);
+        let (cancel, _) = watch::channel(false);
+        let connection = WebsocketConnection {
+            connection_id: "websocket:test".to_owned(),
+            changes: broadcast::channel(1).0,
+            timeout: Duration::from_secs(1),
+            peer: test_peer(),
+            sink: Arc::new(WebsocketMessageSink::new(outbound_tx)),
+            cancel,
+            writer_task: Mutex::new(Some(writer_task)),
+            reader_task: Mutex::new(Some(reader_task)),
+            legacy_request_builder: JsonRpcPeer::new(),
+        };
+
+        writer_started_rx.await.expect("writer task started");
+        reader_started_rx.await.expect("reader task started");
+        drop(connection);
+
+        tokio::time::timeout(Duration::from_millis(100), writer_dropped_rx)
+            .await
+            .expect("writer task aborted")
+            .expect("writer drop signal");
+        tokio::time::timeout(Duration::from_millis(100), reader_dropped_rx)
+            .await
+            .expect("reader task aborted")
+            .expect("reader drop signal");
     }
 }

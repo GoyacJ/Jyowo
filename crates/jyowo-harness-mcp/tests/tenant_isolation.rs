@@ -24,6 +24,9 @@ use harness_tool::{
 };
 use serde_json::{json, Value};
 
+#[allow(dead_code)]
+mod support;
+
 #[tokio::test]
 async fn strict_tenant_rejects_mismatch_before_execution() {
     let executions = Arc::new(AtomicUsize::new(0));
@@ -134,7 +137,10 @@ fn adapter_for_tenant(
             },
             ..McpServerPolicy::default()
         })
-        .with_tool_context_factory(StaticToolContextFactory::new(tool_context(tenant_id)));
+        .with_tool_context_factory(StaticToolContextFactory::new(tool_context(tenant_id)))
+        .with_authorization_context(support::mcp_authorization_context_allowing_tool(
+            "tenant_echo",
+        ));
     if let Some(audit) = audit {
         builder = builder.with_audit_sink(audit);
     }
@@ -203,6 +209,7 @@ impl Tool for TenantTool {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         })
     }
 

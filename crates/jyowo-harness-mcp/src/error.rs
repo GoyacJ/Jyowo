@@ -11,8 +11,18 @@ pub enum McpError {
     Protocol(String),
     #[error("invalid response: {0}")]
     InvalidResponse(String),
+    #[error("remote JSON-RPC error ({code}): {message}", code = .0.code, message = .0.message)]
+    RemoteJsonRpc(crate::JsonRpcError),
     #[error("connection: {0}")]
     Connection(String),
+    #[error("MCP HTTP session expired")]
+    SessionExpired,
+    #[error("MCP HTTP session cleanup timed out")]
+    HttpCleanupTimeout,
+    #[error("MCP HTTP session cleanup failed (status {0})")]
+    HttpCleanupStatus(u16),
+    #[error("Streamable HTTP unavailable (status {0})")]
+    StreamableHttpUnavailable(u16),
     #[error("server not found: {0}")]
     ServerNotFound(String),
     #[error("tool naming violation: {0}")]
@@ -25,6 +35,8 @@ pub enum McpError {
     OAuth(String),
     #[error("elicitation: {0}")]
     Elicitation(String),
+    #[error("MCP server requires {count} URL elicitation request(s)", count = .0.len())]
+    UrlElicitationRequired(Vec<crate::ElicitUrlRequestParams>),
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 }

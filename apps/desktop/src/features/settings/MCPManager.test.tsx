@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   CommandClient,
   McpDiagnosticBatchPayload,
+  McpServerConfig,
   McpServerSummary,
 } from '@/shared/tauri/commands'
 import { CommandClientProvider } from '@/shared/tauri/react'
@@ -33,25 +34,64 @@ function renderMCPManager(
     )
   }
 
-  return render(
+  const result = render(
     <Wrapper>
       <MCPManager onOpenPlugin={onOpenPlugin} />
     </Wrapper>,
   )
+  return { ...result, queryClient }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, reject, resolve }
 }
 
 function mcpServer(overrides: Partial<McpServerSummary> = {}): McpServerSummary {
   return {
+    configLayer: 'global',
     displayName: 'Workspace GitHub',
+    effective: true,
     enabled: true,
     exposedToolCount: 2,
     id: 'github',
     manageable: true,
-    origin: 'workspace',
+    origin: 'user',
+    overridesGlobal: false,
+    required: false,
     scope: 'global',
     status: 'ready',
+    statusSource: 'settings',
     transport: 'stdio',
     ...overrides,
+  }
+}
+
+function mcpConfig(server: McpServerSummary, command: string): { server: McpServerConfig } {
+  return {
+    server: {
+      configLayer: server.configLayer,
+      displayName: server.displayName,
+      effective: server.effective,
+      enabled: server.enabled,
+      id: server.id,
+      manageable: server.manageable,
+      overridesGlobal: server.overridesGlobal,
+      required: server.required,
+      scope: server.scope,
+      transport: {
+        args: [],
+        command,
+        env: [],
+        inheritEnv: [],
+        kind: 'stdio',
+      },
+    },
   }
 }
 
@@ -80,7 +120,7 @@ describe('MCPManager', () => {
       createTestCommandClient({
         browserMcpPresets: { presets: [] },
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
       }),
     )
 
@@ -93,14 +133,256 @@ describe('MCPManager', () => {
       createTestCommandClient({
         browserMcpPresets: { presets: [] },
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
         projects: { activePath: null, projects: [] },
       }),
     )
 
     expect(await screen.findByRole('button', { name: 'Add server' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Global settings' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Project settings' })).toBeDisabled()
+    expect(screen.getByText('Select a project to manage project overrides.')).toBeInTheDocument()
     expect(screen.queryByText('Project overrides')).not.toBeInTheDocument()
     expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
+  })
+
+  it('switches between global and active-project configuration views', async () => {
+    const listMcpServers = vi.fn(async (configLayer: 'global' | 'project') => ({
+      configLayer,
+      servers:
+        configLayer === 'global'
+          ? [mcpServer()]
+          : [
+              mcpServer({
+                configLayer: 'project',
+                displayName: 'Project GitHub',
+                id: 'project-github',
+                origin: 'project',
+              }),
+            ],
+    }))
+    renderMCPManager({
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
+      listMcpServers,
+    })
+
+    expect(await screen.findByRole('article', { name: 'Workspace GitHub' })).toBeInTheDocument()
+    expect(listMcpServers).toHaveBeenCalledWith('global')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project settings' }))
+
+    expect(await screen.findByRole('article', { name: 'Project GitHub' })).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Workspace GitHub' })).not.toBeInTheDocument()
+    expect(listMcpServers).toHaveBeenCalledWith('project')
+  })
+
+  it('keys project state by active path and closes stale project dialogs', async () => {
+    const projectA = mcpServer({
+      configLayer: 'project',
+      displayName: 'Project A server',
+      id: 'project-a',
+      origin: 'project',
+    })
+    const projectB = mcpServer({
+      configLayer: 'project',
+      displayName: 'Project B server',
+      id: 'project-b',
+      origin: 'project',
+    })
+    let projectListCall = 0
+    const listMcpServers = vi.fn(async (configLayer: 'global' | 'project') => {
+      if (configLayer === 'global') {
+        return { configLayer, servers: [] }
+      }
+      projectListCall += 1
+      return { configLayer, servers: projectListCall === 1 ? [projectA] : [projectB] }
+    })
+    const saveMcpServer = vi.fn().mockResolvedValue({ server: projectA })
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        projects: {
+          activePath: '/project/a',
+          projects: [
+            { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'A', path: '/project/a' },
+            { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'B', path: '/project/b' },
+          ],
+        },
+      }),
+      getMcpServerConfig: vi.fn().mockResolvedValue(mcpConfig(projectA, 'project-a-command')),
+      listMcpServers,
+      saveMcpServer,
+    }
+    const { queryClient } = renderMCPManager(client)
+
+    const projectSettings = await screen.findByRole('button', { name: 'Project settings' })
+    await waitFor(() => expect(projectSettings).toBeEnabled())
+    fireEvent.click(projectSettings)
+    const projectACard = await screen.findByRole('article', { name: 'Project A server' })
+    fireEvent.click(
+      within(projectACard).getByRole('button', { name: 'Configure Project A server' }),
+    )
+    expect(await screen.findByDisplayValue('project-a-command')).toBeInTheDocument()
+    const staleSaveButton = screen.getByRole('button', { name: 'Save MCP server' })
+
+    act(() => {
+      queryClient.setQueryData(['projects', 'list'], {
+        activePath: '/project/b',
+        projects: [
+          { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'A', path: '/project/a' },
+          { lastOpenedAt: '2026-07-13T00:00:00Z', name: 'B', path: '/project/b' },
+        ],
+      })
+    })
+
+    expect(await screen.findByRole('article', { name: 'Project B server' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(staleSaveButton)
+    expect(saveMcpServer).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(['mcp-servers', 'list', 'project', '/project/a'])).toEqual(
+      expect.objectContaining({ servers: [projectA] }),
+    )
+    expect(queryClient.getQueryData(['mcp-servers', 'list', 'project', '/project/b'])).toEqual(
+      expect.objectContaining({ servers: [projectB] }),
+    )
+  })
+
+  it('does not present plugin servers as inherited global overrides', async () => {
+    const pluginServer = mcpServer({
+      displayName: 'Plugin Context',
+      id: 'plugin-context',
+      manageable: false,
+      origin: 'plugin',
+      sourcePluginId: 'formatter@1.0.0',
+      transport: 'inProcess',
+    })
+    renderMCPManager({
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
+      listMcpServers: vi.fn(async (configLayer: 'global' | 'project') => ({
+        configLayer,
+        servers: configLayer === 'project' ? [pluginServer] : [],
+      })),
+    })
+
+    const projectSettings = await screen.findByRole('button', { name: 'Project settings' })
+    await waitFor(() => expect(projectSettings).toBeEnabled())
+    fireEvent.click(projectSettings)
+
+    const card = await screen.findByRole('article', { name: 'Plugin Context' })
+    expect(within(card).queryByText('Inherited global configuration')).not.toBeInTheDocument()
+    expect(
+      within(card).queryByRole('button', { name: 'Override Plugin Context' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('copies a disabled inherited global server into a project override without enabling it', async () => {
+    const inherited = mcpServer({ enabled: false, manageable: false, required: true })
+    const getMcpServerConfig = vi.fn().mockResolvedValue({
+      server: {
+        configLayer: 'global',
+        displayName: inherited.displayName,
+        effective: true,
+        enabled: false,
+        id: inherited.id,
+        manageable: false,
+        overridesGlobal: false,
+        required: true,
+        scope: 'session',
+        transport: {
+          args: ['mcp-server'],
+          command: 'node',
+          env: [{ hasValue: true, key: 'LOG_LEVEL' }],
+          inheritEnv: ['PATH'],
+          kind: 'stdio',
+        },
+      },
+    })
+    const saveMcpServer = vi.fn().mockResolvedValue({
+      server: mcpServer({
+        configLayer: 'project',
+        origin: 'project',
+        overridesGlobal: true,
+        required: true,
+      }),
+    })
+    const client = {
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
+      getMcpServerConfig,
+      listMcpServers: vi.fn(async (configLayer: 'global' | 'project') => ({
+        configLayer,
+        servers: configLayer === 'project' ? [inherited] : [mcpServer()],
+      })),
+      saveMcpServer,
+    }
+    renderMCPManager(client)
+
+    const projectSettings = await screen.findByRole('button', { name: 'Project settings' })
+    await waitFor(() => expect(projectSettings).toBeEnabled())
+    fireEvent.click(projectSettings)
+    const card = await screen.findByRole('article', { name: 'Workspace GitHub' })
+    fireEvent.click(within(card).getByRole('button', { name: 'Override Workspace GitHub' }))
+
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'github'))
+    expect(await screen.findByRole('checkbox', { name: 'Required for runs' })).toBeChecked()
+    expect(screen.getByLabelText('Runtime scope')).toHaveValue('session')
+    expect(screen.getByPlaceholderText('PATH')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    await waitFor(() =>
+      expect(saveMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configLayer: 'project',
+          enabled: false,
+          id: 'github',
+          required: true,
+          scope: 'session',
+          transport: expect.objectContaining({
+            env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
+          }),
+        }),
+      ),
+    )
+  })
+
+  it('deletes a project override and reveals the inherited global server', async () => {
+    const projectOverride = mcpServer({
+      configLayer: 'project',
+      origin: 'project',
+      overridesGlobal: true,
+    })
+    const inheritedGlobal = mcpServer({ manageable: false })
+    const listMcpServers = vi
+      .fn()
+      .mockResolvedValueOnce({ configLayer: 'global', servers: [mcpServer()] })
+      .mockResolvedValueOnce({ configLayer: 'project', servers: [projectOverride] })
+      .mockResolvedValueOnce({ configLayer: 'project', servers: [inheritedGlobal] })
+    const deleteMcpServer = vi.fn().mockResolvedValue({
+      configLayer: 'project',
+      id: 'github',
+      status: 'deleted',
+    })
+    renderMCPManager({
+      ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
+      deleteMcpServer,
+      listMcpServers,
+    })
+
+    const projectSettings = await screen.findByRole('button', { name: 'Project settings' })
+    await waitFor(() => expect(projectSettings).toBeEnabled())
+    fireEvent.click(projectSettings)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Delete project override Workspace GitHub' }),
+    )
+
+    await waitFor(() =>
+      expect(deleteMcpServer).toHaveBeenCalledWith(
+        'project',
+        'github',
+        '/Users/goya/Repo/Git/Jyowo',
+      ),
+    )
+    expect(await screen.findByText('Inherited global configuration')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Override Workspace GitHub' })).toBeInTheDocument()
   })
 
   it('shows server status, origin, tool count, scope, and transport', async () => {
@@ -108,6 +390,7 @@ describe('MCPManager', () => {
       createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: {
+          configLayer: 'global',
           servers: [
             mcpServer({
               lastDiagnostic: 'MCP server connection recovered.',
@@ -133,10 +416,11 @@ describe('MCPManager', () => {
 
     const card = await screen.findByRole('article', { name: 'Workspace GitHub' })
 
-    expect(within(card).getByText('ready')).toBeInTheDocument()
-    expect(within(card).getByText('workspace')).toBeInTheDocument()
+    expect(within(card).getByText('Settings check: ready')).toBeInTheDocument()
+    expect(within(card).getByText('user')).toBeInTheDocument()
     expect(within(card).getByText('2 tools')).toBeInTheDocument()
-    expect(within(card).getByText('global')).toBeInTheDocument()
+    expect(within(card).getByText('Runtime scope: Global')).toBeInTheDocument()
+    expect(within(card).getByText('Global configuration')).toBeInTheDocument()
     expect(within(card).getByText('stdio')).toBeInTheDocument()
     expect(within(card).getByText('Last diagnostic')).toBeInTheDocument()
     expect(within(card).getByText('MCP server connection recovered.')).toBeInTheDocument()
@@ -147,6 +431,38 @@ describe('MCPManager', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows exact browser preset versions when provided', async () => {
+    renderMCPManager(
+      createTestCommandClient({
+        browserMcpPresets: {
+          presets: [
+            {
+              description: 'Browser automation through Playwright MCP.',
+              displayName: 'Playwright Browser',
+              enabled: false,
+              id: 'playwright',
+              serverId: 'browser-playwright',
+              version: '0.0.78',
+            },
+            {
+              description: 'Browser inspection through Chrome DevTools MCP.',
+              displayName: 'Chrome DevTools Browser',
+              enabled: false,
+              id: 'chrome-devtools',
+              serverId: 'browser-chrome-devtools',
+              version: '1.5.0',
+            },
+          ],
+        },
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
+    )
+
+    expect(await screen.findByText('0.0.78')).toBeInTheDocument()
+    expect(screen.getByText('1.5.0')).toBeInTheDocument()
+  })
+
   it('enables disabled browser MCP presets', async () => {
     const saveBrowserMcpPreset = vi.fn().mockResolvedValue({
       preset: {
@@ -155,6 +471,7 @@ describe('MCPManager', () => {
         enabled: true,
         id: 'playwright',
         serverId: 'browser-playwright',
+        version: '0.0.78',
       },
       server: mcpServer({
         displayName: 'Playwright Browser',
@@ -173,11 +490,12 @@ describe('MCPManager', () => {
               enabled: false,
               id: 'playwright',
               serverId: 'browser-playwright',
+              version: '0.0.78',
             },
           ],
         },
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
       }),
       saveBrowserMcpPreset,
     }
@@ -204,6 +522,7 @@ describe('MCPManager', () => {
         enabled: false,
         id: 'playwright',
         serverId: 'browser-playwright',
+        version: '0.0.78',
       },
       server: mcpServer({
         displayName: 'Playwright Browser',
@@ -222,11 +541,12 @@ describe('MCPManager', () => {
               enabled: true,
               id: 'playwright',
               serverId: 'browser-playwright',
+              version: '0.0.78',
             },
           ],
         },
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
       }),
       saveBrowserMcpPreset,
     }
@@ -251,6 +571,7 @@ describe('MCPManager', () => {
       createTestCommandClient({
         mcpDiagnostics: { events: [] },
         mcpServers: {
+          configLayer: 'global',
           servers: [
             mcpServer({
               displayName: 'Plugin Context',
@@ -276,13 +597,17 @@ describe('MCPManager', () => {
   it('rejects invalid config before calling the backend', async () => {
     const saveMcpServer = vi.fn()
     const client = {
-      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
       saveMcpServer,
     }
 
     renderMCPManager(client)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add server' }))
+    expect(screen.getByRole('checkbox', { name: 'Required for runs' })).not.toBeChecked()
     fireEvent.click(await screen.findByRole('button', { name: 'Save MCP server' }))
 
     expect(await screen.findByText('Server name is required.')).toBeInTheDocument()
@@ -295,7 +620,10 @@ describe('MCPManager', () => {
     const rawError =
       'spawn failed at /var/folders/run: npx --api-key ctx7sk-secret-token --token=sk_secret sk-proj-secret-token-1234567890'
     const client = {
-      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
       saveMcpServer: vi.fn().mockRejectedValue(new Error(rawError)),
     }
 
@@ -323,7 +651,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
       }),
       saveMcpServer: vi.fn().mockRejectedValue({
         code: 'INVALID_PAYLOAD',
@@ -357,7 +685,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [mcpServer()] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
       }),
       setMcpServerEnabled,
     }
@@ -366,7 +694,7 @@ describe('MCPManager', () => {
 
     fireEvent.click(await screen.findByRole('switch', { name: 'Disable Workspace GitHub' }))
 
-    await waitFor(() => expect(setMcpServerEnabled).toHaveBeenCalledWith('github', false))
+    await waitFor(() => expect(setMcpServerEnabled).toHaveBeenCalledWith('global', 'github', false))
   })
 
   it('restarts a workspace-managed server', async () => {
@@ -374,7 +702,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [mcpServer()] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
       }),
       restartMcpServer,
     }
@@ -383,17 +711,20 @@ describe('MCPManager', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Restart Workspace GitHub' }))
 
-    await waitFor(() => expect(restartMcpServer).toHaveBeenCalledWith('github'))
+    await waitFor(() => expect(restartMcpServer).toHaveBeenCalledWith('global', 'github'))
   })
 
   it('deletes a configured server and refreshes the list', async () => {
     const listMcpServers = vi
       .fn()
       .mockResolvedValueOnce({
+        configLayer: 'global',
         servers: [mcpServer()],
       })
-      .mockResolvedValueOnce({ servers: [] })
-    const deleteMcpServer = vi.fn().mockResolvedValue({ id: 'github', status: 'deleted' })
+      .mockResolvedValueOnce({ configLayer: 'global', servers: [] })
+    const deleteMcpServer = vi
+      .fn()
+      .mockResolvedValue({ configLayer: 'global', id: 'github', status: 'deleted' })
     const client = {
       ...createTestCommandClient({ mcpDiagnostics: { events: [] } }),
       deleteMcpServer,
@@ -404,14 +735,17 @@ describe('MCPManager', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Workspace GitHub' }))
 
-    await waitFor(() => expect(deleteMcpServer).toHaveBeenCalledWith('github'))
+    await waitFor(() => expect(deleteMcpServer).toHaveBeenCalledWith('global', 'github'))
     expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
   })
 
   it('submits a stdio server payload from the dialog', async () => {
     const saveMcpServer = vi.fn().mockResolvedValue({ server: mcpServer({ status: 'configured' }) })
     const client = {
-      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
       saveMcpServer,
     }
 
@@ -431,7 +765,7 @@ describe('MCPManager', () => {
     fireEvent.change(screen.getAllByLabelText('Argument')[1], { target: { value: '--stdio' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add inherited env var' }))
     fireEvent.change(screen.getByLabelText('Inherited env var'), {
-      target: { value: 'GITHUB_TOKEN' },
+      target: { value: 'PATH' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Add inline env var' }))
     fireEvent.change(screen.getByLabelText('Inline env name'), { target: { value: 'LOG_LEVEL' } })
@@ -443,15 +777,17 @@ describe('MCPManager', () => {
 
     await waitFor(() =>
       expect(saveMcpServer).toHaveBeenCalledWith({
+        configLayer: 'global',
         displayName: 'Workspace GitHub',
         enabled: true,
         id: 'workspace-github',
+        required: false,
         scope: 'global',
         transport: {
           args: ['mcp-server', '--stdio'],
           command: 'node',
           env: [{ key: 'LOG_LEVEL', value: 'info' }],
-          inheritEnv: ['GITHUB_TOKEN'],
+          inheritEnv: ['PATH'],
           kind: 'stdio',
           workingDir: '.',
         },
@@ -464,7 +800,10 @@ describe('MCPManager', () => {
       .fn()
       .mockResolvedValue({ server: mcpServer({ id: 'remote-context', transport: 'http' }) })
     const client = {
-      ...createTestCommandClient({ mcpDiagnostics: { events: [] }, mcpServers: { servers: [] } }),
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [] },
+      }),
       saveMcpServer,
     }
 
@@ -493,9 +832,11 @@ describe('MCPManager', () => {
 
     await waitFor(() =>
       expect(saveMcpServer).toHaveBeenCalledWith({
+        configLayer: 'global',
         displayName: 'Remote Context',
         enabled: true,
         id: 'remote-context',
+        required: false,
         scope: 'global',
         transport: {
           bearerTokenEnvVar: 'MCP_BEARER_TOKEN',
@@ -512,15 +853,20 @@ describe('MCPManager', () => {
   it('loads editable config details before configuring a server', async () => {
     const getMcpServerConfig = vi.fn().mockResolvedValue({
       server: {
+        configLayer: 'global',
         displayName: 'Workspace GitHub',
+        effective: true,
         enabled: true,
         id: 'github',
+        manageable: true,
+        overridesGlobal: false,
+        required: false,
         scope: 'global',
         transport: {
           args: ['mcp-server'],
           command: 'node',
           env: [{ hasValue: true, key: 'LOG_LEVEL' }],
-          inheritEnv: ['GITHUB_TOKEN'],
+          inheritEnv: ['PATH'],
           kind: 'stdio',
           workingDir: '.',
         },
@@ -530,7 +876,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [mcpServer()] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
       }),
       getMcpServerConfig,
       saveMcpServer,
@@ -540,11 +886,11 @@ describe('MCPManager', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Configure Workspace GitHub' }))
 
-    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'github'))
     expect(await screen.findByDisplayValue('mcp-server')).toBeInTheDocument()
     expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
-    expect(screen.getByDisplayValue('GITHUB_TOKEN')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('PATH')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Inline env value'), { target: { value: 'info' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
@@ -556,19 +902,139 @@ describe('MCPManager', () => {
           transport: expect.objectContaining({
             args: ['mcp-server'],
             env: [{ key: 'LOG_LEVEL', value: 'info' }],
-            inheritEnv: ['GITHUB_TOKEN'],
+            inheritEnv: ['PATH'],
           }),
         }),
       ),
     )
   })
 
+  it('ignores stale config detail responses after opening another server', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const configA = deferred<{ server: McpServerConfig }>()
+    const configB = deferred<{ server: McpServerConfig }>()
+    const getMcpServerConfig = vi.fn((_: 'global' | 'project', id: string) => {
+      return id === serverA.id ? configA.promise : configB.promise
+    })
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'server-a'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'server-b'))
+    await act(async () => {
+      configB.resolve(mcpConfig(serverB, 'server-b-command'))
+      await configB.promise
+    })
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+
+    await act(async () => {
+      configA.resolve(mcpConfig(serverA, 'server-a-command'))
+      await configA.promise
+    })
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('server-a-command')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save MCP server' })).toBeEnabled()
+  })
+
+  it('does not let an older save success close a newer dialog', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const saveA = deferred<{ server: McpServerSummary }>()
+    const saveMcpServer = vi.fn(() => saveA.promise)
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig: vi.fn((_: 'global' | 'project', id: string) =>
+        Promise.resolve(mcpConfig(id === serverA.id ? serverA : serverB, `${id}-command`)),
+      ),
+      saveMcpServer,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    expect(await screen.findByDisplayValue('server-a-command')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+    await waitFor(() => expect(saveMcpServer).toHaveBeenCalled())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save MCP server' })).toBeEnabled()
+
+    await act(async () => {
+      saveA.resolve({ server: serverA })
+      await saveA.promise
+    })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+  })
+
+  it('does not let an older save failure leak into a newer dialog', async () => {
+    const serverA = mcpServer({ displayName: 'Server A', id: 'server-a' })
+    const serverB = mcpServer({ displayName: 'Server B', id: 'server-b' })
+    const saveA = deferred<{ server: McpServerSummary }>()
+    const saveMcpServer = vi.fn(() => saveA.promise)
+    renderMCPManager({
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [] },
+        mcpServers: { configLayer: 'global', servers: [serverA, serverB] },
+      }),
+      getMcpServerConfig: vi.fn((_: 'global' | 'project', id: string) =>
+        Promise.resolve(mcpConfig(id === serverA.id ? serverA : serverB, `${id}-command`)),
+      ),
+      saveMcpServer,
+    })
+
+    const cardA = await screen.findByRole('article', { name: 'Server A' })
+    fireEvent.click(within(cardA).getByRole('button', { name: 'Configure Server A' }))
+    expect(await screen.findByDisplayValue('server-a-command')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+    await waitFor(() => expect(saveMcpServer).toHaveBeenCalled())
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const cardB = screen.getByRole('article', { name: 'Server B' })
+    fireEvent.click(within(cardB).getByRole('button', { name: 'Configure Server B' }))
+    expect(await screen.findByDisplayValue('server-b-command')).toBeInTheDocument()
+
+    await act(async () => {
+      saveA.reject({ code: 'INVALID_PAYLOAD', message: 'Server A save failed.' })
+      await expect(saveA.promise).rejects.toMatchObject({ message: 'Server A save failed.' })
+    })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('server-b-command')).toBeInTheDocument()
+    expect(screen.queryByText('Server A save failed.')).not.toBeInTheDocument()
+    expect(screen.queryByText('MCP server could not be saved.')).not.toBeInTheDocument()
+  })
+
   it('preserves redacted inline env values when saving unchanged config details', async () => {
     const getMcpServerConfig = vi.fn().mockResolvedValue({
       server: {
+        configLayer: 'global',
         displayName: 'Workspace GitHub',
+        effective: true,
         enabled: true,
         id: 'github',
+        manageable: true,
+        overridesGlobal: false,
+        required: true,
         scope: 'global',
         transport: {
           args: ['mcp-server'],
@@ -583,7 +1049,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [mcpServer()] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
       }),
       getMcpServerConfig,
       saveMcpServer,
@@ -592,7 +1058,7 @@ describe('MCPManager', () => {
     renderMCPManager(client)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Configure Workspace GitHub' }))
-    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('github'))
+    await waitFor(() => expect(getMcpServerConfig).toHaveBeenCalledWith('global', 'github'))
     expect(screen.getByDisplayValue('LOG_LEVEL')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('info')).not.toBeInTheDocument()
 
@@ -602,6 +1068,8 @@ describe('MCPManager', () => {
       expect(saveMcpServer).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'github',
+          configLayer: 'global',
+          required: true,
           transport: expect.objectContaining({
             env: [{ key: 'LOG_LEVEL', preserveExisting: true }],
           }),
@@ -616,7 +1084,7 @@ describe('MCPManager', () => {
     const client = {
       ...createTestCommandClient({
         mcpDiagnostics: { events: [] },
-        mcpServers: { servers: [mcpServer()] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
         subscribeMcpDiagnostics: {
           replayEvents: [],
           subscriptionId: 'mcp-diagnostic-subscription-001',
@@ -639,6 +1107,7 @@ describe('MCPManager', () => {
           {
             eventType: 'oauth_refresh',
             id: 'mcp-diagnostic-002',
+            plane: 'settings',
             serverId: 'github',
             severity: 'info',
             summary: 'OAuth refresh completed.',
@@ -653,5 +1122,366 @@ describe('MCPManager', () => {
     expect(await screen.findByText('OAuth refresh completed.')).toBeInTheDocument()
     expect(screen.getByText('OAuth refresh')).toBeInTheDocument()
     expect(screen.queryByText(/mcp-secret-token/)).not.toBeInTheDocument()
+  })
+
+  it('keeps replay and live diagnostics when an older list query resolves', async () => {
+    const listResult = deferred<{ events: McpDiagnosticBatchPayload['events'] }>()
+    let emitBatch: ((batch: McpDiagnosticBatchPayload) => void) | undefined
+    const replayEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'replayed-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Replay diagnostic.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const liveEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'live-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Live diagnostic.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const client = {
+      ...createTestCommandClient({
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+        subscribeMcpDiagnostics: {
+          replayEvents: [replayEvent],
+          subscriptionId: 'mcp-diagnostic-subscription-race',
+        },
+      }),
+      listMcpDiagnostics: vi.fn(() => listResult.promise),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          emitBatch = onBatch
+          return () => undefined
+        },
+      ),
+    }
+    renderMCPManager(client)
+
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalled())
+    act(() => {
+      emitBatch?.({
+        events: [replayEvent, liveEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-race',
+      })
+    })
+    expect(await screen.findByText('Live diagnostic.')).toBeInTheDocument()
+
+    await act(async () => {
+      listResult.resolve({ events: [] })
+      await listResult.promise
+    })
+    expect(screen.getByText('Replay diagnostic.')).toBeInTheDocument()
+    expect(screen.getByText('Live diagnostic.')).toBeInTheDocument()
+    expect(screen.getAllByText('Replay diagnostic.')).toHaveLength(1)
+  })
+
+  it('keeps subscription events across focus and clear cache transitions', async () => {
+    let emitBatch: ((batch: McpDiagnosticBatchPayload) => void) | undefined
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-event',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial diagnostic.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const liveEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'live-after-focus',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Live after focus.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const afterClearEvent: McpDiagnosticBatchPayload['events'][number] = {
+      ...liveEvent,
+      id: 'live-after-clear',
+      summary: 'Live after clear.',
+      timestamp: '2026-07-13T00:00:02.000Z',
+    }
+    const listMcpDiagnostics = vi.fn().mockResolvedValue({ events: [initialEvent] })
+    const clearMcpDiagnostics = vi.fn().mockResolvedValue({ status: 'cleared' })
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-before-clear',
+      })
+      .mockResolvedValueOnce({
+        replayEvents: [],
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-after-clear',
+      })
+    const client = {
+      ...createTestCommandClient({
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+      clearMcpDiagnostics,
+      listMcpDiagnostics,
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          emitBatch = onBatch
+          return () => undefined
+        },
+      ),
+      subscribeMcpDiagnostics,
+    }
+    renderMCPManager(client)
+
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalled())
+    act(() => {
+      emitBatch?.({
+        events: [liveEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-before-clear',
+      })
+    })
+    expect(await screen.findByText('Live after focus.')).toBeInTheDocument()
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(listMcpDiagnostics).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Live after focus.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(clearMcpDiagnostics).toHaveBeenCalled())
+    await waitFor(() => expect(client.listenMcpDiagnosticBatches).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('Initial diagnostic.')).not.toBeInTheDocument())
+    expect(listMcpDiagnostics).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      emitBatch?.({
+        events: [afterClearEvent],
+        phase: 'live',
+        subscriptionId: 'mcp-diagnostic-subscription-transitions-after-clear',
+      })
+    })
+    expect(await screen.findByText('Live after clear.')).toBeInTheDocument()
+  })
+
+  it('restores post-clear events from the replacement subscription replay', async () => {
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-before-clear',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial before clear.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const postClearEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'post-clear-replay',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Post-clear replay.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const clearResult = deferred<{ status: 'cleared' }>()
+    const replacementSubscription = deferred<{
+      replayEvents: McpDiagnosticBatchPayload['events']
+      subscriptionId: string
+    }>()
+    const listeners: Array<(batch: McpDiagnosticBatchPayload) => void> = []
+    const listenerCleanups = [vi.fn(), vi.fn()]
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'diagnostics-before-clear',
+      })
+      .mockImplementationOnce(() => replacementSubscription.promise)
+    const unsubscribeMcpDiagnostics = vi.fn().mockResolvedValue(undefined)
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [initialEvent] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+      clearMcpDiagnostics: vi.fn(() => clearResult.promise),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          const cleanup = listenerCleanups[listeners.length]
+          listeners.push(onBatch)
+          return cleanup
+        },
+      ),
+      subscribeMcpDiagnostics,
+      unsubscribeMcpDiagnostics,
+    }
+    const { queryClient, unmount } = renderMCPManager(client)
+
+    await waitFor(() => expect(listeners).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(client.clearMcpDiagnostics).toHaveBeenCalled())
+    act(() => {
+      listeners[0]?.({
+        events: [postClearEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-before-clear',
+      })
+    })
+    expect(await screen.findByText('Post-clear replay.')).toBeInTheDocument()
+
+    await act(async () => {
+      clearResult.resolve({ status: 'cleared' })
+      await clearResult.promise
+    })
+    await waitFor(() => expect(subscribeMcpDiagnostics).toHaveBeenCalledTimes(2))
+    expect(queryClient.getQueryData(['mcp-diagnostics', 'list', null])).toEqual({ events: [] })
+    expect(listenerCleanups[0]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-before-clear')
+
+    await act(async () => {
+      replacementSubscription.resolve({
+        replayEvents: [postClearEvent],
+        subscriptionId: 'diagnostics-after-clear',
+      })
+      await replacementSubscription.promise
+    })
+    await waitFor(() => expect(listeners).toHaveLength(2))
+    expect(await screen.findByText('Post-clear replay.')).toBeInTheDocument()
+
+    unmount()
+    expect(listenerCleanups[1]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-after-clear')
+  })
+
+  it('ignores delayed batches from the subscription invalidated by clear', async () => {
+    const initialEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_lost',
+      id: 'initial-before-delayed-batch',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'warning',
+      summary: 'Initial before delayed batch.',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    }
+    const delayedEvent: McpDiagnosticBatchPayload['events'][number] = {
+      eventType: 'connection_recovered',
+      id: 'delayed-before-clear',
+      plane: 'settings',
+      serverId: 'github',
+      severity: 'info',
+      summary: 'Delayed before clear.',
+      timestamp: '2026-07-13T00:00:01.000Z',
+    }
+    const currentEvent: McpDiagnosticBatchPayload['events'][number] = {
+      ...delayedEvent,
+      id: 'current-after-clear',
+      summary: 'Current after clear.',
+      timestamp: '2026-07-13T00:00:02.000Z',
+    }
+    const listeners: Array<(batch: McpDiagnosticBatchPayload) => void> = []
+    const listenerCleanups = [vi.fn(), vi.fn()]
+    const subscribeMcpDiagnostics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        replayEvents: [initialEvent],
+        subscriptionId: 'diagnostics-delayed-before-clear',
+      })
+      .mockResolvedValueOnce({
+        replayEvents: [],
+        subscriptionId: 'diagnostics-current-after-clear',
+      })
+    const unsubscribeMcpDiagnostics = vi.fn().mockResolvedValue(undefined)
+    const client = {
+      ...createTestCommandClient({
+        mcpDiagnostics: { events: [initialEvent] },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+      clearMcpDiagnostics: vi.fn().mockResolvedValue({ status: 'cleared' }),
+      listenMcpDiagnosticBatches: vi.fn(
+        async (onBatch: (batch: McpDiagnosticBatchPayload) => void) => {
+          const cleanup = listenerCleanups[listeners.length]
+          listeners.push(onBatch)
+          return cleanup
+        },
+      ),
+      subscribeMcpDiagnostics,
+      unsubscribeMcpDiagnostics,
+    }
+    const { unmount } = renderMCPManager(client)
+
+    await waitFor(() => expect(listeners).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await waitFor(() => expect(listeners).toHaveLength(2))
+    expect(listenerCleanups[0]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-delayed-before-clear')
+
+    act(() => {
+      listeners[0]?.({
+        events: [delayedEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-delayed-before-clear',
+      })
+    })
+    expect(screen.queryByText('Delayed before clear.')).not.toBeInTheDocument()
+
+    act(() => {
+      listeners[1]?.({
+        events: [currentEvent],
+        phase: 'live',
+        subscriptionId: 'diagnostics-current-after-clear',
+      })
+    })
+    expect(await screen.findByText('Current after clear.')).toBeInTheDocument()
+
+    unmount()
+    expect(listenerCleanups[1]).toHaveBeenCalledTimes(1)
+    expect(unsubscribeMcpDiagnostics).toHaveBeenCalledWith('diagnostics-current-after-clear')
+  })
+
+  it('filters diagnostics by settings and task planes', async () => {
+    renderMCPManager(
+      createTestCommandClient({
+        mcpDiagnostics: {
+          events: [
+            {
+              eventType: 'connection_lost',
+              id: 'settings-event',
+              plane: 'settings',
+              serverId: 'github',
+              severity: 'warning',
+              summary: 'Settings probe failed.',
+              timestamp: '2026-06-17T00:00:00.000Z',
+            },
+            {
+              eventType: 'activation_failed',
+              id: 'task-event',
+              plane: 'task',
+              runId: 'run-1',
+              serverId: 'github',
+              severity: 'error',
+              summary: 'Task activation failed.',
+              taskId: 'task-1',
+              timestamp: '2026-06-17T00:00:01.000Z',
+            },
+          ],
+        },
+        mcpServers: { configLayer: 'global', servers: [mcpServer()] },
+      }),
+    )
+
+    expect(await screen.findByText('Settings probe failed.')).toBeInTheDocument()
+    expect(screen.getByText('Task activation failed.')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Filter diagnostics by source'), {
+      target: { value: 'task' },
+    })
+
+    expect(screen.queryByText('Settings probe failed.')).not.toBeInTheDocument()
+    expect(screen.getByText('Task activation failed.')).toBeInTheDocument()
+    expect(screen.getAllByText('Task runtime')).toHaveLength(2)
   })
 })

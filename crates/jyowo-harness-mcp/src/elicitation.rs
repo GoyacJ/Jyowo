@@ -1,16 +1,25 @@
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use harness_contracts::{
     now, ElicitationOutcome, ElicitationSchemaSummary, Event, McpElicitationRequestedEvent,
     McpElicitationResolvedEvent, McpServerId, PermissionMode, RequestId, RunId, SessionId,
 };
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{JsonRpcError, McpEventSink, NoopMcpEventSink};
+use crate::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, McpError, McpEventSink, NoopMcpEventSink,
+};
 
 pub const MCP_ELICITATION_REQUIRED_CODE: i32 = -32042;
+const MAX_PENDING_URL_ELICITATIONS: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElicitationRequest {
@@ -20,6 +29,13 @@ pub struct ElicitationRequest {
     pub subject: String,
     pub detail: Option<String>,
     pub timeout: Option<Duration>,
+    pub mode: ElicitationMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElicitationMode {
+    Form,
+    Url { elicitation_id: String, url: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -39,6 +55,314 @@ pub trait ElicitationHandler: Send + Sync + 'static {
     fn handler_id(&self) -> &str;
 
     async fn handle(&self, request: ElicitationRequest) -> Result<Value, ElicitationError>;
+
+    async fn handle_url_completion(
+        &self,
+        _completion: ElicitationCompletion,
+    ) -> Result<(), ElicitationError> {
+        Ok(())
+    }
+}
+
+/// Routing boundary used by [`McpPeer`](crate::McpPeer) for server-initiated elicitation.
+///
+/// Wire-model decoding remains the responsibility of the installed handler until the
+/// 2025-11-25 elicitation model is migrated.
+#[async_trait]
+pub trait ElicitationRequestRouter: Send + Sync + 'static {
+    async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError>;
+
+    fn remember_url_elicitations(
+        &self,
+        _elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        Ok(())
+    }
+
+    async fn route_elicitation_completion(
+        &self,
+        _notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ElicitRequestParams {
+    Form {
+        message: String,
+        #[serde(rename = "requestedSchema")]
+        requested_schema: Value,
+        #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+        extra: Map<String, Value>,
+    },
+    Url(ElicitUrlRequestParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitUrlRequestParams {
+    pub message: String,
+    pub elicitation_id: String,
+    pub url: String,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElicitationCompletion {
+    pub server_id: McpServerId,
+    pub elicitation: ElicitUrlRequestParams,
+}
+
+#[derive(Clone)]
+pub struct ElicitationJsonRpcHandler {
+    server_id: McpServerId,
+    permission_mode: PermissionMode,
+    handler: Arc<dyn ElicitationHandler>,
+    timeout: Option<Duration>,
+    pending_urls: Arc<StdMutex<HashMap<String, ElicitUrlRequestParams>>>,
+}
+
+impl ElicitationJsonRpcHandler {
+    pub fn new(
+        server_id: McpServerId,
+        permission_mode: PermissionMode,
+        handler: Arc<dyn ElicitationHandler>,
+    ) -> Self {
+        Self {
+            server_id,
+            permission_mode,
+            handler,
+            timeout: None,
+            pending_urls: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    pub async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError> {
+        if request.method != "elicitation/create" {
+            return Err(elicitation_error(-32601, "method not found"));
+        }
+        let params = request
+            .params
+            .ok_or_else(|| elicitation_error(-32602, "elicitation/create missing params"))?;
+        let params = normalize_form_mode(params)?;
+        let wire: ElicitRequestParams = serde_json::from_value(params).map_err(|error| {
+            elicitation_error(
+                -32602,
+                &format!("invalid elicitation/create params: {error}"),
+            )
+        })?;
+        let (subject, schema, mode, url_elicitation) = match wire {
+            ElicitRequestParams::Form {
+                message,
+                requested_schema,
+                ..
+            } => {
+                validate_form_schema(&requested_schema)?;
+                (message, requested_schema, ElicitationMode::Form, None)
+            }
+            ElicitRequestParams::Url(params) => {
+                if url::Url::parse(&params.url).is_err() {
+                    return Err(elicitation_error(
+                        -32602,
+                        "elicitation URL must be absolute",
+                    ));
+                }
+                let mode = ElicitationMode::Url {
+                    elicitation_id: params.elicitation_id.clone(),
+                    url: params.url.clone(),
+                };
+                (params.message.clone(), Value::Null, mode, Some(params))
+            }
+        };
+        let form = matches!(mode, ElicitationMode::Form);
+        let request = ElicitationRequest {
+            request_id: RequestId::new(),
+            server_id: self.server_id.clone(),
+            schema,
+            subject,
+            detail: None,
+            timeout: self.timeout,
+            mode,
+        };
+        if matches!(
+            self.permission_mode,
+            PermissionMode::BypassPermissions | PermissionMode::DontAsk
+        ) {
+            return Ok(json!({ "action": "decline" }));
+        }
+        match self.handler.handle(request).await {
+            Ok(content) if form => {
+                validate_form_content(&content)?;
+                Ok(json!({ "action": "accept", "content": content }))
+            }
+            Ok(_) => {
+                if let Some(elicitation) = url_elicitation {
+                    self.remember_url_elicitations(std::slice::from_ref(&elicitation))
+                        .map_err(|error| elicitation_error(-32603, &error.to_string()))?;
+                }
+                Ok(json!({ "action": "accept" }))
+            }
+            Err(ElicitationError::UserDeclined) => Ok(json!({ "action": "decline" })),
+            Err(ElicitationError::Timeout) => Ok(json!({ "action": "cancel" })),
+            Err(ElicitationError::Invalid(message)) => Err(elicitation_error(-32602, &message)),
+            Err(ElicitationError::NoHandlerRegistered) => Err(elicitation_error(
+                -32601,
+                "no elicitation handler registered",
+            )),
+        }
+    }
+
+    pub async fn route_elicitation_completion(
+        &self,
+        notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        if notification.method != "notifications/elicitation/complete" {
+            return Err(McpError::Protocol(
+                "unexpected elicitation notification method".to_owned(),
+            ));
+        }
+        let elicitation_id = notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("elicitationId"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                McpError::Protocol(
+                    "notifications/elicitation/complete missing elicitationId".to_owned(),
+                )
+            })?;
+        let elicitation = self
+            .pending_urls
+            .lock()
+            .map_err(|_| McpError::Connection("MCP elicitation URL map poisoned".to_owned()))?
+            .remove(elicitation_id);
+        let Some(elicitation) = elicitation else {
+            return Ok(());
+        };
+        self.handler
+            .handle_url_completion(ElicitationCompletion {
+                server_id: self.server_id.clone(),
+                elicitation,
+            })
+            .await
+            .map_err(|error| McpError::Elicitation(error.to_string()))
+    }
+
+    fn remember_url_elicitations(
+        &self,
+        elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        let mut pending = self
+            .pending_urls
+            .lock()
+            .map_err(|_| McpError::Connection("MCP elicitation URL map poisoned".to_owned()))?;
+        let additions = elicitations
+            .iter()
+            .map(|elicitation| elicitation.elicitation_id.as_str())
+            .filter(|elicitation_id| !pending.contains_key(*elicitation_id))
+            .collect::<HashSet<_>>()
+            .len();
+        if pending.len().saturating_add(additions) > MAX_PENDING_URL_ELICITATIONS {
+            return Err(McpError::Protocol(format!(
+                "MCP pending URL elicitation limit reached ({MAX_PENDING_URL_ELICITATIONS})"
+            )));
+        }
+        for elicitation in elicitations {
+            pending.insert(elicitation.elicitation_id.clone(), elicitation.clone());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ElicitationRequestRouter for ElicitationJsonRpcHandler {
+    async fn route_elicitation_request(
+        &self,
+        request: JsonRpcRequest,
+    ) -> Result<Value, JsonRpcError> {
+        ElicitationJsonRpcHandler::route_elicitation_request(self, request).await
+    }
+
+    fn remember_url_elicitations(
+        &self,
+        elicitations: &[ElicitUrlRequestParams],
+    ) -> Result<(), McpError> {
+        ElicitationJsonRpcHandler::remember_url_elicitations(self, elicitations)
+    }
+
+    async fn route_elicitation_completion(
+        &self,
+        notification: JsonRpcNotification,
+    ) -> Result<(), McpError> {
+        ElicitationJsonRpcHandler::route_elicitation_completion(self, notification).await
+    }
+}
+
+fn normalize_form_mode(mut params: Value) -> Result<Value, JsonRpcError> {
+    let object = params
+        .as_object_mut()
+        .ok_or_else(|| elicitation_error(-32602, "elicitation params must be an object"))?;
+    object
+        .entry("mode")
+        .or_insert_with(|| Value::String("form".to_owned()));
+    Ok(params)
+}
+
+fn validate_form_schema(schema: &Value) -> Result<(), JsonRpcError> {
+    if schema.get("type").and_then(Value::as_str) != Some("object")
+        || !schema.get("properties").is_some_and(Value::is_object)
+    {
+        return Err(elicitation_error(
+            -32602,
+            "elicitation requestedSchema must be an object schema",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_form_content(content: &Value) -> Result<(), JsonRpcError> {
+    let object = content
+        .as_object()
+        .ok_or_else(|| elicitation_error(-32602, "accepted form content must be an object"))?;
+    if object.values().all(|value| {
+        value.is_string()
+            || value.is_number()
+            || value.is_boolean()
+            || value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string))
+    }) {
+        Ok(())
+    } else {
+        Err(elicitation_error(
+            -32602,
+            "elicitation form content contains a non-primitive value",
+        ))
+    }
+}
+
+fn elicitation_error(code: i32, message: &str) -> JsonRpcError {
+    JsonRpcError {
+        code,
+        message: message.to_owned(),
+        data: None,
+        extra: Default::default(),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -227,53 +551,25 @@ pub fn summarize_elicitation_schema(schema: &Value) -> ElicitationSchemaSummary 
     }
 }
 
-pub fn elicitation_from_jsonrpc_error(error: &JsonRpcError) -> Option<ElicitationRequest> {
+pub fn url_elicitations_from_jsonrpc_error(
+    error: &JsonRpcError,
+) -> Option<Vec<ElicitUrlRequestParams>> {
     if error.code != MCP_ELICITATION_REQUIRED_CODE {
         return None;
     }
-    let data = error.data.as_ref()?;
-    let request_id = serde_json::from_value(data.get("request_id")?.clone()).ok()?;
-    let server_id = McpServerId(data.get("server_id")?.as_str()?.to_owned());
-    let subject = data.get("subject")?.as_str()?.to_owned();
-    let schema = data.get("schema").cloned().unwrap_or(Value::Null);
-    let detail = data
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let timeout = data
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .map(Duration::from_millis);
-    Some(ElicitationRequest {
-        request_id,
-        server_id,
-        schema,
-        subject,
-        detail,
-        timeout,
-    })
-}
-
-pub async fn handle_jsonrpc_elicitation_error<H>(
-    error: &JsonRpcError,
-    permission_mode: PermissionMode,
-    handler: Arc<H>,
-) -> Result<Option<Value>, ElicitationError>
-where
-    H: ElicitationHandler + ?Sized,
-{
-    let Some(request) = elicitation_from_jsonrpc_error(error) else {
-        return Ok(None);
-    };
-
-    if matches!(
-        permission_mode,
-        PermissionMode::BypassPermissions | PermissionMode::DontAsk
-    ) {
-        return RejectAllElicitationHandler.handle(request).await.map(Some);
+    let elicitations: Vec<ElicitUrlRequestParams> =
+        serde_json::from_value(error.data.as_ref()?.get("elicitations")?.clone()).ok()?;
+    if elicitations.is_empty()
+        || elicitations.iter().any(|elicitation| {
+            elicitation.extra.get("mode").and_then(Value::as_str) != Some("url")
+                || elicitation.elicitation_id.trim().is_empty()
+                || elicitation.message.trim().is_empty()
+                || url::Url::parse(&elicitation.url).is_err()
+        })
+    {
+        return None;
     }
-
-    handler.handle(request).await.map(Some)
+    Some(elicitations)
 }
 
 fn outcome_for_result(result: &Result<Value, ElicitationError>) -> ElicitationOutcome {

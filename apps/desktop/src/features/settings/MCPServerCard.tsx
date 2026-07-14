@@ -1,7 +1,7 @@
 import { ExternalLink, RotateCw, Settings, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import type { McpServerSummary } from '@/shared/tauri/commands'
+import type { McpConfigLayer, McpServerSummary } from '@/shared/tauri/commands'
 import { Badge, type BadgeProps } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Switch } from '@/shared/ui/switch'
@@ -9,24 +9,33 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shar
 
 interface MCPServerCardProps {
   onConfigure: (server: McpServerSummary) => void
-  onDelete: (id: string) => void
+  onDelete: (server: McpServerSummary) => void
   onOpenPlugin?: (pluginId: string) => void
-  onRestart: (id: string) => void
-  onToggle: (id: string, enabled: boolean) => void
+  onOverride?: (server: McpServerSummary) => void
+  onRestart: (server: McpServerSummary) => void
+  onToggle: (server: McpServerSummary, enabled: boolean) => void
   server: McpServerSummary
+  viewConfigLayer: McpConfigLayer
 }
 
 export function MCPServerCard({
   onConfigure,
   onDelete,
   onOpenPlugin,
+  onOverride,
   onRestart,
   onToggle,
   server,
+  viewConfigLayer,
 }: MCPServerCardProps) {
   const { t } = useTranslation('settings')
   const sourcePluginId =
     server.origin === 'plugin' && server.sourcePluginId ? server.sourcePluginId : null
+  const isInheritedGlobal =
+    viewConfigLayer === 'project' &&
+    server.configLayer === 'global' &&
+    server.origin === 'user' &&
+    !server.manageable
 
   return (
     <article
@@ -39,10 +48,28 @@ export function MCPServerCard({
             <h4 className="truncate font-medium text-sm">{server.displayName}</h4>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Badge variant={statusVariant(server.status)}>{server.status}</Badge>
+            <Badge variant={statusVariant(server.status)}>
+              {t('mcp.settingsCheck', { status: server.status })}
+            </Badge>
             <Badge variant="outline">{server.transport}</Badge>
             <Badge variant="outline">{server.origin}</Badge>
-            <Badge variant="outline">{server.scope}</Badge>
+            <Badge variant="outline">
+              {t(
+                server.configLayer === 'global'
+                  ? 'mcp.configLayer.global'
+                  : 'mcp.configLayer.project',
+              )}
+            </Badge>
+            <Badge variant="outline">
+              {t('mcp.runtimeScopeValue', { scope: t(`mcp.runtimeScope.${server.scope}`) })}
+            </Badge>
+            <Badge variant={server.required ? 'secondary' : 'outline'}>
+              {t(server.required ? 'mcp.required' : 'mcp.optional')}
+            </Badge>
+            {server.overridesGlobal ? (
+              <Badge variant="secondary">{t('mcp.overridesGlobal')}</Badge>
+            ) : null}
+            {isInheritedGlobal ? <Badge variant="outline">{t('mcp.inheritedGlobal')}</Badge> : null}
             <Badge variant="outline">
               {t('mcp.toolCount', { count: server.exposedToolCount })}
             </Badge>
@@ -71,7 +98,7 @@ export function MCPServerCard({
                         name: server.displayName,
                       })}
                       checked={server.enabled}
-                      onCheckedChange={(enabled) => onToggle(server.id, enabled)}
+                      onCheckedChange={(enabled) => onToggle(server, enabled)}
                     />
                   </TooltipTrigger>
                   <TooltipContent>
@@ -96,7 +123,7 @@ export function MCPServerCard({
                   <TooltipTrigger asChild>
                     <Button
                       aria-label={t('mcp.restartServer', { name: server.displayName })}
-                      onClick={() => onRestart(server.id)}
+                      onClick={() => onRestart(server)}
                       size="icon"
                       type="button"
                       variant="ghost"
@@ -109,8 +136,13 @@ export function MCPServerCard({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      aria-label={t('mcp.deleteServer', { name: server.displayName })}
-                      onClick={() => onDelete(server.id)}
+                      aria-label={t(
+                        server.configLayer === 'project' && server.overridesGlobal
+                          ? 'mcp.deleteOverride'
+                          : 'mcp.deleteServer',
+                        { name: server.displayName },
+                      )}
+                      onClick={() => onDelete(server)}
                       size="icon"
                       type="button"
                       variant="ghost"
@@ -124,6 +156,18 @@ export function MCPServerCard({
             ) : (
               <>
                 <Badge variant="outline">{t('mcp.readOnly')}</Badge>
+                {isInheritedGlobal && onOverride ? (
+                  <Button
+                    aria-label={t('mcp.overrideServer', { name: server.displayName })}
+                    onClick={() => onOverride(server)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <Settings className="size-4" />
+                    {t('mcp.override')}
+                  </Button>
+                ) : null}
                 {sourcePluginId && onOpenPlugin ? (
                   <Tooltip>
                     <TooltipTrigger asChild>

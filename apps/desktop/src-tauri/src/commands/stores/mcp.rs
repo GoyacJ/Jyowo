@@ -62,6 +62,7 @@ impl McpServerStore for DesktopMcpServerStore {
 
 #[derive(Clone)]
 pub struct DesktopMcpDiagnosticStore {
+    clear_lock: Arc<ParkingMutex<()>>,
     retention_limit: usize,
     runtime_root: PathBuf,
 }
@@ -74,6 +75,7 @@ impl DesktopMcpDiagnosticStore {
     pub fn new_with_limit(workspace_root: PathBuf, retention_limit: usize) -> Self {
         let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
         Self {
+            clear_lock: Arc::new(ParkingMutex::new(())),
             retention_limit,
             runtime_root: workspace_root.join(".jyowo").join("runtime"),
         }
@@ -85,6 +87,7 @@ impl DesktopMcpDiagnosticStore {
 
     pub fn new_runtime_root_with_limit(runtime_root: PathBuf, retention_limit: usize) -> Self {
         Self {
+            clear_lock: Arc::new(ParkingMutex::new(())),
             retention_limit,
             runtime_root,
         }
@@ -92,6 +95,11 @@ impl DesktopMcpDiagnosticStore {
 
     fn diagnostics_path(&self) -> PathBuf {
         self.runtime_root.join("mcp-diagnostics.jsonl")
+    }
+
+    fn task_clear_watermarks_path(&self) -> PathBuf {
+        self.runtime_root
+            .join("mcp-task-diagnostic-clear-watermarks.json")
     }
 }
 
@@ -117,7 +125,39 @@ impl McpDiagnosticStore for DesktopMcpDiagnosticStore {
         )
     }
 
-    fn clear_records(&self, server_id: Option<&str>) -> Result<(), CommandErrorPayload> {
+    fn load_task_clear_watermarks(
+        &self,
+    ) -> Result<McpTaskDiagnosticClearWatermarks, CommandErrorPayload> {
+        let _guard = self.clear_lock.lock();
+        read_json_file(
+            &self.task_clear_watermarks_path(),
+            "MCP task diagnostic clear watermarks",
+        )
+        .map(Option::unwrap_or_default)
+    }
+
+    fn clear_records(
+        &self,
+        server_id: Option<&str>,
+        task_cleared_at: DateTime<Utc>,
+    ) -> Result<(), CommandErrorPayload> {
+        let _guard = self.clear_lock.lock();
+        let mut watermarks: McpTaskDiagnosticClearWatermarks = read_json_file(
+            &self.task_clear_watermarks_path(),
+            "MCP task diagnostic clear watermarks",
+        )?
+        .unwrap_or_default();
+        match server_id {
+            Some(server_id) => {
+                watermarks
+                    .servers
+                    .insert(server_id.to_owned(), task_cleared_at);
+            }
+            None => {
+                watermarks.all = Some(task_cleared_at);
+                watermarks.servers.clear();
+            }
+        }
         update_jsonl_records_locked(
             &self.diagnostics_path(),
             "mcp diagnostics",
@@ -127,6 +167,11 @@ impl McpDiagnosticStore for DesktopMcpDiagnosticStore {
             },
             |error| runtime_operation_failed(format!("mcp diagnostics parse failed: {error}")),
             |_| Ok(()),
+        )?;
+        write_json_file_atomic(
+            &self.task_clear_watermarks_path(),
+            "MCP task diagnostic clear watermarks",
+            &watermarks,
         )
     }
 }

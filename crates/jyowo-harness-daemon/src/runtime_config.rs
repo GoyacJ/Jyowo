@@ -675,7 +675,7 @@ pub struct RuntimeMcpServerConfig {
 }
 
 fn default_mcp_server_source() -> McpServerSource {
-    McpServerSource::Workspace
+    McpServerSource::User
 }
 
 impl<'de> Deserialize<'de> for RuntimeMcpServerConfig {
@@ -1968,6 +1968,9 @@ impl ProviderCredentialResolverCap for DaemonProviderCredentialResolver {
 mod security_tests {
     use std::{io::Cursor, path::Path};
 
+    use harness_contracts::McpServerSource;
+    use serde_json::json;
+
     #[test]
     fn bounded_sidecar_read_rejects_growth_beyond_initial_metadata_length() {
         let mut bytes = Cursor::new(vec![0_u8; 9]);
@@ -1976,5 +1979,50 @@ mod security_tests {
                 .expect_err("reader growth beyond the cap must fail closed");
 
         assert!(matches!(error, super::RuntimeConfigError::Invalid { .. }));
+    }
+
+    #[test]
+    fn persisted_mcp_records_default_to_user_source() {
+        let record = serde_json::from_value::<super::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "displayName": "global",
+            "id": "shared",
+            "scope": "global",
+            "transport": {"kind": "stdio", "command": "node"}
+        }))
+        .expect("deserialize global MCP record");
+
+        assert_eq!(record.source, McpServerSource::User);
+    }
+
+    #[test]
+    fn project_mcp_override_preserves_required_policy_and_source() {
+        let mut global = serde_json::from_value::<super::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "required": false,
+            "displayName": "global",
+            "id": "shared",
+            "scope": "global",
+            "transport": {"kind": "stdio", "command": "node"}
+        }))
+        .expect("deserialize global MCP record");
+        global.source = McpServerSource::User;
+        let mut project = serde_json::from_value::<super::RuntimeMcpServerConfig>(json!({
+            "enabled": true,
+            "required": true,
+            "displayName": "project",
+            "id": "shared",
+            "scope": "session",
+            "transport": {"kind": "stdio", "command": "node"}
+        }))
+        .expect("deserialize project MCP record");
+        project.source = McpServerSource::Project;
+
+        let merged =
+            super::merge_mcp_servers(vec![global], Some(vec![project])).expect("merge MCP records");
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].required);
+        assert_eq!(merged[0].source, McpServerSource::Project);
     }
 }

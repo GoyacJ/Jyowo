@@ -6,6 +6,7 @@ async fn save_mcp_server_payload_rejects_invalid_config_fail_closed() {
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: String::new(),
             id: "bad id".to_owned(),
             scope: "global".to_owned(),
@@ -43,6 +44,23 @@ fn mcp_server_config_record_rejects_missing_enabled() {
     assert!(error.to_string().contains("missing field `enabled`"));
 }
 
+#[test]
+fn save_mcp_server_request_missing_required_defaults_to_optional() {
+    let request = serde_json::from_value::<SaveMcpServerRequest>(json!({
+        "enabled": true,
+        "displayName": "Workspace GitHub",
+        "id": "github",
+        "scope": "global",
+        "transport": {
+            "kind": "stdio",
+            "command": "node"
+        }
+    }))
+    .expect("deserialize legacy save request");
+
+    assert!(!request.required);
+}
+
 #[tokio::test]
 async fn browser_mcp_presets_are_disabled_until_saved() {
     let store = RecordingMcpServerStore::default();
@@ -54,9 +72,11 @@ async fn browser_mcp_presets_are_disabled_until_saved() {
     assert_eq!(payload.presets.len(), 2);
     assert_eq!(payload.presets[0].id, BrowserMcpPresetId::Playwright);
     assert_eq!(payload.presets[0].server_id, "browser-playwright");
+    assert_eq!(payload.presets[0].version, "0.0.78");
     assert!(!payload.presets[0].enabled);
     assert_eq!(payload.presets[1].id, BrowserMcpPresetId::ChromeDevtools);
     assert_eq!(payload.presets[1].server_id, "browser-chrome-devtools");
+    assert_eq!(payload.presets[1].version, "1.5.0");
     assert!(!payload.presets[1].enabled);
 }
 
@@ -76,15 +96,17 @@ async fn browser_mcp_preset_save_writes_disabled_workspace_server_by_default() {
     let stored = store.record.lock().unwrap().clone().unwrap();
 
     assert_eq!(payload.preset.id, BrowserMcpPresetId::Playwright);
+    assert_eq!(payload.preset.version, "0.0.78");
     assert!(!payload.preset.enabled);
     assert_eq!(payload.server.status, "disabled");
     assert!(!stored.enabled);
+    assert!(!stored.required);
     assert_eq!(stored.id, "browser-playwright");
     assert!(matches!(
         stored.transport,
         McpServerTransportConfig::Stdio { ref command, ref args, ref env, ref inherit_env, .. }
             if command == "npx"
-                && args == &vec!["-y".to_owned(), "@playwright/mcp@latest".to_owned()]
+                && args == &vec!["-y".to_owned(), "@playwright/mcp@0.0.78".to_owned()]
                 && env.is_empty()
                 && inherit_env == &vec![
                     "PATH".to_owned(),
@@ -114,15 +136,17 @@ async fn browser_mcp_preset_can_be_explicitly_enabled() {
     let stored = store.record.lock().unwrap().clone().unwrap();
 
     assert_eq!(payload.preset.id, BrowserMcpPresetId::ChromeDevtools);
+    assert_eq!(payload.preset.version, "1.5.0");
     assert!(payload.preset.enabled);
     assert!(payload.server.enabled);
     assert_eq!(stored.id, "browser-chrome-devtools");
     assert!(stored.enabled);
+    assert!(!stored.required);
     assert!(matches!(
         stored.transport,
         McpServerTransportConfig::Stdio { ref command, ref args, ref inherit_env, .. }
             if command == "npx"
-                && args == &vec!["-y".to_owned(), "chrome-devtools-mcp@latest".to_owned()]
+                && args == &vec!["-y".to_owned(), "chrome-devtools-mcp@1.5.0".to_owned()]
                 && inherit_env == &vec![
                     "PATH".to_owned(),
                     "HOME".to_owned(),
@@ -138,6 +162,7 @@ async fn save_mcp_server_payload_allows_secret_bearing_stdio_args() {
     let payload = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
@@ -169,6 +194,7 @@ async fn save_mcp_server_payload_allows_raw_secret_like_stdio_args() {
     let payload = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Workspace GitHub".to_owned(),
             id: "github".to_owned(),
             scope: "global".to_owned(),
@@ -200,6 +226,7 @@ async fn save_mcp_server_payload_rejects_in_process_workspace_config() {
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Internal".to_owned(),
             id: "internal".to_owned(),
             scope: "global".to_owned(),
@@ -220,6 +247,7 @@ async fn save_mcp_server_payload_persists_http_config_without_secret_values() {
     let payload = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -259,6 +287,7 @@ async fn get_mcp_server_config_with_store_returns_workspace_managed_record() {
     save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -313,6 +342,7 @@ async fn save_mcp_server_with_store_preserves_existing_redacted_http_header_valu
     save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -335,6 +365,7 @@ async fn save_mcp_server_with_store_preserves_existing_redacted_http_header_valu
     save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -371,6 +402,7 @@ async fn save_mcp_server_with_store_rejects_preserve_existing_without_existing_v
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -431,6 +463,7 @@ async fn save_mcp_server_payload_rejects_secret_bearing_http_headers() {
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -460,6 +493,7 @@ async fn save_mcp_server_payload_rejects_cookie_headers_from_env() {
     let error = save_mcp_server_with_store(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Remote Browser".to_owned(),
             id: "remote-browser".to_owned(),
             scope: "global".to_owned(),
@@ -515,6 +549,7 @@ async fn save_mcp_server_with_runtime_state_registers_and_injects_stdio_tools() 
         save_mcp_server_with_runtime_state(
             SaveMcpServerRequest {
                 enabled: true,
+                required: false,
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
@@ -574,6 +609,7 @@ async fn save_mcp_server_with_runtime_state_runs_npx_without_explicit_inherited_
         save_mcp_server_with_runtime_state(
             SaveMcpServerRequest {
                 enabled: true,
+                required: false,
                 display_name: "Context7".to_owned(),
                 id: "context7".to_owned(),
                 scope: "global".to_owned(),
@@ -627,6 +663,7 @@ async fn save_mcp_server_with_runtime_state_accepts_workspace_relative_working_d
         save_mcp_server_with_runtime_state(
             SaveMcpServerRequest {
                 enabled: true,
+                required: false,
                 display_name: "Context7".to_owned(),
                 id: "context7".to_owned(),
                 scope: "global".to_owned(),
@@ -672,6 +709,7 @@ async fn save_mcp_server_with_runtime_state_rejects_invalid_working_dir_without_
     let error = save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
             enabled: true,
+            required: false,
             display_name: "Context7".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -709,6 +747,7 @@ async fn disabled_mcp_server_with_runtime_state_does_not_register_or_inject_tool
     let payload = save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
             enabled: false,
+            required: false,
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
@@ -752,6 +791,7 @@ async fn set_mcp_server_enabled_registers_and_injects_tools() {
     save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
             enabled: false,
+            required: false,
             display_name: "Workspace Stdio".to_owned(),
             id: "stdio".to_owned(),
             scope: "global".to_owned(),
@@ -816,6 +856,7 @@ async fn set_mcp_server_enabled_rejects_missing_bearer_env_without_persisting_en
     let store = Arc::new(RecordingMcpServerStore::default());
     *store.record.lock().unwrap() = Some(McpServerConfigRecord {
         enabled: false,
+        required: false,
         display_name: "Remote Context".to_owned(),
         id: "context7".to_owned(),
         scope: "global".to_owned(),
@@ -867,6 +908,7 @@ async fn restart_mcp_server_removes_registers_and_injects_tools() {
         save_mcp_server_with_runtime_state(
             SaveMcpServerRequest {
                 enabled: true,
+                required: false,
                 display_name: "Workspace Stdio".to_owned(),
                 id: "stdio".to_owned(),
                 scope: "global".to_owned(),
@@ -935,6 +977,7 @@ async fn http_mcp_server_with_runtime_state_registers_as_http_transport() {
     let payload = save_mcp_server_with_runtime_state(
         SaveMcpServerRequest {
             enabled: true,
+            required: true,
             display_name: "Remote Context".to_owned(),
             id: "context7".to_owned(),
             scope: "global".to_owned(),
@@ -964,6 +1007,10 @@ async fn http_mcp_server_with_runtime_state_registers_as_http_transport() {
         .unwrap();
 
     assert_eq!(payload.server.transport, "http");
+    assert!(payload.server.required);
+    assert!(spec.required);
+    assert_eq!(spec.source, McpServerSource::User);
+    assert_eq!(spec.trust, TrustLevel::UserControlled);
     assert!(matches!(spec.transport, TransportChoice::Http { .. }));
 }
 
@@ -1002,8 +1049,11 @@ async fn delete_mcp_server_with_runtime_state_removes_registry_server_and_inject
             Arc::new(StaticMcpConnection {
                 tools: vec![McpToolDescriptor {
                     name: "search".to_owned(),
+                    title: None,
                     description: Some("Search".to_owned()),
+                    icons: None,
                     input_schema: json!({ "type": "object" }),
+                    execution: None,
                     output_schema: None,
                     annotations: None,
                     meta: Default::default(),
@@ -1066,16 +1116,22 @@ async fn list_mcp_servers_with_runtime_state_includes_origin_scope_and_tool_coun
                 tools: vec![
                     McpToolDescriptor {
                         name: "search".to_owned(),
+                        title: None,
                         description: Some("Search".to_owned()),
+                        icons: None,
                         input_schema: json!({ "type": "object" }),
+                        execution: None,
                         output_schema: None,
                         annotations: None,
                         meta: Default::default(),
                     },
                     McpToolDescriptor {
                         name: "issue".to_owned(),
+                        title: None,
                         description: Some("Issue".to_owned()),
+                        icons: None,
                         input_schema: json!({ "type": "object" }),
+                        execution: None,
                         output_schema: None,
                         annotations: None,
                         meta: Default::default(),
@@ -1187,6 +1243,11 @@ async fn mcp_diagnostic_store_retains_recent_records_and_filters_by_server() {
                 severity: McpDiagnosticSeverity::Warning,
                 summary: format!("diagnostic {index}"),
                 timestamp: format!("2026-06-17T00:00:0{index}.000Z"),
+                plane: McpDiagnosticPlane::Settings,
+                task_id: None,
+                session_id: None,
+                run_id: None,
+                run_segment_id: None,
             })
             .unwrap();
     }

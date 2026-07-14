@@ -37,6 +37,7 @@ impl Default for TenantPolicy {
 pub struct McpConfig {
     pub registry: McpRegistry,
     pub server_ids_to_inject: Vec<McpServerId>,
+    pub event_sink: Arc<dyn McpEventSink>,
 }
 
 impl Default for McpConfig {
@@ -44,8 +45,21 @@ impl Default for McpConfig {
         Self {
             registry: McpRegistry::new(),
             server_ids_to_inject: Vec::new(),
+            event_sink: Arc::new(NoopMcpEventSink),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpToolInjectionOutcome {
+    Injected {
+        server_id: McpServerId,
+        tool_names: Vec<String>,
+    },
+    SkippedOptional {
+        server_id: McpServerId,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

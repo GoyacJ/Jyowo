@@ -17,6 +17,7 @@ use harness_mcp::{
 use harness_tool::{BuiltinToolset, ToolRegistry};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
+use tokio::sync::RwLock as AsyncRwLock;
 
 #[tokio::test]
 async fn list_changed_updates_tool_pool() {
@@ -345,26 +346,22 @@ async fn required_evaluation_reports_missing_server() {
 
 #[tokio::test]
 async fn required_evaluation_reports_not_ready_server() {
-    let (connection, _) = NotifyingTools::new(Vec::new());
+    let connection = Arc::new(StatefulConnection::new(McpConnectionState::Ready));
     let registry = McpRegistry::new();
     registry
         .add_ready_server(
             spec(McpServerSource::Workspace),
             McpServerScope::Global,
-            connection,
+            connection.clone(),
         )
         .await
         .expect("server");
-    registry
-        .set_connection_state(
-            &server_id(),
-            McpConnectionState::Reconnecting {
-                attempt: 1,
-                last_error: "transport reset".to_owned(),
-            },
-        )
-        .await
-        .expect("state");
+    connection
+        .set_state(McpConnectionState::Reconnecting {
+            attempt: 1,
+            last_error: "transport reset".to_owned(),
+        })
+        .await;
 
     let evaluations = registry
         .evaluate_required(&[], &[McpServerPattern::exact(server_id())])
@@ -379,6 +376,52 @@ async fn required_evaluation_reports_not_ready_server() {
                 last_error: "transport reset".to_owned()
             }
         }]
+    );
+}
+
+#[tokio::test]
+async fn registry_connection_state_follows_the_live_connection() {
+    let connection = Arc::new(StatefulConnection::new(McpConnectionState::Ready));
+    let registry = McpRegistry::new();
+    registry
+        .add_ready_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            connection.clone(),
+        )
+        .await
+        .expect("server");
+
+    assert_eq!(
+        registry.connection_state(&server_id()).await,
+        Some(McpConnectionState::Ready)
+    );
+
+    let failed = McpConnectionState::Failed {
+        last_error: "reconnect attempts exhausted".to_owned(),
+    };
+    connection.set_state(failed.clone()).await;
+
+    assert_eq!(registry.connection_state(&server_id()).await, Some(failed));
+}
+
+#[tokio::test]
+async fn failed_registration_exposes_its_stored_error() {
+    let registry = McpRegistry::new();
+    registry
+        .add_failed_server(
+            spec(McpServerSource::Workspace),
+            McpServerScope::Global,
+            "initialization rejected protocol version".to_owned(),
+        )
+        .await
+        .expect("failed server");
+
+    assert_eq!(
+        registry.connection_state(&server_id()).await,
+        Some(McpConnectionState::Failed {
+            last_error: "initialization rejected protocol version".to_owned(),
+        })
     );
 }
 
@@ -426,6 +469,9 @@ fn server_id() -> McpServerId {
 fn tool(name: &str) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema: json!({ "type": "object" }),
         output_schema: None,
@@ -437,6 +483,45 @@ fn tool(name: &str) -> McpToolDescriptor {
 struct NotifyingTools {
     tools: Mutex<Vec<McpToolDescriptor>>,
     changes: Mutex<Option<mpsc::Receiver<McpChange>>>,
+}
+
+struct StatefulConnection {
+    state: AsyncRwLock<McpConnectionState>,
+}
+
+impl StatefulConnection {
+    fn new(state: McpConnectionState) -> Self {
+        Self {
+            state: AsyncRwLock::new(state),
+        }
+    }
+
+    async fn set_state(&self, state: McpConnectionState) {
+        *self.state.write().await = state;
+    }
+}
+
+#[async_trait]
+impl McpConnection for StatefulConnection {
+    fn connection_id(&self) -> &'static str {
+        "stateful"
+    }
+
+    async fn connection_state(&self) -> McpConnectionState {
+        self.state.read().await.clone()
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
+        Ok(Vec::new())
+    }
+
+    async fn call_tool(&self, _name: &str, _args: Value) -> Result<McpToolResult, McpError> {
+        Ok(McpToolResult::text("ok"))
+    }
+
+    async fn shutdown(&self) -> Result<(), McpError> {
+        Ok(())
+    }
 }
 
 impl NotifyingTools {

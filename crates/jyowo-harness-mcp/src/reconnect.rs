@@ -1,27 +1,29 @@
 use std::{
+    future::Future,
+    panic::AssertUnwindSafe,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
 };
 
 use async_trait::async_trait;
-use futures::{stream, StreamExt};
+use futures::{stream, FutureExt};
 use harness_contracts::{
     now, Event, McpConnectionLostEvent, McpConnectionLostReason, McpConnectionRecoveredEvent,
     SessionId,
 };
 use serde_json::Value;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 
 use crate::{
     authorize_mcp_transport,
     registry::{effective_tool_schema_fingerprint, McpSchemaFingerprint},
-    ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError, McpMetric,
-    McpMetricConnectionState, McpMetricOutcome, McpMetricsSink, McpPrompt, McpPromptMessages,
-    McpResource, McpResourceContents, McpServerScope, McpServerSpec, McpToolCallStream,
-    McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink,
+    ListChangedEvent, McpChange, McpConnectContext, McpConnection, McpError, McpListPage,
+    McpMetric, McpMetricConnectionState, McpMetricOutcome, McpMetricsSink, McpPrompt,
+    McpPromptMessages, McpReadResourceResult, McpResource, McpServerScope, McpServerSpec,
+    McpToolCallStream, McpToolDescriptor, McpToolResult, McpTransport, NoopMcpMetricsSink,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,9 +57,17 @@ pub struct ManagedMcpConnection {
     connection: Arc<RwLock<Option<Arc<dyn McpConnection>>>>,
     attempts: Arc<AtomicU32>,
     reconnecting: Arc<AtomicBool>,
+    reconnect_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), McpError>>>>>,
+    closed_notify: Arc<Notify>,
+    shutdown_lock: Arc<Mutex<()>>,
+    shutdown_started: Arc<AtomicBool>,
+    shutdown_completion: watch::Sender<Option<Result<(), McpError>>>,
     downtime_started: Arc<Mutex<Option<Instant>>>,
     schema_fingerprint: Arc<RwLock<Option<McpSchemaFingerprint>>>,
     changes_tx: broadcast::Sender<McpChange>,
+    change_generation: Arc<AtomicU64>,
+    change_forwarder: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    retired_shutdown_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     event_sink: Arc<dyn McpEventSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
 }
@@ -146,15 +156,24 @@ impl ManagedMcpConnection {
             connect_context: context,
             session_id,
             state: Arc::new(RwLock::new(McpConnectionState::Ready)),
-            connection: Arc::new(RwLock::new(Some(connection))),
+            connection: Arc::new(RwLock::new(Some(Arc::clone(&connection)))),
             attempts: Arc::new(AtomicU32::new(0)),
             reconnecting: Arc::new(AtomicBool::new(false)),
+            reconnect_task: Arc::new(Mutex::new(None)),
+            closed_notify: Arc::new(Notify::new()),
+            shutdown_lock: Arc::new(Mutex::new(())),
+            shutdown_started: Arc::new(AtomicBool::new(false)),
+            shutdown_completion: watch::channel(None).0,
             downtime_started: Arc::new(Mutex::new(None)),
             schema_fingerprint: Arc::new(RwLock::new(None)),
             changes_tx,
+            change_generation: Arc::new(AtomicU64::new(0)),
+            change_forwarder: Arc::new(Mutex::new(None)),
+            retired_shutdown_tasks: Arc::new(Mutex::new(Vec::new())),
             event_sink,
             metrics_sink,
         };
+        managed.replace_change_forwarder(connection).await;
         managed.record_state(McpMetricConnectionState::Ready);
         managed.emit_recovered(true, 0, 0, false);
         Ok(managed)
@@ -208,26 +227,34 @@ impl ManagedMcpConnection {
 
         let reason = connection_lost_reason(&error);
         let last_error = error.to_string();
+        let mut state = self.state.write().await;
+        if *state == McpConnectionState::Closed {
+            self.reconnecting.store(false, Ordering::SeqCst);
+            return;
+        }
         self.attempts.store(0, Ordering::SeqCst);
         *self.downtime_started.lock().await = Some(Instant::now());
-        *self.connection.write().await = None;
-        *self.state.write().await = McpConnectionState::Reconnecting {
+        *state = McpConnectionState::Reconnecting {
             attempt: 0,
             last_error,
         };
+        self.stop_change_forwarder().await;
+        if let Some(connection) = self.connection.write().await.take() {
+            self.spawn_retired_shutdown(connection).await;
+        }
         self.record_state(McpMetricConnectionState::Reconnecting);
         self.emit_lost(reason, 0, false);
 
         let this = self.clone();
-        tokio::spawn(async move {
-            this.reconnect_loop().await;
-        });
+        let reconnect_task = tokio::spawn(async move { this.reconnect_loop().await });
+        *self.reconnect_task.lock().await = Some(reconnect_task);
+        drop(state);
     }
 
-    async fn reconnect_loop(self) {
+    async fn reconnect_loop(self) -> Result<(), McpError> {
         loop {
             if self.state().await == McpConnectionState::Closed {
-                return;
+                return Ok(());
             }
 
             let next_attempt = self.attempts.load(Ordering::SeqCst).saturating_add(1);
@@ -238,42 +265,94 @@ impl ManagedMcpConnection {
             {
                 self.fail_terminal("reconnect attempts exhausted".to_owned(), next_attempt - 1)
                     .await;
-                return;
+                return Ok(());
             }
 
-            tokio::time::sleep(self.spec.reconnect.backoff_for_attempt(next_attempt)).await;
+            if self
+                .run_until_closed(tokio::time::sleep(
+                    self.spec.reconnect.backoff_for_attempt(next_attempt),
+                ))
+                .await
+                .is_none()
+            {
+                return Ok(());
+            }
             if self.state().await == McpConnectionState::Closed {
-                return;
+                return Ok(());
             }
 
             if let Some(authorization) = &self.connect_context.authorization {
-                if let Err(error) = authorize_mcp_transport(authorization, &self.spec).await {
+                let Some(authorization_result) = self
+                    .run_until_closed(authorize_mcp_transport(authorization, &self.spec))
+                    .await
+                else {
+                    return Ok(());
+                };
+                if let Err(error) = authorization_result {
+                    let mut state = self.state.write().await;
+                    if *state == McpConnectionState::Closed {
+                        return Ok(());
+                    }
                     self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Error);
                     let attempts_so_far = next_attempt;
                     self.attempts.store(attempts_so_far, Ordering::SeqCst);
                     let last_error = error.to_string();
                     if self.spec.reconnect.is_exhausted(attempts_so_far) {
+                        drop(state);
                         self.fail_terminal(last_error, attempts_so_far).await;
-                        return;
+                        return Ok(());
                     }
-                    *self.state.write().await = McpConnectionState::Reconnecting {
+                    *state = McpConnectionState::Reconnecting {
                         attempt: attempts_so_far,
                         last_error,
                     };
                     continue;
                 }
+                if self.state().await == McpConnectionState::Closed {
+                    return Ok(());
+                }
             }
 
-            match self
-                .transport
-                .connect_with_context(self.spec.clone(), self.connect_context.clone())
+            let Some(connect_result) = self
+                .run_until_closed(
+                    self.transport
+                        .connect_with_context(self.spec.clone(), self.connect_context.clone()),
+                )
                 .await
-            {
+            else {
+                return Ok(());
+            };
+            match connect_result {
                 Ok(connection) => {
+                    if self.state().await == McpConnectionState::Closed {
+                        connection.shutdown().await?;
+                        return Ok(());
+                    }
+                    let recovered_fingerprint = tokio::select! {
+                        fingerprint = self.recovered_schema_fingerprint(&connection) => fingerprint,
+                        () = self.closed_notify.notified() => {
+                            connection.shutdown().await?;
+                            return Ok(());
+                        },
+                    };
+                    let mut state = self.state.write().await;
+                    if *state == McpConnectionState::Closed {
+                        drop(state);
+                        connection.shutdown().await?;
+                        return Ok(());
+                    }
+                    let schema_changed = if let Some(fingerprint) = recovered_fingerprint {
+                        let mut previous = self.schema_fingerprint.write().await;
+                        let changed = previous.is_some_and(|value| value != fingerprint);
+                        *previous = Some(fingerprint);
+                        changed
+                    } else {
+                        false
+                    };
+                    *self.connection.write().await = Some(Arc::clone(&connection));
+                    self.replace_change_forwarder(connection).await;
+                    *state = McpConnectionState::Ready;
                     self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Success);
-                    let schema_changed = self.diff_recovered_schema(&connection).await;
-                    *self.connection.write().await = Some(connection);
-                    *self.state.write().await = McpConnectionState::Ready;
                     self.record_state(McpMetricConnectionState::Ready);
                     self.reconnecting.store(false, Ordering::SeqCst);
                     self.attempts.store(next_attempt, Ordering::SeqCst);
@@ -283,18 +362,24 @@ impl ManagedMcpConnection {
                     }
                     self.emit_recovered(false, downtime_ms, next_attempt, schema_changed);
                     self.spawn_success_reset(next_attempt);
-                    return;
+                    drop(state);
+                    return Ok(());
                 }
                 Err(error) => {
+                    let mut state = self.state.write().await;
+                    if *state == McpConnectionState::Closed {
+                        return Ok(());
+                    }
                     self.record_reconnect_attempt(next_attempt, McpMetricOutcome::Error);
                     let attempts_so_far = next_attempt;
                     self.attempts.store(attempts_so_far, Ordering::SeqCst);
                     let last_error = error.to_string();
                     if self.spec.reconnect.is_exhausted(attempts_so_far) {
+                        drop(state);
                         self.fail_terminal(last_error, attempts_so_far).await;
-                        return;
+                        return Ok(());
                     }
-                    *self.state.write().await = McpConnectionState::Reconnecting {
+                    *state = McpConnectionState::Reconnecting {
                         attempt: attempts_so_far,
                         last_error,
                     };
@@ -303,8 +388,22 @@ impl ManagedMcpConnection {
         }
     }
 
+    async fn run_until_closed<F>(&self, future: F) -> Option<F::Output>
+    where
+        F: Future,
+    {
+        tokio::select! {
+            output = future => Some(output),
+            () = self.closed_notify.notified() => None,
+        }
+    }
+
     async fn fail_terminal(&self, last_error: String, attempts_so_far: u32) {
-        *self.state.write().await = McpConnectionState::Failed {
+        let mut state = self.state.write().await;
+        if *state == McpConnectionState::Closed {
+            return;
+        }
+        *state = McpConnectionState::Failed {
             last_error: last_error.clone(),
         };
         self.record_state(McpMetricConnectionState::Failed);
@@ -326,17 +425,14 @@ impl ManagedMcpConnection {
             .unwrap_or(0)
     }
 
-    async fn diff_recovered_schema(&self, connection: &Arc<dyn McpConnection>) -> bool {
+    async fn recovered_schema_fingerprint(
+        &self,
+        connection: &Arc<dyn McpConnection>,
+    ) -> Option<McpSchemaFingerprint> {
         let Ok(tools) = connection.list_tools().await else {
-            return false;
+            return None;
         };
-        let Ok(fingerprint) = effective_tool_schema_fingerprint(&self.spec, tools) else {
-            return false;
-        };
-        let mut previous = self.schema_fingerprint.write().await;
-        let changed = previous.is_some_and(|value| value != fingerprint);
-        *previous = Some(fingerprint);
-        changed
+        effective_tool_schema_fingerprint(&self.spec, tools).ok()
     }
 
     async fn remember_schema(&self, tools: &[McpToolDescriptor]) {
@@ -407,6 +503,65 @@ impl ManagedMcpConnection {
             outcome,
         });
     }
+
+    async fn replace_change_forwarder(&self, connection: Arc<dyn McpConnection>) {
+        self.stop_change_forwarder().await;
+        let generation = self.change_generation.load(Ordering::SeqCst);
+        let current_generation = Arc::clone(&self.change_generation);
+        let changes_tx = self.changes_tx.clone();
+        let forwarder = tokio::spawn(async move {
+            let Ok(mut changes) = connection.subscribe_changes().await else {
+                return;
+            };
+            while let Some(change) = futures::StreamExt::next(&mut changes).await {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let _ = changes_tx.send(change);
+            }
+        });
+        *self.change_forwarder.lock().await = Some(forwarder);
+    }
+
+    async fn stop_change_forwarder(&self) {
+        self.change_generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(forwarder) = self.change_forwarder.lock().await.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
+    }
+
+    async fn spawn_retired_shutdown(&self, connection: Arc<dyn McpConnection>) {
+        let task = tokio::spawn(async move {
+            let _ = connection.shutdown().await;
+        });
+        let completed = {
+            let mut tasks = self.retired_shutdown_tasks.lock().await;
+            let mut pending = Vec::with_capacity(tasks.len().saturating_add(1));
+            let mut completed = Vec::new();
+            for task in tasks.drain(..) {
+                if task.is_finished() {
+                    completed.push(task);
+                } else {
+                    pending.push(task);
+                }
+            }
+            pending.push(task);
+            *tasks = pending;
+            completed
+        };
+        for task in completed {
+            let _ = task.await;
+        }
+    }
+
+    async fn stop_retired_shutdown_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.retired_shutdown_tasks.lock().await);
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -426,6 +581,17 @@ impl McpConnection for ManagedMcpConnection {
                 self.remember_schema(&result).await;
                 Ok(result)
             }
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpToolDescriptor>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_tools_page(cursor).await {
+            Ok(result) => Ok(result),
             Err(error) => Err(self.handle_operation_error(error).await),
         }
     }
@@ -450,6 +616,22 @@ impl McpConnection for ManagedMcpConnection {
         }
     }
 
+    async fn call_tool_events_for_request(
+        &self,
+        client_request_id: &str,
+        name: &str,
+        args: Value,
+    ) -> Result<McpToolCallStream, McpError> {
+        let connection = self.current_connection().await?;
+        match connection
+            .call_tool_events_for_request(client_request_id, name, args)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
     async fn cancel_tool_call(
         &self,
         request_id: &str,
@@ -462,11 +644,7 @@ impl McpConnection for ManagedMcpConnection {
     }
 
     async fn mark_unhealthy(&self, reason: String) -> Result<(), McpError> {
-        *self.state.write().await = McpConnectionState::Reconnecting {
-            attempt: 1,
-            last_error: reason.clone(),
-        };
-        self.emit_lost(McpConnectionLostReason::Other(reason), 1, false);
+        self.start_reconnect(McpError::Connection(reason)).await;
         Ok(())
     }
 
@@ -478,7 +656,18 @@ impl McpConnection for ManagedMcpConnection {
         }
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
+    async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpResource>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_resources_page(cursor).await {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpError> {
         let connection = self.current_connection().await?;
         match connection.read_resource(uri).await {
             Ok(result) => Ok(result),
@@ -494,6 +683,17 @@ impl McpConnection for ManagedMcpConnection {
         }
     }
 
+    async fn list_prompts_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<McpListPage<McpPrompt>, McpError> {
+        let connection = self.current_connection().await?;
+        match connection.list_prompts_page(cursor).await {
+            Ok(result) => Ok(result),
+            Err(error) => Err(self.handle_operation_error(error).await),
+        }
+    }
+
     async fn get_prompt(&self, name: &str, args: Value) -> Result<McpPromptMessages, McpError> {
         let connection = self.current_connection().await?;
         match connection.get_prompt(name, args).await {
@@ -503,9 +703,8 @@ impl McpConnection for ManagedMcpConnection {
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {
-        let connection_changes = self.current_connection().await?.subscribe_changes().await?;
         let receiver = self.changes_tx.subscribe();
-        let internal_changes = stream::unfold(receiver, |mut receiver| async move {
+        let changes = stream::unfold(receiver, |mut receiver| async move {
             loop {
                 match receiver.recv().await {
                     Ok(change) => return Some((change, receiver)),
@@ -514,20 +713,68 @@ impl McpConnection for ManagedMcpConnection {
                 }
             }
         });
-        Ok(Box::pin(stream::select(
-            connection_changes,
-            internal_changes.boxed(),
-        )))
+        Ok(Box::pin(changes))
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
-        *self.state.write().await = McpConnectionState::Closed;
+        {
+            let _shutdown = self.shutdown_lock.lock().await;
+            if !self.shutdown_started.swap(true, Ordering::SeqCst) {
+                let this = self.clone();
+                tokio::spawn(async move {
+                    let result = AssertUnwindSafe(this.perform_shutdown())
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(McpError::Connection(
+                                "mcp shutdown cleanup panicked".to_owned(),
+                            ))
+                        });
+                    this.shutdown_completion.send_replace(Some(result));
+                });
+            }
+        }
+
+        let mut completion = self.shutdown_completion.subscribe();
+        loop {
+            if let Some(result) = completion.borrow().clone() {
+                return result;
+            }
+            completion.changed().await.map_err(|_| {
+                McpError::Connection("mcp shutdown completion channel closed".to_owned())
+            })?;
+        }
+    }
+}
+
+impl ManagedMcpConnection {
+    async fn perform_shutdown(&self) -> Result<(), McpError> {
+        let mut state = self.state.write().await;
+        *state = McpConnectionState::Closed;
+        self.closed_notify.notify_one();
         self.record_state(McpMetricConnectionState::Closed);
         self.reconnecting.store(false, Ordering::SeqCst);
-        if let Some(connection) = self.connection.write().await.take() {
-            connection.shutdown().await?;
-        }
-        Ok(())
+        let reconnect_task = self.reconnect_task.lock().await.take();
+        drop(state);
+
+        self.stop_change_forwarder().await;
+        self.stop_retired_shutdown_tasks().await;
+
+        let connection_result = match self.connection.write().await.take() {
+            Some(connection) => connection.shutdown().await,
+            None => Ok(()),
+        };
+        let reconnect_result = match reconnect_task {
+            Some(task) => match task.await {
+                Ok(result) => result,
+                Err(error) => Err(McpError::Connection(format!(
+                    "mcp reconnect task failed during shutdown: {error}"
+                ))),
+            },
+            None => Ok(()),
+        };
+        let result = connection_result.and(reconnect_result);
+        result
     }
 }
 

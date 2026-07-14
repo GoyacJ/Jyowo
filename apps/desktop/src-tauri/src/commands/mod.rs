@@ -157,25 +157,27 @@ pub use contracts::{
     ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
     ListProviderSettingsResponse, ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
     ListRuntimeToolsResponse, ListSkillCatalogInstallTasksResponse, ListSkillsResponse,
-    McpDiagnosticBatchEmitter, McpDiagnosticBatchPayload, McpDiagnosticRecord,
-    McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
-    McpNameValueSaveRecord, McpServerConfigRecord, McpServerConfigTransportPayload, McpServerStore,
-    McpServerSummaryPayload, McpServerTransportConfig, ModelCatalogEntry, ModelLifecyclePayload,
-    ModelProviderCatalogEntry, ModelProviderCatalogResponse, ModelRuntimeStatusPayload,
-    ModelSettingsPageResponse, ModelSettingsPageSlice, ModelUsageDayModelRecord,
-    ModelUsageDayRecord, ModelUsageRollupRecord, ModelUsageRollupStore, OfficialQuotaScopePayload,
-    OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload, PermissionDecision,
-    PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore, PluginStoreRecord,
-    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
-    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
-    ProviderConfigRecord, ProviderDefaultsRecord, ProviderDiagnosticsStore,
-    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
-    ProviderProbeErrorKindPayload, ProviderProbeSnapshotPayload, ProviderProbeStatusPayload,
-    ProviderQuotaCacheRecord, ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload,
-    ProviderServiceCapabilityPayload, ProviderSettingsRecord, ProviderSettingsRequest,
-    ProviderSettingsStore, ReferenceCandidatePayload, RefreshModelProviderCatalogResponse,
-    RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
-    ReplayTimelineRequest, ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
+    McpConfigLayer, McpDiagnosticBatchEmitter, McpDiagnosticBatchPayload, McpDiagnosticPlane,
+    McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord,
+    McpNameValueRecord, McpNameValueSaveRecord, McpServerConfigRecord,
+    McpServerConfigTransportPayload, McpServerStore, McpServerSummaryPayload,
+    McpServerTransportConfig, McpTaskDiagnosticClearWatermarks, ModelCatalogEntry,
+    ModelLifecyclePayload, ModelProviderCatalogEntry, ModelProviderCatalogResponse,
+    ModelRuntimeStatusPayload, ModelSettingsPageResponse, ModelSettingsPageSlice,
+    ModelUsageDayModelRecord, ModelUsageDayRecord, ModelUsageRollupRecord, ModelUsageRollupStore,
+    OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload,
+    PermissionDecision, PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore,
+    PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
+    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
+    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
+    ProviderDefaultsRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
+    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
+    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
+    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
+    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
+    ReferenceCandidatePayload, RefreshModelProviderCatalogResponse, RefreshOfficialQuotaRequest,
+    RefreshOfficialQuotaResponse, ReloadPluginRequest, ReplayTimelineRequest,
+    ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
     RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
     RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
     RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
@@ -198,16 +200,21 @@ pub use contracts::{
 };
 pub use error::CommandErrorPayload;
 pub use mcp::{
-    clear_mcp_diagnostics_with_runtime_state, delete_mcp_server_with_runtime_state,
-    delete_mcp_server_with_store, get_mcp_server_config_with_runtime_state,
-    get_mcp_server_config_with_store, list_browser_mcp_presets_with_runtime_state,
-    list_browser_mcp_presets_with_store, list_mcp_diagnostics_with_runtime_state,
-    list_mcp_diagnostics_with_store, list_mcp_servers_with_runtime_state,
-    mcp_diagnostic_record_from_event, restart_mcp_server_with_runtime_state,
-    save_browser_mcp_preset_with_runtime_state, save_browser_mcp_preset_with_store,
+    clear_mcp_diagnostics_with_runtime_state, delete_mcp_server_for_layer_with_runtime_state,
+    delete_mcp_server_with_runtime_state, delete_mcp_server_with_store,
+    ensure_mcp_config_layer_identity, get_mcp_server_config_for_layer_with_runtime_state,
+    get_mcp_server_config_with_runtime_state, get_mcp_server_config_with_store,
+    list_browser_mcp_presets_with_runtime_state, list_browser_mcp_presets_with_store,
+    list_mcp_diagnostics_with_runtime_state, list_mcp_diagnostics_with_runtime_state_and_daemon,
+    list_mcp_diagnostics_with_store, list_mcp_servers_for_layer_with_runtime_state,
+    list_mcp_servers_with_runtime_state, mcp_diagnostic_record_from_event,
+    mcp_task_diagnostic_record_from_envelope, restart_mcp_server_for_layer_with_runtime_state,
+    restart_mcp_server_with_runtime_state, save_browser_mcp_preset_with_runtime_state,
+    save_browser_mcp_preset_with_store, save_mcp_server_for_layer_with_runtime_state,
     save_mcp_server_with_runtime_state, save_mcp_server_with_store,
-    set_mcp_server_enabled_with_runtime_state,
+    set_mcp_server_enabled_for_layer_with_runtime_state, set_mcp_server_enabled_with_runtime_state,
     subscribe_mcp_diagnostics_for_window_with_runtime_state,
+    subscribe_mcp_diagnostics_for_window_with_runtime_state_and_daemon,
     subscribe_mcp_diagnostics_with_runtime_state,
     unsubscribe_mcp_diagnostics_for_window_with_runtime_state,
     unsubscribe_mcp_diagnostics_with_runtime_state,
@@ -673,12 +680,14 @@ pub async fn save_provider_settings(
     save_provider_settings_with_runtime_state_unlocked(request, &runtime_state).await
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn list_mcp_servers(
+    config_layer: Option<McpConfigLayer>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ListMcpServersResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    list_mcp_servers_with_runtime_state(&*runtime_state).await
+    list_mcp_servers_for_layer_with_runtime_state(config_layer.unwrap_or_default(), &runtime_state)
+        .await
 }
 
 #[tauri::command]
@@ -709,18 +718,25 @@ pub async fn save_browser_mcp_preset(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_mcp_server(
+    config_layer: Option<McpConfigLayer>,
     enabled: Option<bool>,
+    required: Option<bool>,
     display_name: String,
     id: String,
     scope: String,
     transport: SaveMcpServerTransportConfig,
+    project_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SaveMcpServerResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
+    let config_layer = config_layer.unwrap_or_default();
+    ensure_mcp_config_layer_identity(config_layer, project_path.as_deref(), &runtime_state)?;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
-    save_mcp_server_with_runtime_state(
+    save_mcp_server_for_layer_with_runtime_state(
+        config_layer,
         SaveMcpServerRequest {
             enabled: enabled.unwrap_or(true),
+            required: required.unwrap_or(false),
             display_name,
             id,
             scope,
@@ -733,58 +749,89 @@ pub async fn save_mcp_server(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_mcp_server_config(
+    config_layer: Option<McpConfigLayer>,
     id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<GetMcpServerConfigResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    get_mcp_server_config_with_runtime_state(GetMcpServerConfigRequest { id }, &*runtime_state)
-        .await
+    get_mcp_server_config_for_layer_with_runtime_state(
+        config_layer.unwrap_or_default(),
+        GetMcpServerConfigRequest { id },
+        &runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn delete_mcp_server(
+    config_layer: Option<McpConfigLayer>,
     id: String,
+    project_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteMcpServerResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
+    let config_layer = config_layer.unwrap_or_default();
+    ensure_mcp_config_layer_identity(config_layer, project_path.as_deref(), &runtime_state)?;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
-    delete_mcp_server_with_runtime_state(DeleteMcpServerRequest { id }, &*runtime_state).await
+    delete_mcp_server_for_layer_with_runtime_state(
+        config_layer,
+        DeleteMcpServerRequest { id },
+        &runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn set_mcp_server_enabled(
+    config_layer: Option<McpConfigLayer>,
     id: String,
     enabled: bool,
+    project_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetMcpServerEnabledResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
+    let config_layer = config_layer.unwrap_or_default();
+    ensure_mcp_config_layer_identity(config_layer, project_path.as_deref(), &runtime_state)?;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
-    set_mcp_server_enabled_with_runtime_state(
+    set_mcp_server_enabled_for_layer_with_runtime_state(
+        config_layer,
         SetMcpServerEnabledRequest { id, enabled },
-        &*runtime_state,
+        &runtime_state,
     )
     .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn restart_mcp_server(
+    config_layer: Option<McpConfigLayer>,
     id: String,
+    project_path: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<RestartMcpServerResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
+    let config_layer = config_layer.unwrap_or_default();
+    ensure_mcp_config_layer_identity(config_layer, project_path.as_deref(), &runtime_state)?;
     let _mcp_server_guard = runtime_state.mcp_server_lock.lock().await;
-    restart_mcp_server_with_runtime_state(RestartMcpServerRequest { id }, &*runtime_state).await
+    restart_mcp_server_for_layer_with_runtime_state(
+        config_layer,
+        RestartMcpServerRequest { id },
+        &runtime_state,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_mcp_diagnostics(
     server_id: Option<String>,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    daemon_state: tauri::State<'_, DaemonBridgeState>,
 ) -> Result<ListMcpDiagnosticsResponse, CommandErrorPayload> {
+    let daemon_client = daemon_state.connected_client().await;
     let runtime_state = runtime_handle.read().await;
-    list_mcp_diagnostics_with_runtime_state(
+    list_mcp_diagnostics_with_runtime_state_and_daemon(
         ListMcpDiagnosticsRequest { server_id },
         &*runtime_state,
+        daemon_client.as_ref(),
     )
     .await
 }
@@ -807,7 +854,9 @@ pub async fn subscribe_mcp_diagnostics(
     server_id: Option<String>,
     window: tauri::Window,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+    daemon_state: tauri::State<'_, DaemonBridgeState>,
 ) -> Result<SubscribeMcpDiagnosticsResponse, CommandErrorPayload> {
+    let daemon_client = daemon_state.connected_client().await;
     let runtime_state = runtime_handle.read().await;
     let window_label = window.label().to_owned();
     let emitter = Arc::new(move |batch: McpDiagnosticBatchPayload| {
@@ -815,11 +864,12 @@ pub async fn subscribe_mcp_diagnostics(
             .emit("mcp_diagnostic_batch", batch)
             .map_err(|error| error.to_string())
     });
-    subscribe_mcp_diagnostics_for_window_with_runtime_state(
+    subscribe_mcp_diagnostics_for_window_with_runtime_state_and_daemon(
         SubscribeMcpDiagnosticsRequest { server_id },
         window_label,
         emitter,
         &*runtime_state,
+        daemon_client.as_ref(),
     )
     .await
 }

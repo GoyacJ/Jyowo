@@ -2147,17 +2147,6 @@ mod subagent_tool_tests {
             )
             .await
             .expect("server");
-        registry
-            .set_connection_state(
-                &McpServerId("srv-a".into()),
-                McpConnectionState::Reconnecting {
-                    attempt: 1,
-                    last_error: "transport reset".to_owned(),
-                },
-            )
-            .await
-            .expect("state");
-
         let mut spec = harness_subagent::SubagentSpec::minimal("worker", "task");
         spec.required_mcp_servers = vec!["srv-a".into()];
 
@@ -2382,6 +2371,13 @@ agent rules
     impl McpConnection for NoopMcpConnection {
         fn connection_id(&self) -> &str {
             "noop"
+        }
+
+        async fn connection_state(&self) -> McpConnectionState {
+            McpConnectionState::Reconnecting {
+                attempt: 1,
+                last_error: "transport reset".to_owned(),
+            }
         }
 
         async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {

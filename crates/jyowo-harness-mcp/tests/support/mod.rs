@@ -100,7 +100,10 @@ struct AllowTransportPermissionBroker;
 #[async_trait]
 impl PermissionBroker for AllowTransportPermissionBroker {
     async fn decide(&self, request: PermissionRequest, _ctx: PermissionContext) -> Decision {
-        if matches!(request.tool_name.as_str(), "mcp_transport" | "mcp_sampling") {
+        if matches!(
+            request.tool_name.as_str(),
+            "mcp_transport" | "mcp_sampling" | "mcp_resource" | "mcp_prompt"
+        ) {
             Decision::AllowOnce
         } else {
             Decision::DenyOnce

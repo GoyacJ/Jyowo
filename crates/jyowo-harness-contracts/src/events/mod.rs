@@ -101,6 +101,7 @@ pub enum Event {
     McpToolInjected(McpToolInjectedEvent),
     McpConnectionLost(McpConnectionLostEvent),
     McpConnectionRecovered(McpConnectionRecoveredEvent),
+    McpActivationFailed(McpActivationFailedEvent),
     McpOAuthRefresh(McpOAuthRefreshEvent),
     McpElicitationRequested(McpElicitationRequestedEvent),
     McpElicitationResolved(McpElicitationResolvedEvent),

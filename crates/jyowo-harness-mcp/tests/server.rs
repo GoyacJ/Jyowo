@@ -1,23 +1,31 @@
 #![cfg(feature = "server-adapter")]
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+
+#[cfg(unix)]
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
     BudgetMetric, CapabilityRegistry, DecisionScope, DeferPolicy, NetworkAccess, OverflowAction,
-    PermissionSubject, ProviderRestriction, ResultBudget, SemverString, SessionId, TenantId,
-    ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin,
-    ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
+    PermissionSubject, ProviderRestriction, ResultBudget, SemverString, SessionId, Severity,
+    TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup,
+    ToolOrigin, ToolProperties, ToolResult, ToolResultPart, ToolUseId, TrustLevel, WorkspaceAccess,
 };
 use harness_mcp::{
     JsonRpcRequest, JsonRpcResponse, McpServerAdapter, McpToolResult, StaticToolContextFactory,
+    ToolCallAuthorizer,
 };
 use harness_tool::{
-    action_plan_from_permission_check, AuthorizedToolInput, BuiltinToolset, InterruptToken,
-    PermissionCheck, Tool, ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
+    action_plan_from_permission_check, AuthorizationTicketClaims, AuthorizedTicketSummary,
+    AuthorizedToolInput, BuiltinToolset, InterruptToken, PermissionCheck, TicketLedger, Tool,
+    ToolContext, ToolEvent, ToolRegistry, ToolStream, ValidationError,
 };
 use serde_json::{json, Value};
+
+#[allow(dead_code)]
+mod support;
 
 #[tokio::test]
 async fn server_initialize_returns_capabilities() {
@@ -28,14 +36,19 @@ async fn server_initialize_returns_capabilities() {
         .await;
 
     let result = expect_result(response);
-    assert_eq!(result["protocolVersion"], "2025-03-26");
+    assert_eq!(
+        result["protocolVersion"],
+        harness_mcp::LATEST_PROTOCOL_VERSION
+    );
     assert_eq!(result["serverInfo"]["name"], "jyowo-harness-mcp");
     assert!(result["capabilities"]["tools"].is_object());
 }
 
 #[tokio::test]
 async fn server_lists_registered_tools() {
-    let server = adapter_with(vec![test_tool("echo", Behavior::Text("ok".into()))]);
+    let mut tool = test_tool("echo", Behavior::Text("ok".into()));
+    tool.descriptor.output_schema = Some(json!({ "type": "object" }));
+    let server = adapter_with(vec![tool]);
 
     let response = server
         .handle_request(JsonRpcRequest::new(json!(2), "tools/list", Some(json!({}))))
@@ -56,6 +69,10 @@ async fn server_calls_tool_and_maps_results() {
         test_tool("echo", Behavior::Text("hello".into())),
         test_tool("json", Behavior::Structured(json!({ "ok": true }))),
         test_tool(
+            "scalar",
+            Behavior::Structured(json!(["not", "an", "object"])),
+        ),
+        test_tool(
             "mixed",
             Behavior::Mixed(vec![
                 ToolResultPart::Text {
@@ -74,14 +91,30 @@ async fn server_calls_tool_and_maps_results() {
 
     let structured = call_tool(&server, "json", json!({})).await;
     assert_eq!(
-        structured.content[0],
-        harness_mcp::McpContent::Json {
-            value: json!({ "ok": true })
-        }
+        structured
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("ok")),
+        Some(&json!(true))
     );
+    assert!(text_content(&structured).contains("\"ok\": true"));
 
     let mixed = call_tool(&server, "mixed", json!({})).await;
-    assert_eq!(mixed.content.len(), 2);
+    assert!(matches!(
+        mixed.content.first(),
+        Some(harness_mcp::McpContent::Text { text, .. }) if text == "head"
+    ));
+    assert_eq!(
+        mixed.structured_content,
+        json!({ "n": 1 }).as_object().cloned()
+    );
+    let mixed_json = serde_json::to_string(&mixed).unwrap();
+    assert!(!mixed_json.contains("\"mixed\""));
+    assert!(!mixed_json.contains("\"kind\""));
+
+    let scalar = call_tool(&server, "scalar", json!({})).await;
+    assert!(scalar.structured_content.is_none());
+    assert!(text_content(&scalar).contains("not"));
 }
 
 #[tokio::test]
@@ -104,14 +137,145 @@ async fn server_maps_typed_artifact_tool_results() {
 
     let result = call_tool(&server, "artifact", json!({})).await;
     assert_eq!(result.content.len(), 1);
-    assert!(matches!(
-        &result.content[0],
-        harness_mcp::McpContent::Json { value }
-            if value["kind"] == "artifact"
-                && value["title"] == "Generated image"
-                && value["contentType"] == "image/png"
-                && value.get("blobRef").is_none()
-    ));
+    assert!(result.structured_content.is_none());
+    assert!(text_content(&result).contains("Generated image"));
+    let result_json = serde_json::to_string(&result).unwrap();
+    assert!(!result_json.contains("artifact_kind"));
+    assert!(!result_json.contains("blob_ref"));
+}
+
+#[tokio::test]
+async fn server_preserves_non_url_reference_identities_without_labels() {
+    let tool_use_id = ToolUseId::from_u128(11);
+    let memory_id = harness_contracts::MemoryId::from_u128(12);
+    let mut tool = test_tool(
+        "references",
+        Behavior::Mixed(vec![
+            ToolResultPart::Reference {
+                reference_kind: harness_contracts::ReferenceKind::File {
+                    path: PathBuf::from("/workspace/src/main.rs"),
+                    line_range: Some((12, 34)),
+                },
+                title: None,
+                summary: None,
+            },
+            ToolResultPart::Reference {
+                reference_kind: harness_contracts::ReferenceKind::ToolUse { tool_use_id },
+                title: None,
+                summary: None,
+            },
+            ToolResultPart::Reference {
+                reference_kind: harness_contracts::ReferenceKind::Memory { memory_id },
+                title: None,
+                summary: None,
+            },
+        ]),
+    );
+    tool.descriptor.output_schema = None;
+    let server = adapter_with(vec![tool]);
+
+    let result = call_tool(&server, "references", json!({})).await;
+    let texts = text_contents(&result);
+
+    assert_eq!(
+        texts,
+        [
+            "file:/workspace/src/main.rs#L12-L34".to_owned(),
+            format!("tool-use:{tool_use_id}"),
+            format!("memory:{memory_id}"),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_preserves_non_utf8_file_reference_identity() {
+    let path = PathBuf::from(OsString::from_vec(b"/workspace/src/\x80.rs".to_vec()));
+    let mut tool = test_tool(
+        "non_utf8_reference",
+        Behavior::Mixed(vec![ToolResultPart::Reference {
+            reference_kind: harness_contracts::ReferenceKind::File {
+                path,
+                line_range: None,
+            },
+            title: None,
+            summary: None,
+        }]),
+    );
+    tool.descriptor.output_schema = None;
+    let server = adapter_with(vec![tool]);
+
+    let result = call_tool(&server, "non_utf8_reference", json!({})).await;
+
+    assert_eq!(text_contents(&result), ["file:/workspace/src/%80.rs"]);
+}
+
+#[tokio::test]
+async fn server_rejects_multiple_structured_objects_against_single_root_schema() {
+    let output_schema = json!({
+        "type": "object",
+        "properties": { "n": { "type": "integer" } },
+        "required": ["n"],
+        "additionalProperties": false
+    });
+    let mut tool = test_tool(
+        "multi_structured",
+        Behavior::Mixed(vec![
+            ToolResultPart::Structured {
+                value: json!({ "n": 1 }),
+                schema_ref: None,
+            },
+            ToolResultPart::Structured {
+                value: json!({ "other": true }),
+                schema_ref: None,
+            },
+        ]),
+    );
+    tool.descriptor.output_schema = Some(output_schema.clone());
+    let server = adapter_with(vec![tool]);
+
+    let listed = server
+        .handle_request(JsonRpcRequest::new(json!(4), "tools/list", Some(json!({}))))
+        .await;
+    let listed = expect_result(listed);
+    assert_eq!(listed["tools"][0]["outputSchema"], output_schema);
+    assert!(listed["tools"][0]["outputSchema"].get("parts").is_none());
+
+    let result = call_tool(&server, "multi_structured", json!({})).await;
+    assert!(result.structured_content.is_none());
+    assert!(result.is_error);
+    let texts = text_contents(&result);
+    assert_eq!(texts.len(), 3);
+    assert!(texts[0].contains("\"n\": 1"));
+    assert!(texts[1].contains("\"other\": true"));
+    assert!(texts[2].contains("expected exactly one structured object, got 2"));
+    assert!(!serde_json::to_string(&result)
+        .unwrap()
+        .contains("\"parts\""));
+}
+
+#[tokio::test]
+async fn server_rejects_structured_object_that_violates_output_schema() {
+    let mut tool = test_tool(
+        "invalid_structured",
+        Behavior::Structured(json!({ "other": true })),
+    );
+    tool.descriptor.output_schema = Some(json!({
+        "type": "object",
+        "properties": { "n": { "type": "integer" } },
+        "required": ["n"],
+        "additionalProperties": false
+    }));
+    let server = adapter_with(vec![tool]);
+
+    let result = call_tool(&server, "invalid_structured", json!({})).await;
+
+    assert!(result.structured_content.is_none());
+    assert!(result.is_error);
+    let texts = text_contents(&result);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].contains("\"other\": true"));
+    assert!(texts[1].contains("output schema validation failed"));
 }
 
 #[tokio::test]
@@ -191,8 +355,51 @@ fn adapter_with(tools: Vec<TestTool>) -> McpServerAdapter {
         .expect("registry");
     McpServerAdapter::builder(registry)
         .with_tool_context_factory(StaticToolContextFactory::new(tool_context()))
+        .with_tool_authorizer(TestToolCallAuthorizer)
+        .with_authorization_context(support::mcp_authorization_context())
         .build()
         .expect("server adapter")
+}
+
+struct TestToolCallAuthorizer;
+
+#[async_trait]
+impl ToolCallAuthorizer for TestToolCallAuthorizer {
+    async fn authorize_tool_call(
+        &self,
+        raw_input: Value,
+        action_plan: ToolActionPlan,
+        _context: &ToolContext,
+    ) -> Result<AuthorizedToolInput, ToolError> {
+        if action_plan.severity != Severity::Info {
+            let reason = if action_plan.severity == Severity::High {
+                "dangerous pattern approval is unavailable in this test"
+            } else {
+                "permission approval is unavailable in this test"
+            };
+            return Err(ToolError::PermissionDenied(reason.to_owned()));
+        }
+        let ticket = ticket_for(&action_plan);
+        AuthorizedToolInput::new(raw_input, action_plan, ticket)
+    }
+}
+
+fn ticket_for(plan: &ToolActionPlan) -> AuthorizedTicketSummary {
+    let ledger = TicketLedger::default();
+    let claims = AuthorizationTicketClaims {
+        tenant_id: TenantId::SINGLE,
+        session_id: SessionId::new(),
+        run_id: harness_contracts::RunId::new(),
+        tool_use_id: plan.tool_use_id,
+        tool_name: plan.tool_name.clone(),
+        action_plan_hash: plan.plan_hash.clone(),
+    };
+    let ticket = ledger
+        .mint(claims.clone(), chrono::Utc::now())
+        .expect("test ticket should mint");
+    ledger
+        .consume(ticket.id, &claims, chrono::Utc::now())
+        .expect("test ticket should consume")
 }
 
 async fn call_tool(server: &McpServerAdapter, name: &str, arguments: Value) -> McpToolResult {
@@ -224,10 +431,21 @@ fn text_content(result: &McpToolResult) -> String {
         .content
         .iter()
         .find_map(|content| match content {
-            harness_mcp::McpContent::Text { text } => Some(text.clone()),
-            harness_mcp::McpContent::Json { .. } => None,
+            harness_mcp::McpContent::Text { text, .. } => Some(text.clone()),
+            _ => None,
         })
         .unwrap_or_default()
+}
+
+fn text_contents(result: &McpToolResult) -> Vec<String> {
+    result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            harness_mcp::McpContent::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn test_tool(name: &str, behavior: Behavior) -> TestTool {
@@ -240,7 +458,7 @@ fn test_tool(name: &str, behavior: Behavior) -> TestTool {
             group: ToolGroup::Custom("test".to_owned()),
             version: SemverString::from("0.1.0"),
             input_schema: json!({ "type": "object" }),
-            output_schema: Some(json!({ "type": "object" })),
+            output_schema: None,
             dynamic_schema: false,
             properties: ToolProperties {
                 is_concurrency_safe: true,
@@ -262,6 +480,7 @@ fn test_tool(name: &str, behavior: Behavior) -> TestTool {
             origin: ToolOrigin::Builtin,
             search_hint: None,
             service_binding: None,
+            metadata: Default::default(),
         },
         behavior,
     }

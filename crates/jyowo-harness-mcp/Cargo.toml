@@ -15,12 +15,12 @@ workspace = true
 
 [features]
 default = []
-stdio = ["tokio/io-util", "tokio/process"]
+stdio = ["dep:nix", "tokio/io-util", "tokio/process"]
 http = ["dep:reqwest"]
 websocket = ["dep:tokio-tungstenite", "tokio/net"]
-sse = ["dep:reqwest", "dep:reqwest-eventsource", "dep:reqwest-eventsource-client"]
+sse = ["dep:reqwest"]
 in-process = []
-server-adapter = ["dep:axum", "tokio/io-std", "tokio/io-util"]
+server-adapter = ["dep:axum", "dep:reqwest", "tokio/io-std", "tokio/io-util"]
 oauth = ["dep:jsonwebtoken", "dep:reqwest", "dep:ring"]
 
 [dependencies]
@@ -38,22 +38,21 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 jsonschema = { workspace = true }
-jsonwebtoken = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true, features = ["aws_lc_rs"] }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
+url = { workspace = true }
 axum = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
-reqwest-eventsource = { workspace = true, optional = true }
-reqwest-eventsource-client = { package = "reqwest", version = "0.13.4", default-features = false, features = [
-  "json",
-  "rustls",
-  "stream",
-], optional = true }
-tokio-tungstenite = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true, features = ["rustls-tls-native-roots"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, optional = true }
 
 [dev-dependencies]
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["noop"] }
+axum = { workspace = true }
 parking_lot = "0.12.5"
 wiremock = "0.6.5"

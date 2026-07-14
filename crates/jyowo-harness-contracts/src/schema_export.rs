@@ -586,6 +586,12 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "mcp_connection_recovered",
         McpConnectionRecoveredEvent
     );
+    insert_schema!(schemas, "mcp_activation_failed", McpActivationFailedEvent);
+    insert_schema!(
+        schemas,
+        "mcp_activation_failure_reason",
+        McpActivationFailureReason
+    );
     insert_schema!(schemas, "mcp_oauth_refresh", McpOAuthRefreshEvent);
     insert_schema!(schemas, "mcp_oauth_refresh_phase", McpOAuthRefreshPhase);
     insert_schema!(schemas, "mcp_oauth_refresh_outcome", McpOAuthRefreshOutcome);

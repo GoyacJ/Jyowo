@@ -10,16 +10,22 @@ import type {
 import { timestamp } from './base'
 
 export const fixtureListMcpServers: ListMcpServersResponse = {
+  configLayer: 'global',
   servers: [
     {
+      configLayer: 'global',
       displayName: 'Workspace GitHub',
+      effective: true,
       enabled: true,
       exposedToolCount: 2,
       id: 'github',
       manageable: true,
-      origin: 'workspace',
+      origin: 'user',
+      overridesGlobal: false,
+      required: false,
       scope: 'global',
       status: 'ready',
+      statusSource: 'settings',
       transport: 'stdio',
     },
   ],
@@ -33,6 +39,7 @@ export const fixtureListBrowserMcpPresets: ListBrowserMcpPresetsResponse = {
       enabled: false,
       id: 'playwright',
       serverId: 'browser-playwright',
+      version: '0.0.78',
     },
     {
       description: 'Browser inspection through Chrome DevTools MCP.',
@@ -40,21 +47,27 @@ export const fixtureListBrowserMcpPresets: ListBrowserMcpPresetsResponse = {
       enabled: false,
       id: 'chrome-devtools',
       serverId: 'browser-chrome-devtools',
+      version: '1.5.0',
     },
   ],
 }
 
 export const fixtureMcpServerConfig: GetMcpServerConfigResponse = {
   server: {
+    configLayer: 'global',
     displayName: 'Workspace GitHub',
+    effective: true,
     enabled: true,
     id: 'github',
+    manageable: true,
+    overridesGlobal: false,
+    required: false,
     scope: 'global',
     transport: {
       args: ['mcp-server'],
       command: 'node',
       env: [{ hasValue: true, key: 'LOG_LEVEL' }],
-      inheritEnv: ['GITHUB_TOKEN'],
+      inheritEnv: ['PATH'],
       kind: 'stdio',
     },
   },
@@ -62,14 +75,19 @@ export const fixtureMcpServerConfig: GetMcpServerConfigResponse = {
 
 export const fixtureSaveMcpServer: SaveMcpServerResponse = {
   server: {
+    configLayer: 'global',
     displayName: 'Workspace GitHub',
+    effective: true,
     enabled: true,
     exposedToolCount: 0,
     id: 'github',
     manageable: true,
-    origin: 'workspace',
+    origin: 'user',
+    overridesGlobal: false,
+    required: false,
     scope: 'global',
     status: 'configured',
+    statusSource: 'settings',
     transport: 'stdio',
   },
 }
@@ -77,14 +95,19 @@ export const fixtureSaveMcpServer: SaveMcpServerResponse = {
 export const fixtureSaveBrowserMcpPreset: SaveBrowserMcpPresetResponse = {
   preset: fixtureListBrowserMcpPresets.presets[0],
   server: {
+    configLayer: 'global',
     displayName: 'Playwright Browser',
+    effective: true,
     enabled: false,
     exposedToolCount: 0,
     id: 'browser-playwright',
     manageable: true,
-    origin: 'workspace',
+    origin: 'user',
+    overridesGlobal: false,
+    required: false,
     scope: 'global',
     status: 'disabled',
+    statusSource: 'settings',
     transport: 'stdio',
   },
 }
@@ -94,6 +117,7 @@ export const fixtureListMcpDiagnostics: ListMcpDiagnosticsResponse = {
     {
       eventType: 'connection_recovered',
       id: 'mcp-diagnostic-001',
+      plane: 'settings',
       serverId: 'github',
       severity: 'info',
       summary: 'MCP server connection recovered.',

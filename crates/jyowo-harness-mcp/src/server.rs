@@ -2,7 +2,11 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -10,14 +14,21 @@ use std::{
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::{sse::Event as SseEvent, IntoResponse, Response, Sse},
+    routing::post,
+    Json, Router,
+};
 #[cfg(feature = "websocket")]
 use futures::SinkExt;
 use futures::StreamExt;
 use harness_contracts::{
     ManifestOriginRef, McpPromptOperation, McpResourceOperation, McpServerId, McpServerSource,
-    MessagePart, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError, ToolResult,
-    ToolResultPart, ToolUseId,
+    MessagePart, ReferenceKind, Severity, TenantId, ToolActionPlan, ToolDescriptor, ToolError,
+    ToolResult, ToolResultPart, ToolUseId,
 };
 use harness_execution::{AuthorizationContext, ExecutionError};
 use harness_tool::{AuthorizedToolInput, ToolContext, ToolEvent, ToolRegistry};
@@ -30,6 +41,7 @@ use jsonwebtoken::{
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::{broadcast, oneshot, watch};
 #[cfg(feature = "websocket")]
 use tokio_tungstenite::{
     accept_hdr_async,
@@ -40,19 +52,24 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    authorize_mcp_prompt, authorize_mcp_resource, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    McpAuthorizationContext, McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpPrompt,
-    McpPromptMessages, McpResource, McpResourceContents, McpServerSpec, McpToolDescriptor,
-    McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink, SamplingJsonRpcHandler, SamplingPolicy,
-    TransportChoice,
+    authorize_mcp_prompt, authorize_mcp_resource, InitializeParams, JsonRpcError, JsonRpcRequest,
+    JsonRpcResponse, McpAuthorizationContext, McpContent, McpMessage, McpMetric, McpMetricOutcome,
+    McpMetricsSink, McpPrompt, McpPromptMessages, McpReadResourceResult, McpResource,
+    McpServerSpec, McpToolDescriptor, McpToolResult, NoopMcpEventSink, NoopMcpMetricsSink,
+    SamplingJsonRpcHandler, SamplingPolicy, TransportChoice, LATEST_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
 };
 
+const JSONRPC_INVALID_REQUEST: i32 = -32600;
 const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSONRPC_INVALID_PARAMS: i32 = -32602;
 const JSONRPC_INTERNAL_ERROR: i32 = -32603;
+const MCP_SERVER_NOT_INITIALIZED: i32 = -32002;
 const JSONRPC_RATE_LIMITED: i32 = -32029;
 const JSONRPC_UNAUTHORIZED: i32 = -32040;
 const JSONRPC_TENANT_MAPPING: i32 = -32041;
+const DEFAULT_HTTP_SESSION_CAPACITY: usize = 128;
+const DEFAULT_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 #[cfg(feature = "oauth")]
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(300);
 
@@ -420,6 +437,8 @@ pub struct McpServerPolicy {
     pub tenant_mapping: TenantMapping,
     pub tenant_isolation: TenantIsolationPolicy,
     pub rate_limit: McpServerRateLimit,
+    pub http_session_capacity: usize,
+    pub http_session_idle_timeout: Duration,
 }
 
 impl Default for McpServerPolicy {
@@ -432,6 +451,8 @@ impl Default for McpServerPolicy {
             tenant_mapping: TenantMapping::Single(TenantId::SINGLE),
             tenant_isolation: TenantIsolationPolicy::default(),
             rate_limit: McpServerRateLimit::default(),
+            http_session_capacity: DEFAULT_HTTP_SESSION_CAPACITY,
+            http_session_idle_timeout: DEFAULT_HTTP_SESSION_IDLE_TIMEOUT,
         }
     }
 }
@@ -741,7 +762,7 @@ fn mcp_authorization_error_to_tool_error(error: ExecutionError) -> ToolError {
 pub trait ResourceProvider: Send + Sync + 'static {
     async fn list_resources(&self) -> Result<Vec<McpResource>, McpServerError>;
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpServerError>;
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpServerError>;
 }
 
 #[async_trait]
@@ -764,7 +785,7 @@ impl ResourceProvider for EmptyResourceProvider {
         Ok(Vec::new())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpServerError> {
+    async fn read_resource(&self, uri: &str) -> Result<McpReadResourceResult, McpServerError> {
         Err(McpServerError::InvalidParams(format!(
             "unknown resource: {uri}"
         )))
@@ -815,6 +836,330 @@ impl ToolContextFactory for StaticToolContextFactory {
     }
 }
 
+#[async_trait]
+trait McpServerRequestRouter: Send + Sync {
+    async fn route(
+        &self,
+        request: JsonRpcRequest,
+        context: McpServerRequestContext,
+    ) -> JsonRpcResponse;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum McpServerSessionPhase {
+    Uninitialized,
+    AwaitingInitialized { protocol_version: String },
+    Ready { protocol_version: String },
+}
+
+#[derive(Clone)]
+pub struct McpServerDispatcher {
+    router: Arc<dyn McpServerRequestRouter>,
+    phase: Arc<Mutex<McpServerSessionPhase>>,
+    next_request_id: Arc<AtomicU64>,
+    outbound: broadcast::Sender<McpMessage>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, JsonRpcError>>>>>,
+    disconnected: Arc<AtomicBool>,
+    disconnect_signal: watch::Sender<bool>,
+    client_connection_published: Arc<AtomicBool>,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerClientTransport {
+    Stdio,
+    StreamableHttp,
+    WebSocket,
+}
+
+#[derive(Clone)]
+pub struct McpServerClientConnection {
+    transport: McpServerClientTransport,
+    session_id: Option<String>,
+    dispatcher: McpServerDispatcher,
+}
+
+struct McpServerTransportDisconnectGuard {
+    dispatcher: McpServerDispatcher,
+}
+
+impl Drop for McpServerTransportDisconnectGuard {
+    fn drop(&mut self) {
+        self.dispatcher.disconnect();
+    }
+}
+
+impl McpServerClientConnection {
+    #[must_use]
+    pub fn transport(&self) -> McpServerClientTransport {
+        self.transport
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    pub async fn request_client(
+        &self,
+        method: impl Into<String>,
+        params: Option<Value>,
+    ) -> Result<Value, JsonRpcError> {
+        self.dispatcher.request_client(method, params).await
+    }
+}
+
+impl McpServerDispatcher {
+    fn new(router: Arc<dyn McpServerRequestRouter>) -> Self {
+        let (outbound, _) = broadcast::channel(64);
+        let (disconnect_signal, _) = watch::channel(false);
+        Self {
+            router,
+            phase: Arc::new(Mutex::new(McpServerSessionPhase::Uninitialized)),
+            next_request_id: Arc::new(AtomicU64::new(0)),
+            outbound,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            disconnected: Arc::new(AtomicBool::new(false)),
+            disconnect_signal,
+            client_connection_published: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[must_use]
+    pub fn subscribe_outbound(&self) -> broadcast::Receiver<McpMessage> {
+        self.outbound.subscribe()
+    }
+
+    pub async fn request_client(
+        &self,
+        method: impl Into<String>,
+        params: Option<Value>,
+    ) -> Result<Value, JsonRpcError> {
+        if self.disconnected.load(Ordering::Acquire) {
+            return Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            ));
+        }
+        if !self.is_ready() {
+            return Err(jsonrpc_error(
+                MCP_SERVER_NOT_INITIALIZED,
+                "server not initialized",
+            ));
+        }
+        let id = Value::from(self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1);
+        let key = request_id_key(&id);
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(key.clone(), sender);
+        if self.disconnected.load(Ordering::Acquire) {
+            self.pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&key);
+            return Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            ));
+        }
+        let request = McpMessage::Request(JsonRpcRequest::new(id, method, params));
+        if self.outbound.send(request).is_err() {
+            self.pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&key);
+            return Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is not connected",
+            ));
+        }
+        match tokio::time::timeout(Duration::from_secs(30), receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client response channel closed",
+            )),
+            Err(_) => {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&key);
+                Err(jsonrpc_error(
+                    JSONRPC_INTERNAL_ERROR,
+                    "client response timed out",
+                ))
+            }
+        }
+    }
+
+    pub async fn dispatch(
+        &self,
+        message: McpMessage,
+        context: McpServerRequestContext,
+    ) -> Option<JsonRpcResponse> {
+        match message {
+            McpMessage::Request(request) if request.method == "initialize" => {
+                Some(self.initialize(request, context).await)
+            }
+            McpMessage::Request(request) => {
+                if !self.is_ready() {
+                    return Some(JsonRpcResponse::failure(
+                        request.id,
+                        jsonrpc_error(MCP_SERVER_NOT_INITIALIZED, "server not initialized"),
+                    ));
+                }
+                if request.method == "shutdown" {
+                    return Some(JsonRpcResponse::failure(
+                        request.id,
+                        jsonrpc_error(JSONRPC_METHOD_NOT_FOUND, "method not found: shutdown"),
+                    ));
+                }
+                Some(self.router.route(request, context).await)
+            }
+            McpMessage::Notification(notification) => {
+                if notification.method == "notifications/initialized" {
+                    let mut phase = self.phase.lock().unwrap_or_else(|error| error.into_inner());
+                    if let McpServerSessionPhase::AwaitingInitialized { protocol_version } = &*phase
+                    {
+                        *phase = McpServerSessionPhase::Ready {
+                            protocol_version: protocol_version.clone(),
+                        };
+                    }
+                }
+                None
+            }
+            McpMessage::SuccessResponse(response) => {
+                self.resolve_client_response(response.id, Ok(response.result));
+                None
+            }
+            McpMessage::ErrorResponse(response) => {
+                if let Some(id) = response.id {
+                    self.resolve_client_response(id, Err(response.error));
+                }
+                None
+            }
+        }
+    }
+
+    async fn initialize(
+        &self,
+        request: JsonRpcRequest,
+        context: McpServerRequestContext,
+    ) -> JsonRpcResponse {
+        if !matches!(
+            *self.phase.lock().unwrap_or_else(|error| error.into_inner()),
+            McpServerSessionPhase::Uninitialized
+        ) {
+            return JsonRpcResponse::failure(
+                request.id,
+                jsonrpc_error(
+                    JSONRPC_INVALID_REQUEST,
+                    "server session is already initialized",
+                ),
+            );
+        }
+        let Some(params) = request.params.as_ref() else {
+            return JsonRpcResponse::failure(
+                request.id,
+                jsonrpc_error(JSONRPC_INVALID_PARAMS, "initialize missing params"),
+            );
+        };
+        let params: InitializeParams = match serde_json::from_value(params.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return JsonRpcResponse::failure(
+                    request.id,
+                    jsonrpc_error(
+                        JSONRPC_INVALID_PARAMS,
+                        format!("invalid initialize params: {error}"),
+                    ),
+                );
+            }
+        };
+        let protocol_version =
+            if SUPPORTED_PROTOCOL_VERSIONS.contains(&params.protocol_version.as_str()) {
+                params.protocol_version
+            } else {
+                LATEST_PROTOCOL_VERSION.to_owned()
+            };
+        let mut response = self.router.route(request, context).await;
+        if let Some(result) = response.result.as_mut() {
+            if let Some(result) = result.as_object_mut() {
+                result.insert(
+                    "protocolVersion".to_owned(),
+                    Value::String(protocol_version.clone()),
+                );
+            }
+            *self.phase.lock().unwrap_or_else(|error| error.into_inner()) =
+                McpServerSessionPhase::AwaitingInitialized { protocol_version };
+        }
+        response
+    }
+
+    fn is_ready(&self) -> bool {
+        matches!(
+            *self.phase.lock().unwrap_or_else(|error| error.into_inner()),
+            McpServerSessionPhase::Ready { .. }
+        )
+    }
+
+    fn mark_client_connection_published_if_ready(&self) -> bool {
+        self.is_ready()
+            && self
+                .client_connection_published
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    fn protocol_version(&self) -> Option<String> {
+        match &*self.phase.lock().unwrap_or_else(|error| error.into_inner()) {
+            McpServerSessionPhase::AwaitingInitialized { protocol_version }
+            | McpServerSessionPhase::Ready { protocol_version } => Some(protocol_version.clone()),
+            McpServerSessionPhase::Uninitialized => None,
+        }
+    }
+
+    fn resolve_client_response(&self, id: Value, result: Result<Value, JsonRpcError>) {
+        if let Some(sender) = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&request_id_key(&id))
+        {
+            let _ = sender.send(result);
+        }
+    }
+
+    fn subscribe_disconnect(&self) -> watch::Receiver<bool> {
+        self.disconnect_signal.subscribe()
+    }
+
+    fn disconnect(&self) {
+        if self.disconnected.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.disconnect_signal.send_replace(true);
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for (_, sender) in pending {
+            let _ = sender.send(Err(jsonrpc_error(
+                JSONRPC_INTERNAL_ERROR,
+                "client transport is disconnected",
+            )));
+        }
+    }
+}
+
+fn request_id_key(id: &Value) -> String {
+    serde_json::to_string(id).unwrap_or_else(|_| "null".to_owned())
+}
+
 #[derive(Clone)]
 pub struct McpServerAdapter {
     registry: ToolRegistry,
@@ -848,6 +1193,10 @@ impl McpServerAdapter {
             audit_sink: Arc::new(NoopMcpServerAuditSink),
             metrics_sink: Arc::new(NoopMcpMetricsSink),
         }
+    }
+
+    pub fn dispatcher(&self) -> McpServerDispatcher {
+        McpServerDispatcher::new(Arc::new(self.clone()))
     }
 
     pub async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
@@ -893,7 +1242,7 @@ impl McpServerAdapter {
 
         let result = match request.method.as_str() {
             "initialize" => self.initialize(),
-            "ping" | "shutdown" => Ok(json!({})),
+            "ping" => Ok(json!({})),
             "tools/list" => Ok(self.list_tools()),
             "tools/call" => self.call_tool(request.params.as_ref(), context).await,
             "resources/list" => self.list_resources().await,
@@ -927,7 +1276,7 @@ impl McpServerAdapter {
 
     fn initialize(&self) -> Result<Value, JsonRpcError> {
         Ok(json!({
-            "protocolVersion": "2025-03-26",
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
             "capabilities": {
                 "tools": {},
                 "resources": {},
@@ -1009,11 +1358,12 @@ impl McpServerAdapter {
             Err(error) => return Ok(tool_error_result(error.to_string())),
         };
 
+        let output_schema = tool.descriptor().output_schema.clone();
         let stream = match tool.execute_authorized(authorized, context).await {
             Ok(stream) => stream,
             Err(error) => return Ok(tool_error_result(error.to_string())),
         };
-        let result = collect_tool_stream(stream).await;
+        let result = collect_tool_stream(stream, output_schema.as_ref()).await;
         serde_json::to_value(result).map_err(|_| internal_jsonrpc_error())
     }
 
@@ -1045,7 +1395,7 @@ impl McpServerAdapter {
             .read_resource(uri)
             .await
             .map_err(server_error_to_jsonrpc)?;
-        Ok(json!({ "contents": [contents] }))
+        serde_json::to_value(contents).map_err(|_| internal_jsonrpc_error())
     }
 
     async fn list_prompts(&self) -> Result<Value, JsonRpcError> {
@@ -1201,12 +1551,24 @@ impl McpServerAdapter {
     }
 }
 
+#[async_trait]
+impl McpServerRequestRouter for McpServerAdapter {
+    async fn route(
+        &self,
+        request: JsonRpcRequest,
+        context: McpServerRequestContext,
+    ) -> JsonRpcResponse {
+        self.handle_request_with_context(request, context).await
+    }
+}
+
 pub struct HarnessMcpServer<H> {
     harness: Arc<H>,
     policy: McpServerPolicy,
     rate_limit: Arc<Mutex<RateLimitState>>,
     audit_sink: Arc<dyn McpServerAuditSink>,
     metrics_sink: Arc<dyn McpMetricsSink>,
+    client_connections: broadcast::Sender<McpServerClientConnection>,
 }
 
 impl<H> Clone for HarnessMcpServer<H> {
@@ -1217,6 +1579,140 @@ impl<H> Clone for HarnessMcpServer<H> {
             rate_limit: Arc::clone(&self.rate_limit),
             audit_sink: Arc::clone(&self.audit_sink),
             metrics_sink: Arc::clone(&self.metrics_sink),
+            client_connections: self.client_connections.clone(),
+        }
+    }
+}
+
+struct HarnessHttpState<H> {
+    server: HarnessMcpServer<H>,
+    sessions: Arc<Mutex<HarnessHttpSessionStore>>,
+}
+
+struct HarnessHttpSession {
+    dispatcher: McpServerDispatcher,
+    last_accessed: Instant,
+    active_get: Arc<AtomicBool>,
+}
+
+struct HarnessHttpGetGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl Drop for HarnessHttpGetGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+struct HarnessHttpSessionStore {
+    sessions: HashMap<String, HarnessHttpSession>,
+    capacity: usize,
+    idle_timeout: Duration,
+}
+
+impl HarnessHttpSessionStore {
+    fn new(capacity: usize, idle_timeout: Duration) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            capacity,
+            idle_timeout,
+        }
+    }
+
+    fn insert(&mut self, session_id: String, dispatcher: McpServerDispatcher) -> bool {
+        let now = Instant::now();
+        self.remove_expired(now);
+        if self.sessions.len() >= self.capacity {
+            return false;
+        }
+        self.sessions.insert(
+            session_id,
+            HarnessHttpSession {
+                dispatcher,
+                last_accessed: now,
+                active_get: Arc::new(AtomicBool::new(false)),
+            },
+        );
+        true
+    }
+
+    fn get(&mut self, session_id: &str) -> Option<McpServerDispatcher> {
+        let now = Instant::now();
+        self.remove_expired(now);
+        let session = self.sessions.get_mut(session_id)?;
+        session.last_accessed = now;
+        Some(session.dispatcher.clone())
+    }
+
+    fn acquire_get(
+        &mut self,
+        session_id: &str,
+    ) -> Option<
+        Result<
+            (
+                McpServerDispatcher,
+                broadcast::Receiver<McpMessage>,
+                HarnessHttpGetGuard,
+            ),
+            (),
+        >,
+    > {
+        let now = Instant::now();
+        self.remove_expired(now);
+        let session = self.sessions.get_mut(session_id)?;
+        session.last_accessed = now;
+        if session
+            .active_get
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Some(Err(()));
+        }
+        let outbound = session.dispatcher.subscribe_outbound();
+        Some(Ok((
+            session.dispatcher.clone(),
+            outbound,
+            HarnessHttpGetGuard {
+                active: Arc::clone(&session.active_get),
+            },
+        )))
+    }
+
+    fn has_active_get(&self, session_id: &str) -> bool {
+        self.sessions
+            .get(session_id)
+            .is_some_and(|session| session.active_get.load(Ordering::Acquire))
+    }
+
+    fn remove(&mut self, session_id: &str) -> Option<McpServerDispatcher> {
+        self.remove_expired(Instant::now());
+        let dispatcher = self
+            .sessions
+            .remove(session_id)
+            .map(|session| session.dispatcher)?;
+        dispatcher.disconnect();
+        Some(dispatcher)
+    }
+
+    fn remove_expired(&mut self, now: Instant) {
+        let idle_timeout = self.idle_timeout;
+        self.sessions.retain(|_, session| {
+            let keep = session.active_get.load(Ordering::Acquire)
+                || now.saturating_duration_since(session.last_accessed) < idle_timeout;
+            if !keep {
+                session.dispatcher.disconnect();
+            }
+            keep
+        });
+    }
+}
+
+impl<H> Clone for HarnessHttpState<H> {
+    fn clone(&self) -> Self {
+        Self {
+            server: self.server.clone(),
+            sessions: Arc::clone(&self.sessions),
         }
     }
 }
@@ -1242,6 +1738,39 @@ where
             policy: McpServerPolicy::default(),
             audit_sink: Arc::new(NoopMcpServerAuditSink),
             metrics_sink: Arc::new(NoopMcpMetricsSink),
+        }
+    }
+
+    pub fn dispatcher(&self) -> McpServerDispatcher {
+        McpServerDispatcher::new(Arc::new(self.clone()))
+    }
+
+    #[must_use]
+    pub fn subscribe_client_connections(&self) -> broadcast::Receiver<McpServerClientConnection> {
+        self.client_connections.subscribe()
+    }
+
+    fn publish_client_connection(
+        &self,
+        transport: McpServerClientTransport,
+        session_id: Option<String>,
+        dispatcher: McpServerDispatcher,
+    ) {
+        let _ = self.client_connections.send(McpServerClientConnection {
+            transport,
+            session_id,
+            dispatcher,
+        });
+    }
+
+    fn publish_client_connection_if_ready(
+        &self,
+        transport: McpServerClientTransport,
+        session_id: Option<String>,
+        dispatcher: &McpServerDispatcher,
+    ) {
+        if dispatcher.mark_client_connection_published_if_ready() {
+            self.publish_client_connection(transport, session_id, dispatcher.clone());
         }
     }
 
@@ -1271,7 +1800,7 @@ where
 
         let result = match request.method.as_str() {
             "initialize" => self.initialize(),
-            "ping" | "shutdown" => Ok(json!({})),
+            "ping" => Ok(json!({})),
             "tools/list" => self.list_tools(context.tenant_id),
             "tools/call" => self.call_tool(request.params.as_ref(), context).await,
             method => Err(jsonrpc_error(
@@ -1291,20 +1820,68 @@ where
     pub async fn serve_stdio(self) -> Result<(), McpServerError> {
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         let mut stdout = tokio::io::stdout();
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .map_err(|error| McpServerError::Internal(error.to_string()))?
-        {
-            if line.trim().is_empty() {
+        let dispatcher = self.dispatcher();
+        let mut outbound = dispatcher.subscribe_outbound();
+        let _disconnect_guard = McpServerTransportDisconnectGuard {
+            dispatcher: dispatcher.clone(),
+        };
+        loop {
+            let response = tokio::select! {
+                line = lines.next_line() => {
+                    let Some(line) = line
+                        .map_err(|error| McpServerError::Internal(error.to_string()))?
+                    else {
+                        break;
+                    };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<McpMessage>(&line) {
+                        Ok(message) => {
+                            dispatcher
+                                .dispatch(message, McpServerRequestContext::default())
+                                .await
+                        }
+                        Err(error) => Some(JsonRpcResponse::failure(
+                            Value::Null,
+                            jsonrpc_error(
+                                JSONRPC_INVALID_REQUEST,
+                                format!("invalid MCP message: {error}"),
+                            ),
+                        )),
+                    }
+                }
+                message = outbound.recv() => {
+                    match message {
+                        Ok(message) => {
+                            let payload = serde_json::to_string(&message)
+                                .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                            stdout
+                                .write_all(payload.as_bytes())
+                                .await
+                                .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                            stdout
+                                .write_all(b"\n")
+                                .await
+                                .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                            stdout
+                                .flush()
+                                .await
+                                .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            };
+            self.publish_client_connection_if_ready(
+                McpServerClientTransport::Stdio,
+                None,
+                &dispatcher,
+            );
+            let Some(response) = response else {
                 continue;
-            }
-            let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-                Ok(request) => self.handle_request(request).await,
-                Err(error) => JsonRpcResponse::failure(
-                    Value::Null,
-                    jsonrpc_error(JSONRPC_INVALID_PARAMS, format!("invalid json-rpc: {error}")),
-                ),
             };
             let payload = serde_json::to_string(&response)
                 .map_err(|error| McpServerError::Internal(error.to_string()))?;
@@ -1334,9 +1911,23 @@ where
 
     pub async fn serve_http_listener(self, listener: TcpListener) -> Result<(), McpServerError> {
         self.ensure_public_serving_allowed()?;
+        let session_capacity = self.policy.http_session_capacity;
+        let session_idle_timeout = self.policy.http_session_idle_timeout;
+        let state = HarnessHttpState {
+            server: self,
+            sessions: Arc::new(Mutex::new(HarnessHttpSessionStore::new(
+                session_capacity,
+                session_idle_timeout,
+            ))),
+        };
         let app = Router::new()
-            .route("/", post(harness_http_handler::<H>))
-            .with_state(self);
+            .route(
+                "/",
+                post(harness_http_post::<H>)
+                    .get(harness_http_get::<H>)
+                    .delete(harness_http_delete::<H>),
+            )
+            .with_state(state);
         axum::serve(listener, app)
             .await
             .map_err(|error| McpServerError::Internal(error.to_string()))
@@ -1388,7 +1979,7 @@ where
 
     fn initialize(&self) -> Result<Value, JsonRpcError> {
         Ok(json!({
-            "protocolVersion": "2025-03-26",
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
             "capabilities": {
                 "tools": {},
             },
@@ -1443,8 +2034,12 @@ where
             .await
             .map_err(server_error_to_jsonrpc)?;
         serde_json::to_value(McpToolResult {
-            content: vec![McpContent::Json { value: result }],
+            content: vec![McpContent::text(
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()),
+            )],
+            structured_content: Some(structured_object(result)),
             is_error: false,
+            meta: BTreeMap::new(),
         })
         .map_err(|_| internal_jsonrpc_error())
     }
@@ -1511,19 +2106,265 @@ where
     }
 }
 
-async fn harness_http_handler<H>(
-    State(server): State<HarnessMcpServer<H>>,
-    headers: HeaderMap,
-    Json(request): Json<JsonRpcRequest>,
-) -> Json<JsonRpcResponse>
+#[async_trait]
+impl<H> McpServerRequestRouter for HarnessMcpServer<H>
 where
     H: HarnessMcpBackend,
 {
-    Json(
-        server
-            .handle_request_with_context(request, request_context_from_headers(&headers))
-            .await,
-    )
+    async fn route(
+        &self,
+        request: JsonRpcRequest,
+        context: McpServerRequestContext,
+    ) -> JsonRpcResponse {
+        self.handle_request_with_context(request, context).await
+    }
+}
+
+async fn harness_http_post<H>(
+    State(state): State<HarnessHttpState<H>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response
+where
+    H: HarnessMcpBackend,
+{
+    if !valid_browser_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let context = match validate_http_context(&state.server, &headers).await {
+        Ok(context) => context,
+        Err(status) => return status.into_response(),
+    };
+    let message: McpMessage = match serde_json::from_slice(&body) {
+        Ok(message) => message,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(JsonRpcResponse::failure(
+                    Value::Null,
+                    jsonrpc_error(
+                        JSONRPC_INVALID_REQUEST,
+                        format!("invalid MCP message: {error}"),
+                    ),
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    if matches!(&message, McpMessage::Request(request) if request.method == "initialize") {
+        if headers.contains_key("mcp-session-id") {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        let dispatcher = state.server.dispatcher();
+        let Some(response) = dispatcher.dispatch(message, context).await else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        if response.error.is_some() {
+            return (StatusCode::OK, Json(response)).into_response();
+        }
+        let session_id = ToolUseId::new().to_string();
+        let inserted = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id.clone(), dispatcher.clone());
+        if !inserted {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        let mut response = (StatusCode::OK, Json(response)).into_response();
+        response.headers_mut().insert(
+            "mcp-session-id",
+            HeaderValue::from_str(&session_id).expect("generated session id is a valid header"),
+        );
+        return response;
+    }
+
+    let Some((session_id, dispatcher)) = http_session(&state, &headers) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !valid_protocol_version(&dispatcher, &headers) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let response = dispatcher.dispatch(message, context).await;
+    if state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .has_active_get(&session_id)
+    {
+        state.server.publish_client_connection_if_ready(
+            McpServerClientTransport::StreamableHttp,
+            Some(session_id),
+            &dispatcher,
+        );
+    }
+    match response {
+        Some(response) => (StatusCode::OK, Json(response)).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+async fn harness_http_get<H>(
+    State(state): State<HarnessHttpState<H>>,
+    headers: HeaderMap,
+) -> Response
+where
+    H: HarnessMcpBackend,
+{
+    if !valid_browser_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if validate_http_context(&state.server, &headers)
+        .await
+        .is_err()
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let get = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .acquire_get(session_id);
+    let (dispatcher, mut outbound, get_guard) = match get {
+        None => return StatusCode::NOT_FOUND.into_response(),
+        Some(Err(())) => return StatusCode::CONFLICT.into_response(),
+        Some(Ok(get)) => get,
+    };
+    if !valid_protocol_version(&dispatcher, &headers) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let mut disconnected = dispatcher.subscribe_disconnect();
+    state.server.publish_client_connection_if_ready(
+        McpServerClientTransport::StreamableHttp,
+        Some(session_id.to_owned()),
+        &dispatcher,
+    );
+    let stream = async_stream::stream! {
+        let _get_guard = get_guard;
+        loop {
+            tokio::select! {
+                changed = disconnected.changed() => {
+                    if changed.is_err() || *disconnected.borrow() {
+                        break;
+                    }
+                }
+                message = outbound.recv() => match message {
+                    Ok(message) => {
+                        let Ok(payload) = serde_json::to_string(&message) else {
+                            continue;
+                        };
+                        yield Ok::<_, std::convert::Infallible>(SseEvent::default().data(payload));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+    Sse::new(stream).into_response()
+}
+
+async fn harness_http_delete<H>(
+    State(state): State<HarnessHttpState<H>>,
+    headers: HeaderMap,
+) -> Response
+where
+    H: HarnessMcpBackend,
+{
+    if !valid_browser_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if validate_http_context(&state.server, &headers)
+        .await
+        .is_err()
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(session_id)
+        .is_some()
+    {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+fn http_session<H>(
+    state: &HarnessHttpState<H>,
+    headers: &HeaderMap,
+) -> Option<(String, McpServerDispatcher)> {
+    let session_id = headers.get("mcp-session-id")?.to_str().ok()?.to_owned();
+    let dispatcher = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&session_id)?;
+    Some((session_id, dispatcher))
+}
+
+fn valid_protocol_version(dispatcher: &McpServerDispatcher, headers: &HeaderMap) -> bool {
+    let Some(expected) = dispatcher.protocol_version() else {
+        return false;
+    };
+    headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        == Some(expected.as_str())
+}
+
+fn valid_browser_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get("origin").and_then(|value| value.to_str().ok()) else {
+        return true;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    match origin.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+async fn validate_http_context<H>(
+    server: &HarnessMcpServer<H>,
+    headers: &HeaderMap,
+) -> Result<McpServerRequestContext, StatusCode>
+where
+    H: HarnessMcpBackend,
+{
+    let mut context = request_context_from_headers(headers);
+    server
+        .policy
+        .auth
+        .validate(&mut context)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    context.tenant_id = server
+        .policy
+        .tenant_mapping
+        .resolve_tenant(&context)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    Ok(context)
 }
 
 #[cfg(feature = "websocket")]
@@ -1544,34 +2385,72 @@ where
     })
     .await
     .map_err(|error| McpServerError::Internal(error.to_string()))?;
-    let context = context_slot
+    let mut context = context_slot
         .lock()
         .map_err(|error| McpServerError::Internal(error.to_string()))?
         .clone()
         .unwrap_or_default();
-
-    while let Some(message) = socket.next().await {
-        let message = message.map_err(|error| McpServerError::Internal(error.to_string()))?;
-        let WsMessage::Text(text) = message else {
-            continue;
-        };
-        let response = match serde_json::from_str::<JsonRpcRequest>(&text) {
-            Ok(request) => {
-                server
-                    .handle_request_with_context(request, context.clone())
+    server.policy.auth.validate(&mut context).await?;
+    context.tenant_id = server
+        .policy
+        .tenant_mapping
+        .resolve_tenant(&context)
+        .await?;
+    let dispatcher = server.dispatcher();
+    let mut outbound = dispatcher.subscribe_outbound();
+    let _disconnect_guard = McpServerTransportDisconnectGuard {
+        dispatcher: dispatcher.clone(),
+    };
+    loop {
+        tokio::select! {
+            incoming = socket.next() => {
+                let Some(message) = incoming else {
+                    break;
+                };
+                let message =
+                    message.map_err(|error| McpServerError::Internal(error.to_string()))?;
+                let WsMessage::Text(text) = message else {
+                    continue;
+                };
+                let response = match serde_json::from_str::<McpMessage>(&text) {
+                    Ok(message) => dispatcher.dispatch(message, context.clone()).await,
+                    Err(error) => Some(JsonRpcResponse::failure(
+                        Value::Null,
+                        jsonrpc_error(
+                            JSONRPC_INVALID_REQUEST,
+                            format!("invalid MCP message: {error}"),
+                        ),
+                    )),
+                };
+                server.publish_client_connection_if_ready(
+                    McpServerClientTransport::WebSocket,
+                    None,
+                    &dispatcher,
+                );
+                let Some(response) = response else {
+                    continue;
+                };
+                let payload = serde_json::to_string(&response)
+                    .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                socket
+                    .send(WsMessage::Text(payload.into()))
                     .await
+                    .map_err(|error| McpServerError::Internal(error.to_string()))?;
             }
-            Err(error) => JsonRpcResponse::failure(
-                Value::Null,
-                jsonrpc_error(JSONRPC_INVALID_PARAMS, format!("invalid json-rpc: {error}")),
-            ),
-        };
-        let payload = serde_json::to_string(&response)
-            .map_err(|error| McpServerError::Internal(error.to_string()))?;
-        socket
-            .send(WsMessage::Text(payload))
-            .await
-            .map_err(|error| McpServerError::Internal(error.to_string()))?;
+            outgoing = outbound.recv() => {
+                let message = match outgoing {
+                    Ok(message) => message,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let payload = serde_json::to_string(&message)
+                    .map_err(|error| McpServerError::Internal(error.to_string()))?;
+                socket
+                    .send(WsMessage::Text(payload.into()))
+                    .await
+                    .map_err(|error| McpServerError::Internal(error.to_string()))?;
+            }
+        }
     }
     Ok(())
 }
@@ -1634,12 +2513,24 @@ where
     }
 
     pub fn build(self) -> Result<HarnessMcpServer<H>, McpServerError> {
+        if self.policy.http_session_capacity == 0 {
+            return Err(McpServerError::InvalidParams(
+                "HTTP session capacity must be greater than zero".to_owned(),
+            ));
+        }
+        if self.policy.http_session_idle_timeout.is_zero() {
+            return Err(McpServerError::InvalidParams(
+                "HTTP session idle timeout must be greater than zero".to_owned(),
+            ));
+        }
+        let (client_connections, _) = broadcast::channel(64);
         Ok(HarnessMcpServer {
             harness: self.harness,
             policy: self.policy,
             rate_limit: Arc::new(Mutex::new(RateLimitState::default())),
             audit_sink: self.audit_sink,
             metrics_sink: self.metrics_sink,
+            client_connections,
         })
     }
 }
@@ -2024,8 +2915,11 @@ fn harness_tool_spec(
         capability,
         descriptor: McpToolDescriptor {
             name: name.into(),
+            title: None,
             description: Some(description.into()),
+            icons: None,
             input_schema,
+            execution: None,
             output_schema: None,
             annotations: None,
             meta: BTreeMap::new(),
@@ -2063,7 +2957,14 @@ fn tool_call_parts(params: Option<&Value>) -> Result<(&str, Value), JsonRpcError
 }
 
 fn validate_input_schema(schema: &Value, arguments: &Value) -> Result<(), JsonRpcError> {
-    let validator = jsonschema::validator_for(schema).map_err(|error| {
+    let validator = if schema.get("$schema").is_some() {
+        jsonschema::validator_for(schema)
+    } else {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(schema)
+    }
+    .map_err(|error| {
         jsonrpc_error(
             JSONRPC_INTERNAL_ERROR,
             format!("failed to compile tool input schema: {error}"),
@@ -2129,27 +3030,38 @@ fn capability_label(capability: ExposedCapability) -> &'static str {
 fn tool_descriptor_to_mcp(descriptor: &ToolDescriptor) -> McpToolDescriptor {
     McpToolDescriptor {
         name: descriptor.name.clone(),
+        title: Some(descriptor.display_name.clone()),
         description: Some(descriptor.description.clone()),
+        icons: None,
         input_schema: descriptor.input_schema.clone(),
+        execution: None,
         output_schema: descriptor.output_schema.clone(),
         annotations: None,
         meta: BTreeMap::new(),
     }
 }
 
-async fn collect_tool_stream(mut stream: harness_tool::ToolStream) -> McpToolResult {
+async fn collect_tool_stream(
+    mut stream: harness_tool::ToolStream,
+    output_schema: Option<&Value>,
+) -> McpToolResult {
     let mut content = Vec::new();
+    let mut structured = Vec::new();
     while let Some(event) = stream.next().await {
         match event {
             ToolEvent::Progress(_) => {}
-            ToolEvent::Partial(part) => content.extend(message_part_to_mcp(part)),
+            ToolEvent::Partial(part) => match part {
+                MessagePart::ToolResult {
+                    content: result, ..
+                } => append_tool_result(result, &mut content, &mut structured),
+                other => {
+                    append_mcp_result(message_part_to_mcp(other), &mut content, &mut structured)
+                }
+            },
             ToolEvent::Journal(_) => {}
             ToolEvent::Final(result) => {
-                content.extend(tool_result_to_mcp_content(result));
-                return McpToolResult {
-                    content,
-                    is_error: false,
-                };
+                append_tool_result(result, &mut content, &mut structured);
+                return finalize_tool_result(content, structured, output_schema);
             }
             ToolEvent::Error(error) => return mcp_error_result(error.to_string()),
         }
@@ -2158,61 +3070,288 @@ async fn collect_tool_stream(mut stream: harness_tool::ToolStream) -> McpToolRes
     mcp_error_result("tool stream ended without final result")
 }
 
-fn tool_result_to_mcp_content(result: ToolResult) -> Vec<McpContent> {
+fn append_tool_result(
+    result: ToolResult,
+    content: &mut Vec<McpContent>,
+    structured: &mut Vec<serde_json::Map<String, Value>>,
+) {
     match result {
-        ToolResult::Text(text) => vec![McpContent::Text { text }],
-        ToolResult::Structured(value) => vec![McpContent::Json { value }],
+        ToolResult::Mixed(parts) => {
+            for part in parts {
+                append_mcp_result(tool_result_part_to_mcp(part), content, structured);
+            }
+        }
+        other => append_mcp_result(tool_result_to_mcp(other), content, structured),
+    }
+}
+
+fn append_mcp_result(
+    mapped: McpToolResult,
+    content: &mut Vec<McpContent>,
+    structured: &mut Vec<serde_json::Map<String, Value>>,
+) {
+    content.extend(mapped.content);
+    if let Some(value) = mapped.structured_content {
+        structured.push(value);
+    }
+}
+
+fn tool_result_to_mcp(result: ToolResult) -> McpToolResult {
+    match result {
+        ToolResult::Text(text) => McpToolResult::text(text),
+        ToolResult::Structured(value) => structured_result(value),
         ToolResult::Blob {
             content_type,
             blob_ref,
-        } => vec![McpContent::Json {
-            value: json!({
-                "contentType": content_type,
-                "blobRef": blob_ref,
-            }),
-        }],
-        ToolResult::Mixed(parts) => parts.into_iter().map(tool_result_part_to_mcp).collect(),
-        other => vec![McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        }],
+        } => McpToolResult::text(format!(
+            "Blob content ({content_type}, {} bytes)",
+            blob_ref.size
+        )),
+        ToolResult::Mixed(parts) => {
+            let mut content = Vec::new();
+            let mut structured = Vec::new();
+            for part in parts {
+                let mapped = tool_result_part_to_mcp(part);
+                content.extend(mapped.content);
+                if let Some(value) = mapped.structured_content {
+                    structured.push(value);
+                }
+            }
+            McpToolResult {
+                content,
+                structured_content: combine_structured(structured),
+                is_error: false,
+                meta: BTreeMap::new(),
+            }
+        }
+        _ => McpToolResult::text("Unsupported tool result"),
     }
 }
 
-fn tool_result_part_to_mcp(part: ToolResultPart) -> McpContent {
+fn tool_result_part_to_mcp(part: ToolResultPart) -> McpToolResult {
     match part {
         ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => {
-            McpContent::Text { text }
+            McpToolResult::text(text)
         }
-        ToolResultPart::Structured { value, .. } => McpContent::Json { value },
-        ToolResultPart::Artifact {
-            artifact_kind,
+        ToolResultPart::Structured { value, .. } => structured_result(value),
+        ToolResultPart::Blob {
             content_type,
+            blob_ref,
+            summary,
+        } => {
+            McpToolResult::text(summary.unwrap_or_else(|| {
+                format!("Blob content ({content_type}, {} bytes)", blob_ref.size)
+            }))
+        }
+        ToolResultPart::Reference {
+            reference_kind: ReferenceKind::Url { url },
             title,
-            preview,
-            ..
-        } => McpContent::Json {
-            value: json!({
-                "kind": "artifact",
-                "artifactKind": artifact_kind,
-                "contentType": content_type,
-                "title": title,
-                "preview": preview,
-            }),
+            summary,
+        } => McpToolResult {
+            content: vec![McpContent::ResourceLink {
+                resource: Box::new(McpResource {
+                    uri: url.clone(),
+                    name: title.clone().unwrap_or(url),
+                    title,
+                    description: summary,
+                    mime_type: None,
+                    icons: None,
+                    annotations: None,
+                    size: None,
+                    meta: BTreeMap::new(),
+                }),
+            }],
+            structured_content: None,
+            is_error: false,
+            meta: BTreeMap::new(),
         },
-        other => McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        },
+        ToolResultPart::Reference {
+            reference_kind,
+            title,
+            summary,
+        } => {
+            let identity = match reference_kind {
+                ReferenceKind::File { path, line_range } => {
+                    let mut identity = format!("file:{}", encode_path_identity(&path));
+                    if let Some((start, end)) = line_range {
+                        identity.push_str(&format!("#L{start}-L{end}"));
+                    }
+                    identity
+                }
+                ReferenceKind::Transcript(transcript) => format!(
+                    "transcript:{}#offset={}-{}",
+                    transcript.blob.id, transcript.from_offset.0, transcript.to_offset.0
+                ),
+                ReferenceKind::ToolUse { tool_use_id } => format!("tool-use:{tool_use_id}"),
+                ReferenceKind::Memory { memory_id } => format!("memory:{memory_id}"),
+                other => format!(
+                    "reference:{}",
+                    serde_json::to_string(&other).unwrap_or_else(|_| format!("{other:?}"))
+                ),
+            };
+            McpToolResult::text(reference_text(identity, title, summary))
+        }
+        ToolResultPart::Table {
+            headers,
+            rows,
+            caption,
+        } => {
+            let mut table = serde_json::Map::from_iter([
+                ("headers".to_owned(), json!(headers)),
+                ("rows".to_owned(), json!(rows)),
+            ]);
+            if let Some(caption) = caption {
+                table.insert("caption".to_owned(), Value::String(caption));
+            }
+            structured_result(Value::Object(table))
+        }
+        ToolResultPart::Progress {
+            stage,
+            ratio,
+            detail,
+        } => {
+            let mut text = detail.unwrap_or(stage);
+            if let Some(ratio) = ratio {
+                text.push_str(&format!(" ({:.0}%)", ratio * 100.0));
+            }
+            McpToolResult::text(text)
+        }
+        ToolResultPart::Error {
+            code,
+            message,
+            retriable,
+        } => McpToolResult::text(format!("{message} (code: {code}, retriable: {retriable})")),
+        ToolResultPart::Artifact { title, preview, .. } => {
+            McpToolResult::text(preview.unwrap_or(title))
+        }
+        _ => McpToolResult::text("Unsupported tool result part"),
     }
 }
 
-fn message_part_to_mcp(part: MessagePart) -> Vec<McpContent> {
-    match part {
-        MessagePart::Text(text) => vec![McpContent::Text { text }],
-        MessagePart::ToolResult { content, .. } => tool_result_to_mcp_content(content),
-        other => vec![McpContent::Json {
-            value: serde_json::to_value(other).unwrap_or_else(|_| json!({})),
-        }],
+fn reference_text(identity: String, title: Option<String>, summary: Option<String>) -> String {
+    let mut text = identity;
+    if let Some(title) = title {
+        text.push_str(" | title: ");
+        text.push_str(&title);
     }
+    if let Some(summary) = summary {
+        text.push_str(" | summary: ");
+        text.push_str(&summary);
+    }
+    text
+}
+
+fn encode_path_identity(path: &Path) -> String {
+    let mut encoded = String::with_capacity(path.as_os_str().as_encoded_bytes().len());
+    for &byte in path.as_os_str().as_encoded_bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':' | b'\\')
+        {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(b"0123456789ABCDEF"[usize::from(byte >> 4)]));
+            encoded.push(char::from(b"0123456789ABCDEF"[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
+fn message_part_to_mcp(part: MessagePart) -> McpToolResult {
+    match part {
+        MessagePart::Text(text) => McpToolResult::text(text),
+        MessagePart::ToolResult { content, .. } => tool_result_to_mcp(content),
+        other => structured_result(serde_json::to_value(other).unwrap_or_else(|_| json!({}))),
+    }
+}
+
+fn structured_result(value: Value) -> McpToolResult {
+    match value {
+        Value::Object(structured) => McpToolResult {
+            content: vec![McpContent::text(
+                serde_json::to_string_pretty(&structured)
+                    .unwrap_or_else(|_| Value::Object(structured.clone()).to_string()),
+            )],
+            structured_content: Some(structured),
+            is_error: false,
+            meta: BTreeMap::new(),
+        },
+        value => McpToolResult::text(
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+        ),
+    }
+}
+
+fn structured_object(value: Value) -> serde_json::Map<String, Value> {
+    match value {
+        Value::Object(object) => object,
+        value => serde_json::Map::from_iter([("value".to_owned(), value)]),
+    }
+}
+
+fn combine_structured(
+    mut values: Vec<serde_json::Map<String, Value>>,
+) -> Option<serde_json::Map<String, Value>> {
+    match values.len() {
+        0 => None,
+        1 => values.pop(),
+        _ => None,
+    }
+}
+
+fn finalize_tool_result(
+    mut content: Vec<McpContent>,
+    structured: Vec<serde_json::Map<String, Value>>,
+    output_schema: Option<&Value>,
+) -> McpToolResult {
+    let structured_count = structured.len();
+    let structured_content = combine_structured(structured);
+    let output_error = output_schema.and_then(|schema| match &structured_content {
+        Some(value) => validate_output_schema(schema, value).err(),
+        None => Some(format!(
+            "tool output schema validation failed: expected exactly one structured object, got {structured_count}"
+        )),
+    });
+
+    if let Some(error) = output_error {
+        content.push(McpContent::text(error));
+        return McpToolResult {
+            content,
+            structured_content: None,
+            is_error: true,
+            meta: BTreeMap::new(),
+        };
+    }
+
+    McpToolResult {
+        content,
+        structured_content,
+        is_error: false,
+        meta: BTreeMap::new(),
+    }
+}
+
+fn validate_output_schema(
+    schema: &Value,
+    structured: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let validator = if schema.get("$schema").is_some() {
+        jsonschema::validator_for(schema)
+    } else {
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(schema)
+    }
+    .map_err(|error| format!("failed to compile tool output schema: {error}"))?;
+    let value = Value::Object(structured.clone());
+    if validator.is_valid(&value) {
+        return Ok(());
+    }
+    let details = validator.iter_errors(&value).next().map_or_else(
+        || "tool output does not match output schema".to_owned(),
+        |error| error.to_string(),
+    );
+    Err(format!("tool output schema validation failed: {details}"))
 }
 
 fn tool_error_result(message: impl Into<String>) -> Value {
@@ -2221,10 +3360,10 @@ fn tool_error_result(message: impl Into<String>) -> Value {
 
 fn mcp_error_result(message: impl Into<String>) -> McpToolResult {
     McpToolResult {
-        content: vec![McpContent::Text {
-            text: message.into(),
-        }],
+        content: vec![McpContent::text(message)],
+        structured_content: None,
         is_error: true,
+        meta: BTreeMap::new(),
     }
 }
 
@@ -2237,6 +3376,7 @@ fn server_error_to_jsonrpc(error: McpServerError) -> JsonRpcError {
             data: Some(json!({
                 "retry_after_ms": retry_after.as_millis().max(1),
             })),
+            extra: Default::default(),
         },
         McpServerError::Unauthorized(message) => jsonrpc_error(JSONRPC_UNAUTHORIZED, message),
         McpServerError::TenantMapping(message) => jsonrpc_error(JSONRPC_TENANT_MAPPING, message),
@@ -2257,6 +3397,7 @@ fn jsonrpc_error(code: i32, message: impl Into<String>) -> JsonRpcError {
         code,
         message: message.into(),
         data: None,
+        extra: Default::default(),
     }
 }
 

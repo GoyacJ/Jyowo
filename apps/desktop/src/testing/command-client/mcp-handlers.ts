@@ -40,16 +40,22 @@ export function createMcpCommandHandlers(
       await wait(state.options.delayMs)
       return { status: 'cleared' } satisfies ClearMcpDiagnosticsResponse
     },
-    async deleteMcpServer(id) {
+    async deleteMcpServer(configLayer, id) {
       await wait(state.options.delayMs)
-      return { id, status: 'deleted' }
+      return { configLayer, id, status: 'deleted' }
     },
-    async getMcpServerConfig(id) {
+    async getMcpServerConfig(configLayer, id) {
       await wait(state.options.delayMs)
-      if (state.options.mcpServerConfig?.server.id === id) {
+      if (
+        state.options.mcpServerConfig?.server.configLayer === configLayer &&
+        state.options.mcpServerConfig.server.id === id
+      ) {
         return state.options.mcpServerConfig
       }
-      if (fixtureMcpServerConfig.server.id === id) {
+      if (
+        fixtureMcpServerConfig.server.configLayer === configLayer &&
+        fixtureMcpServerConfig.server.id === id
+      ) {
         return fixtureMcpServerConfig
       }
       throw new Error(`MCP server not found: ${id}`)
@@ -62,19 +68,20 @@ export function createMcpCommandHandlers(
       await wait(state.options.delayMs)
       return state.options.mcpDiagnostics ?? fixtureListMcpDiagnostics
     },
-    async listMcpServers() {
+    async listMcpServers(configLayer) {
       await wait(state.options.delayMs)
-      return state.options.mcpServers ?? fixtureListMcpServers
+      const response = state.options.mcpServers ?? fixtureListMcpServers
+      return response.configLayer === configLayer ? response : { configLayer, servers: [] }
     },
     async listenMcpDiagnosticBatches() {
       await wait(state.options.delayMs)
       return () => undefined
     },
-    async restartMcpServer(id) {
+    async restartMcpServer(configLayer, id) {
       await wait(state.options.delayMs)
       const server =
         (state.options.mcpServers ?? fixtureListMcpServers).servers.find(
-          (server) => server.id === id,
+          (server) => server.configLayer === configLayer && server.id === id,
         ) ?? fixtureSaveMcpServer.server
       return {
         server,
@@ -104,11 +111,11 @@ export function createMcpCommandHandlers(
       await wait(state.options.delayMs)
       return state.options.mcpServer ?? fixtureSaveMcpServer
     },
-    async setMcpServerEnabled(id, enabled) {
+    async setMcpServerEnabled(configLayer, id, enabled) {
       await wait(state.options.delayMs)
       const server =
         (state.options.mcpServers ?? fixtureListMcpServers).servers.find(
-          (server) => server.id === id,
+          (server) => server.configLayer === configLayer && server.id === id,
         ) ?? fixtureSaveMcpServer.server
       return {
         server: {

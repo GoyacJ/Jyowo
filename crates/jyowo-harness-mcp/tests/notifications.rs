@@ -31,7 +31,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
             match value.get("method").and_then(Value::as_str) {
                 Some("initialize") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -48,7 +48,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
                 }
                 Some("tools/list") => {
                     socket
-                        .send(Message::Text(
+                        .send(Message::text(
                             json!({
                                 "jsonrpc": "2.0",
                                 "id": value["id"].clone(),
@@ -84,7 +84,7 @@ async fn websocket_transport_maps_mcp_notifications_to_changes() {
                         }),
                     ] {
                         socket
-                            .send(Message::Text(notification.to_string()))
+                            .send(Message::text(notification.to_string()))
                             .await
                             .expect("send notification");
                     }
@@ -144,12 +144,21 @@ async fn registry_maps_resource_and_prompt_notifications_to_harness_events() {
     connection.set_resources(vec![McpResource {
         uri: "jyowo://sessions/1".into(),
         name: "session 1".into(),
+        title: None,
         description: None,
         mime_type: Some("application/json".into()),
+        icons: None,
+        annotations: None,
+        size: None,
+        meta: Default::default(),
     }]);
     connection.set_prompts(vec![McpPrompt {
         name: "triage".into(),
+        title: None,
         description: None,
+        icons: None,
+        arguments: None,
+        meta: Default::default(),
     }]);
     let registry = McpRegistry::new();
     registry
@@ -323,6 +332,7 @@ struct MutableMetadata {
     prompts: Mutex<Vec<McpPrompt>>,
     subscribed: Mutex<Vec<String>>,
     unsubscribed: Mutex<Vec<String>>,
+    unhealthy_reason: Mutex<Option<String>>,
 }
 
 impl MutableMetadata {
@@ -349,6 +359,21 @@ impl McpConnection for MutableMetadata {
         "metadata"
     }
 
+    async fn connection_state(&self) -> harness_mcp::McpConnectionState {
+        match self.unhealthy_reason.lock().clone() {
+            Some(last_error) => harness_mcp::McpConnectionState::Reconnecting {
+                attempt: 0,
+                last_error,
+            },
+            None => harness_mcp::McpConnectionState::Ready,
+        }
+    }
+
+    async fn mark_unhealthy(&self, reason: String) -> Result<(), McpError> {
+        *self.unhealthy_reason.lock() = Some(reason);
+        Ok(())
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
         Ok(Vec::new())
     }
@@ -361,11 +386,18 @@ impl McpConnection for MutableMetadata {
         Ok(self.resources.lock().clone())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<McpResourceContents, McpError> {
-        Ok(McpResourceContents {
-            uri: uri.into(),
-            mime_type: None,
-            text: None,
+    async fn read_resource(
+        &self,
+        uri: &str,
+    ) -> Result<harness_mcp::McpReadResourceResult, McpError> {
+        Ok(harness_mcp::McpReadResourceResult {
+            contents: vec![McpResourceContents::Text {
+                uri: uri.into(),
+                mime_type: None,
+                text: String::new(),
+                meta: Default::default(),
+            }],
+            meta: Default::default(),
         })
     }
 
@@ -384,7 +416,11 @@ impl McpConnection for MutableMetadata {
     }
 
     async fn get_prompt(&self, _name: &str, _args: Value) -> Result<McpPromptMessages, McpError> {
-        Ok(McpPromptMessages { messages: vec![] })
+        Ok(McpPromptMessages {
+            description: None,
+            messages: vec![],
+            meta: Default::default(),
+        })
     }
 
     async fn subscribe_changes(&self) -> Result<ListChangedEvent, McpError> {

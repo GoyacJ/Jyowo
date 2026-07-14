@@ -5,10 +5,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use harness_contracts::{
-    AgentCapabilities, BlobId, ClientFrame, ClientRequest, HandshakeResponse, ProtocolError,
-    ProtocolErrorCode, ServerFrame, ServerMessage, PROTOCOL_VERSION,
+    now, AgentCapabilities, BlobId, ClientFrame, ClientRequest, CorrelationId, Event, EventId,
+    EventSource, EventSourceKind, HandshakeResponse, McpConnectionLostEvent,
+    McpConnectionLostReason, McpServerId, McpServerSource, ProtocolError, ProtocolErrorCode, RunId,
+    RunSegmentId, ServerFrame, ServerMessage, SessionId, TaskEventEnvelope, TaskEventPage, TaskId,
+    TaskProjection, TaskState, TenantId, PROTOCOL_VERSION,
 };
 use jyowo_desktop_shell::commands::ModelUsageHistorySource;
+use jyowo_desktop_shell::commands::{
+    clear_mcp_diagnostics_with_runtime_state, list_mcp_diagnostics_with_runtime_state_and_daemon,
+    ClearMcpDiagnosticsRequest, DesktopRuntimeState, ListMcpDiagnosticsRequest, McpDiagnosticPlane,
+};
 use jyowo_desktop_shell::daemon_client::{DaemonClient, DaemonClientConfig, DaemonClientError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -74,6 +81,275 @@ fn client(socket: &Path, token: &Path) -> DaemonClient {
         user_instance_id: "user-a".into(),
         client_version: "0.1.0".into(),
     })
+}
+
+#[tokio::test]
+async fn desktop_diagnostic_helper_reads_task_journal_through_daemon_client() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("daemon.sock");
+    let token = root.path().join("connection.token");
+    write_private_token(&token, "token-a");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let task_id = TaskId::new();
+    let event_id = EventId::new();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let run_segment_id = RunSegmentId::new();
+    let at = now();
+    let envelope = TaskEventEnvelope {
+        global_offset: 12,
+        task_id,
+        stream_sequence: 2,
+        event_id,
+        event_type: "engine.mcp_connection_lost".to_owned(),
+        schema_version: 1,
+        recorded_at: at,
+        source: EventSource {
+            kind: EventSourceKind::Engine,
+            actor_id: None,
+            client_id: None,
+        },
+        payload: serde_json::json!({
+            "tenantId": TenantId::SINGLE,
+            "sessionId": session_id,
+            "journalOffset": 11,
+            "runId": run_id,
+            "runSegmentId": run_segment_id,
+            "correlationId": CorrelationId::new(),
+            "causationId": null,
+            "event": Event::McpConnectionLost(McpConnectionLostEvent {
+                session_id: Some(session_id),
+                server_id: McpServerId("github".to_owned()),
+                server_source: McpServerSource::Project,
+                reason: McpConnectionLostReason::Other("closed".to_owned()),
+                attempts_so_far: 1,
+                terminal: false,
+                at,
+            }),
+        }),
+    };
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(handshake.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Handshake(HandshakeResponse {
+                    daemon_version: "0.1.0".into(),
+                    user_instance_id: "user-a".into(),
+                    latest_global_offset: 12,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
+                }),
+            },
+        )
+        .await;
+        let list = read_frame(&mut stream).await;
+        assert!(matches!(list.request, ClientRequest::ListTasks));
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(list.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::TaskList {
+                    tasks: vec![TaskProjection {
+                        task_id,
+                        title: "Task".to_owned(),
+                        state: TaskState::Completed,
+                        pinned: false,
+                        archived: false,
+                        removed: false,
+                        stream_version: 2,
+                        last_global_offset: 12,
+                        current_run: None,
+                        pending_permission: None,
+                        queue: Vec::new(),
+                        workspace: None,
+                        actor_id: None,
+                        context_cursor: 0,
+                        parent: None,
+                        subagents: Vec::new(),
+                    }],
+                },
+            },
+        )
+        .await;
+        let load = read_frame(&mut stream).await;
+        assert!(matches!(
+            load.request,
+            ClientRequest::LoadTaskEvents { task_id: loaded, .. } if loaded == task_id
+        ));
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(load.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::TaskEventPage(TaskEventPage {
+                    task_id,
+                    events: vec![envelope],
+                    next_before_offset: None,
+                }),
+            },
+        )
+        .await;
+    });
+
+    let daemon_client = client(&socket, &token);
+    let workspace = tempfile::tempdir().unwrap();
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf())
+        .expect("desktop runtime state");
+    let response = list_mcp_diagnostics_with_runtime_state_and_daemon(
+        ListMcpDiagnosticsRequest { server_id: None },
+        &state,
+        Some(&daemon_client),
+    )
+    .await
+    .expect("list diagnostics");
+
+    assert_eq!(response.events.len(), 1);
+    assert_eq!(response.events[0].id, event_id.to_string());
+    assert_eq!(response.events[0].plane, McpDiagnosticPlane::Task);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cleared_task_diagnostics_stay_hidden_after_runtime_recreation() {
+    let workspace = tempfile::tempdir().unwrap();
+    let state = DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf())
+        .expect("desktop runtime state");
+    let old_at = now() - chrono::Duration::seconds(1);
+    clear_mcp_diagnostics_with_runtime_state(
+        ClearMcpDiagnosticsRequest { server_id: None },
+        &state,
+    )
+    .await
+    .expect("clear diagnostics without daemon");
+    drop(state);
+    let new_at = now();
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("daemon.sock");
+    let token = root.path().join("connection.token");
+    write_private_token(&token, "token-a");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let task_id = TaskId::new();
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let run_segment_id = RunSegmentId::new();
+    let old_id = EventId::new();
+    let new_id = EventId::new();
+    let envelope = |global_offset, event_id, at| TaskEventEnvelope {
+        global_offset,
+        task_id,
+        stream_sequence: global_offset,
+        event_id,
+        event_type: "engine.mcp_connection_lost".to_owned(),
+        schema_version: 1,
+        recorded_at: at,
+        source: EventSource {
+            kind: EventSourceKind::Engine,
+            actor_id: None,
+            client_id: None,
+        },
+        payload: serde_json::json!({
+            "tenantId": TenantId::SINGLE,
+            "sessionId": session_id,
+            "journalOffset": global_offset - 1,
+            "runId": run_id,
+            "runSegmentId": run_segment_id,
+            "correlationId": CorrelationId::new(),
+            "causationId": null,
+            "event": Event::McpConnectionLost(McpConnectionLostEvent {
+                session_id: Some(session_id),
+                server_id: McpServerId("github".to_owned()),
+                server_source: McpServerSource::Project,
+                reason: McpConnectionLostReason::Other("closed".to_owned()),
+                attempts_so_far: 1,
+                terminal: false,
+                at,
+            }),
+        }),
+    };
+    let old_envelope = envelope(12, old_id, old_at);
+    let new_envelope = envelope(13, new_id, new_at);
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(handshake.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::Handshake(HandshakeResponse {
+                    daemon_version: "0.1.0".into(),
+                    user_instance_id: "user-a".into(),
+                    latest_global_offset: 13,
+                    agent_capabilities: AgentCapabilities::daemon_native(),
+                }),
+            },
+        )
+        .await;
+        let list = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(list.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::TaskList {
+                    tasks: vec![TaskProjection {
+                        task_id,
+                        title: "Task".to_owned(),
+                        state: TaskState::Completed,
+                        pinned: false,
+                        archived: false,
+                        removed: false,
+                        stream_version: 3,
+                        last_global_offset: 13,
+                        current_run: None,
+                        pending_permission: None,
+                        queue: Vec::new(),
+                        workspace: None,
+                        actor_id: None,
+                        context_cursor: 0,
+                        parent: None,
+                        subagents: Vec::new(),
+                    }],
+                },
+            },
+        )
+        .await;
+        let load = read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &ServerFrame {
+                request_id: Some(load.request_id),
+                protocol_version: PROTOCOL_VERSION,
+                message: ServerMessage::TaskEventPage(TaskEventPage {
+                    task_id,
+                    events: vec![new_envelope, old_envelope],
+                    next_before_offset: None,
+                }),
+            },
+        )
+        .await;
+    });
+
+    let daemon_client = client(&socket, &token);
+    let recreated = DesktopRuntimeState::with_workspace_for_test(workspace.path().to_path_buf())
+        .expect("recreated desktop runtime state");
+    let response = list_mcp_diagnostics_with_runtime_state_and_daemon(
+        ListMcpDiagnosticsRequest { server_id: None },
+        &recreated,
+        Some(&daemon_client),
+    )
+    .await
+    .expect("list diagnostics after clear");
+
+    assert_eq!(response.events.len(), 1);
+    assert_eq!(response.events[0].id, new_id.to_string());
+    assert_ne!(response.events[0].id, old_id.to_string());
+    server.await.unwrap();
 }
 
 #[tokio::test]

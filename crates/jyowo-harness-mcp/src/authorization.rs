@@ -384,19 +384,21 @@ fn network_resource(url: &str) -> Option<ActionResource> {
 }
 
 fn network_rule(url: &str) -> Option<harness_contracts::HostRule> {
-    let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let authority = without_scheme.split('/').next().unwrap_or_default();
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = host_port.split(':').next()?.trim();
-    if host.is_empty() {
+    let parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https" | "ws" | "wss")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
         return None;
     }
-    let port = host_port
-        .rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok());
+    let host = parsed
+        .host_str()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let port = parsed.port_or_known_default()?;
     Some(harness_contracts::HostRule {
-        pattern: host.to_owned(),
-        ports: port.map(|port| vec![port]),
+        pattern: host,
+        ports: Some(vec![port]),
     })
 }
 

@@ -164,6 +164,10 @@ impl DaemonBridgeState {
             .ok_or_else(|| "task daemon is not connected".into())
     }
 
+    pub(crate) async fn connected_client(&self) -> Option<DaemonClient> {
+        self.client.read().await.clone()
+    }
+
     pub async fn agent_capabilities(&self) -> Option<harness_contracts::AgentCapabilities> {
         self.client.read().await.as_ref()?.agent_capabilities()
     }

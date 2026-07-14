@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
 };
 
@@ -13,7 +13,7 @@ use harness_contracts::{
 use harness_mcp::{
     collapse_reserved_separator, trust_level_for_source, FilterConflict, FilterDecision,
     JsonRpcRequest, JsonRpcResponse, ListChangedEvent, McpChange, McpClient, McpConnection,
-    McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource, McpResourceContents,
+    McpContent, McpMetric, McpMetricOutcome, McpMetricsSink, McpRegistry, McpResource,
     McpServerScope, McpServerSpec, McpTimeouts, McpToolCallEvent, McpToolDescriptor, McpToolFilter,
     McpToolGlob, McpToolResult, ReconnectPolicy, SamplingPolicy, StdioEnv, TransportChoice,
 };
@@ -161,6 +161,9 @@ async fn registry_injects_mcp_tool_wrapper_and_executes_test_connection() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -232,6 +235,9 @@ async fn registry_records_metric_when_tool_filter_skips_tool() {
         tools: vec![
             McpToolDescriptor {
                 name: "lookup".into(),
+                title: None,
+                icons: None,
+                execution: None,
                 description: Some("Lookup".into()),
                 input_schema: json!({ "type": "object" }),
                 output_schema: None,
@@ -240,6 +246,9 @@ async fn registry_records_metric_when_tool_filter_skips_tool() {
             },
             McpToolDescriptor {
                 name: "delete_record".into(),
+                title: None,
+                icons: None,
+                execution: None,
                 description: Some("Delete".into()),
                 input_schema: json!({ "type": "object" }),
                 output_schema: None,
@@ -288,6 +297,9 @@ async fn mcp_tool_wrapper_validates_input_schema_before_upstream_call() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -338,10 +350,14 @@ async fn mcp_tool_wrapper_maps_trusted_mcp_annotations_to_tool_properties() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Lookup".into()),
             input_schema: json!({ "type": "object" }),
             output_schema: None,
             annotations: Some(harness_mcp::McpToolAnnotations {
+                title: None,
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -389,10 +405,14 @@ async fn mcp_tool_wrapper_keeps_untrusted_annotations_fail_closed() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "lookup".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Lookup".into()),
             input_schema: json!({ "type": "object" }),
             output_schema: None,
             annotations: Some(harness_mcp::McpToolAnnotations {
+                title: None,
                 read_only_hint: Some(true),
                 destructive_hint: Some(false),
                 idempotent_hint: Some(true),
@@ -436,6 +456,9 @@ async fn mcp_tool_wrapper_maps_mcp_progress_to_progress_and_heartbeat_events() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -511,6 +534,9 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
     let connection = TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -561,10 +587,77 @@ async fn mcp_tool_wrapper_maps_mcp_cancelled_to_interrupted_error() {
 }
 
 #[tokio::test]
-async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack() {
+async fn mcp_tool_wrapper_preserves_protocol_details_on_error_events() {
+    let connection = TestConnection {
+        tools: vec![McpToolDescriptor {
+            name: "failing_tool".into(),
+            title: None,
+            icons: None,
+            execution: None,
+            description: Some("Return a structured failure".into()),
+            input_schema: json!({ "type": "object" }),
+            output_schema: None,
+            annotations: None,
+            meta: BTreeMap::new(),
+        }],
+        ..Default::default()
+    };
+    connection.results.lock().push_back(McpToolResult {
+        content: vec![
+            McpContent::text("upstream failed"),
+            McpContent::Unknown(json!({ "type": "vendor_error", "code": 17 })),
+        ],
+        structured_content: Some(
+            json!({ "reason": "quota" })
+                .as_object()
+                .expect("object fixture")
+                .clone(),
+        ),
+        is_error: true,
+        meta: BTreeMap::from([("trace".to_owned(), json!("abc"))]),
+    });
+
+    let registry = McpRegistry::new();
+    let server_id = McpServerId("errors".into());
+    registry
+        .add_ready_server(
+            server_spec("errors", McpServerSource::Workspace),
+            McpServerScope::Session(SessionId::new()),
+            Arc::new(connection),
+        )
+        .await
+        .expect("server registers");
+    let tools = ToolRegistry::builder().build().expect("tool registry");
+    registry
+        .inject_tools_into(&tools, &server_id)
+        .await
+        .expect("tools inject");
+
+    let tool = tools
+        .get("mcp__errors__failing_tool")
+        .expect("tool registered");
+    let mut stream = run_authorized(&tool, json!({}), tool_context())
+        .await
+        .expect("tool executes");
+    let Some(ToolEvent::Error(ToolError::Message(message))) = stream.next().await else {
+        panic!("MCP isError result must map to a ToolError message");
+    };
+
+    assert!(message.contains("\"structuredContent\":{\"reason\":\"quota\"}"));
+    assert!(message.contains("\"type\":\"vendor_error\""));
+    assert!(!message.contains("_meta"));
+    assert!(!message.contains("trace"));
+}
+
+#[tokio::test]
+async fn mcp_tool_wrapper_bounds_cancel_send_and_ack_with_one_deadline() {
+    let stream_polled = Arc::new(tokio::sync::Notify::new());
     let connection = Arc::new(TestConnection {
         tools: vec![McpToolDescriptor {
             name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
             description: Some("Post a message".into()),
             input_schema: json!({
                 "type": "object",
@@ -575,6 +668,8 @@ async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack()
             meta: BTreeMap::new(),
         }],
         pending_streams: Mutex::new(1),
+        pending_stream_polled: Some(Arc::clone(&stream_polled)),
+        cancel_pending: true,
         ..Default::default()
     });
 
@@ -607,13 +702,99 @@ async fn mcp_tool_wrapper_sends_cancel_and_times_out_when_upstream_ignores_ack()
         .await
         .expect("tool executes");
 
+    let mut next_event = tokio::spawn(async move { stream.next().await });
+    stream_polled.notified().await;
     interrupt.interrupt();
 
+    let next_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut next_event).await;
+    if next_result.is_err() {
+        next_event.abort();
+        let _ = next_event.await;
+    }
     assert_eq!(
-        stream.next().await,
+        next_result
+            .expect("interrupt after polling must start the bounded cancel deadline")
+            .expect("wrapper stream task"),
         Some(ToolEvent::Error(ToolError::Interrupted))
     );
     assert_eq!(connection.cancelled_count(), 1);
+    assert_eq!(connection.cancelled.lock().as_slice(), &[json!(2)]);
+    assert_eq!(connection.unhealthy_reasons.lock().len(), 1);
+    assert!(connection.unhealthy_reasons.lock()[0].contains("timed out"));
+}
+
+#[tokio::test]
+async fn mcp_tool_wrapper_interrupt_is_not_starved_by_progress_flood() {
+    let stream_polled = Arc::new(tokio::sync::Notify::new());
+    let connection = Arc::new(TestConnection {
+        tools: vec![McpToolDescriptor {
+            name: "post_message".into(),
+            title: None,
+            icons: None,
+            execution: None,
+            description: Some("Post a message".into()),
+            input_schema: json!({ "type": "object" }),
+            output_schema: None,
+            annotations: None,
+            meta: BTreeMap::new(),
+        }],
+        pending_streams: Mutex::new(1),
+        pending_stream_polled: Some(Arc::clone(&stream_polled)),
+        progress_flood: true,
+        ..Default::default()
+    });
+    let registry = McpRegistry::new();
+    let server_id = McpServerId("progress-flood".into());
+    let mut spec = server_spec("progress-flood", McpServerSource::Workspace);
+    spec.timeouts.cancel_ack = std::time::Duration::from_millis(20);
+    registry
+        .add_ready_server(
+            spec,
+            McpServerScope::Session(SessionId::new()),
+            connection.clone(),
+        )
+        .await
+        .expect("server registers");
+    let tools = ToolRegistry::builder().build().expect("tool registry");
+    let registered = registry
+        .inject_tools_into(&tools, &server_id)
+        .await
+        .expect("tools inject");
+
+    let interrupt = InterruptToken::new();
+    let mut context = tool_context();
+    context.interrupt = interrupt.clone();
+    let tool = tools.get(&registered[0]).expect("tool registered");
+    let mut stream = run_authorized(&tool, json!({}), context)
+        .await
+        .expect("tool executes");
+    let mut interrupted = tokio::spawn(async move {
+        loop {
+            match stream.next().await {
+                Some(event @ ToolEvent::Error(ToolError::Interrupted)) => return Some(event),
+                Some(_) => {}
+                None => return None,
+            }
+        }
+    });
+    stream_polled.notified().await;
+    interrupt.interrupt();
+
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut interrupted).await;
+    if result.is_err() {
+        interrupted.abort();
+        let _ = interrupted.await;
+    }
+    assert_eq!(
+        result
+            .expect("progress flood must not starve interrupt handling")
+            .expect("wrapper stream task"),
+        Some(ToolEvent::Error(ToolError::Interrupted))
+    );
+    assert_eq!(connection.cancelled_count(), 1);
+    assert_eq!(connection.unhealthy_reasons.lock().len(), 1);
 }
 
 #[test]
@@ -704,7 +885,12 @@ struct TestConnection {
     results: Mutex<VecDeque<McpToolResult>>,
     streams: Mutex<VecDeque<Vec<McpToolCallEvent>>>,
     pending_streams: Mutex<usize>,
-    cancelled: Mutex<Vec<String>>,
+    pending_stream_polled: Option<Arc<tokio::sync::Notify>>,
+    progress_flood: bool,
+    active_request_ids: Mutex<HashMap<String, Value>>,
+    cancelled: Mutex<Vec<Value>>,
+    cancel_pending: bool,
+    unhealthy_reasons: Mutex<Vec<String>>,
 }
 
 impl TestConnection {
@@ -741,6 +927,26 @@ impl McpConnection for TestConnection {
     ) -> Result<harness_mcp::McpToolCallStream, harness_mcp::McpError> {
         if *self.pending_streams.lock() > 0 {
             *self.pending_streams.lock() -= 1;
+            if let Some(polled) = self.pending_stream_polled.clone() {
+                if self.progress_flood {
+                    return Ok(Box::pin(async_stream::stream! {
+                        loop {
+                            polled.notify_one();
+                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                            yield McpToolCallEvent::Progress {
+                                progress_token: Some("flood".into()),
+                                progress: Some(1.0),
+                                total: None,
+                                message: Some("still running".into()),
+                            };
+                        }
+                    }));
+                }
+                return Ok(Box::pin(futures::stream::poll_fn(move |_| {
+                    polled.notify_one();
+                    std::task::Poll::Pending
+                })));
+            }
             return Ok(Box::pin(futures::stream::pending()));
         }
         let events = if let Some(events) = self.streams.lock().pop_front() {
@@ -756,12 +962,38 @@ impl McpConnection for TestConnection {
         Ok(Box::pin(futures::stream::iter(events)))
     }
 
+    async fn call_tool_events_for_request(
+        &self,
+        client_request_id: &str,
+        name: &str,
+        args: Value,
+    ) -> Result<harness_mcp::McpToolCallStream, harness_mcp::McpError> {
+        self.active_request_ids
+            .lock()
+            .insert(client_request_id.to_owned(), json!(2));
+        self.call_tool_events(name, args).await
+    }
+
     async fn cancel_tool_call(
         &self,
         request_id: &str,
         _reason: Option<String>,
     ) -> Result<(), harness_mcp::McpError> {
-        self.cancelled.lock().push(request_id.to_owned());
+        let request_id = self
+            .active_request_ids
+            .lock()
+            .get(request_id)
+            .cloned()
+            .unwrap_or_else(|| Value::String(request_id.to_owned()));
+        self.cancelled.lock().push(request_id);
+        if self.cancel_pending {
+            futures::future::pending().await
+        }
+        Ok(())
+    }
+
+    async fn mark_unhealthy(&self, reason: String) -> Result<(), harness_mcp::McpError> {
+        self.unhealthy_reasons.lock().push(reason);
         Ok(())
     }
 
@@ -772,7 +1004,7 @@ impl McpConnection for TestConnection {
     async fn read_resource(
         &self,
         _uri: &str,
-    ) -> Result<McpResourceContents, harness_mcp::McpError> {
+    ) -> Result<harness_mcp::McpReadResourceResult, harness_mcp::McpError> {
         Err(harness_mcp::McpError::Protocol("not implemented".into()))
     }
 
