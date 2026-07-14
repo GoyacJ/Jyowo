@@ -1,6 +1,6 @@
-use harness_contracts::{AgentId, McpServerId, PluginId, TrustLevel};
+use harness_contracts::{McpServerId, PluginId, TrustLevel};
 use harness_skill::{
-    McpSkillRecord, McpSource, SkillFilter, SkillLoader, SkillPlatform, SkillRegistry, SkillSource,
+    McpSkillRecord, McpSource, SkillLoader, SkillPlatform, SkillRegistry, SkillSource,
     SkillSourceConfig, UserSource, WorkspaceSource,
 };
 use std::collections::BTreeMap;
@@ -448,18 +448,8 @@ async fn workspace_skill_overrides_user_skill_in_registry() {
 }
 
 #[tokio::test]
-async fn mcp_source_uses_canonical_namespace_and_does_not_override_local_skill() {
-    let local_root = unique_temp_dir("local-source");
-    std::fs::create_dir_all(&local_root).expect("local temp dir");
-    write_skill(&local_root, "review-pr", "Local body");
-    let local = WorkspaceSource::new(local_root.clone())
-        .load(SkillPlatform::Macos)
-        .await
-        .expect("local source should load")
-        .loaded
-        .remove(0);
-
-    let mcp_report = McpSource::new(
+async fn mcp_extension_record_is_explicit_and_non_local() {
+    let report = McpSource::new(
         McpServerId("github".to_owned()),
         vec![McpSkillRecord {
             name: "review-pr".to_owned(),
@@ -469,50 +459,16 @@ async fn mcp_source_uses_canonical_namespace_and_does_not_override_local_skill()
     )
     .load(SkillPlatform::Macos)
     .await
-    .expect("mcp source should load");
-
-    let registry = SkillRegistry::builder()
-        .with_skill(local)
-        .with_skills(mcp_report.loaded)
-        .build();
-
-    let agent = AgentId::from_u128(1);
-    let names = registry
-        .list_summaries_for_agent(
-            &agent,
-            SkillFilter {
-                include_prerequisite_missing: true,
-                ..SkillFilter::default()
-            },
-        )
-        .into_iter()
-        .map(|summary| summary.name)
-        .collect::<Vec<_>>();
-
-    assert_eq!(names, vec!["mcp__github__review-pr", "review-pr"]);
-
-    let _ = std::fs::remove_dir_all(local_root);
-}
-
-#[tokio::test]
-async fn loader_loads_mcp_records_with_canonical_namespace() {
-    let report = SkillLoader::default()
-        .with_source(SkillSourceConfig::McpRecords {
-            server_id: McpServerId("linear".to_owned()),
-            records: vec![McpSkillRecord {
-                name: "triage".to_owned(),
-                description: "Triage from MCP".to_owned(),
-                body: "MCP triage body".to_owned(),
-            }],
-        })
-        .with_runtime_platform(SkillPlatform::Macos)
-        .load_all()
-        .await
-        .expect("mcp records should load through SkillLoader");
+    .expect("explicit extension record should load");
 
     assert!(report.rejected.is_empty());
     assert_eq!(report.loaded.len(), 1);
-    assert_eq!(report.loaded[0].name, "mcp__linear__triage");
+    assert_eq!(report.loaded[0].name, "mcp__github__review-pr");
+    assert_eq!(
+        report.loaded[0].source,
+        SkillSource::Mcp(McpServerId("github".to_owned()))
+    );
+    assert!(report.loaded[0].raw_path.is_none());
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -8,21 +9,22 @@ use harness_skill::{
     parse_skill_markdown, SkillConfigDecl, SkillParamType, SkillPlatform, SkillSource,
 };
 use jyowo_desktop_shell::commands::stores::{
-    DesktopSkillConfigStore, GlobalConfigStore, SkillConfigStoreFault,
+    DesktopSkillConfigStore, DesktopSkillStore, GlobalConfigStore, ProjectConfigStore,
+    SkillConfigStoreFault,
 };
 use jyowo_desktop_shell::commands::{
     clear_skill_secret_with_runtime_state, delete_skill_with_runtime_state,
     get_or_create_skill_catalog_install_task, get_skill_config_with_runtime_state,
-    get_skill_detail_with_runtime_state, import_skill_with_runtime_state,
-    list_skill_catalog_install_tasks_with_runtime_state, list_skills_with_runtime_state,
-    record_skill_catalog_install_task_progress,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    import_skill_with_runtime_state, list_skill_catalog_install_tasks_with_runtime_state,
+    list_skills_with_runtime_state, record_skill_catalog_install_task_progress,
     reload_desktop_settings_runtime_after_plugin_change_for_test,
     runtime_state_with_skill_config_store_for_test, set_skill_config_value_with_runtime_state,
     set_skill_enabled_with_runtime_state, set_skill_secret_with_runtime_state,
     start_skill_catalog_install_task_with_runtime_state, ClearSkillSecretRequest,
     DeleteSkillRequest, DesktopRuntimeState, GetSkillConfigRequest, GetSkillDetailRequest,
-    ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest, SetSkillSecretRequest,
-    SkillStore, SkillStoreRecord,
+    GetSkillFileRequest, ImportSkillRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest,
+    SetSkillSecretRequest, SkillStore, SkillStoreRecord,
 };
 use jyowo_desktop_shell::skill_catalog::{
     fetch_catalog_http_for_test, CatalogHttpTimeouts, InstallSkillFromCatalogRequest,
@@ -30,6 +32,7 @@ use jyowo_desktop_shell::skill_catalog::{
 };
 use jyowo_desktop_shell::storage_layout::{JyowoHome, StorageLayout};
 use jyowo_harness_sdk::ext::StreamBrokerConfig;
+use jyowo_harness_sdk::ext::{now, SessionId};
 use jyowo_harness_sdk::skill_config::{SecretString, SkillConfigStoreError, SkillSecretStore};
 use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestModelProvider};
 use jyowo_harness_sdk::{DesktopSettingsRuntime, HarnessOptions, StreamPermissionRuntime};
@@ -38,6 +41,9 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[path = "commands/skills.rs"]
+mod core_skill_commands;
 
 #[derive(Debug, Default)]
 struct MemorySecretStore {
@@ -1855,4 +1861,79 @@ async fn test_settings_runtime(workspace: &std::path::Path) -> Arc<DesktopSettin
         )
         .unwrap(),
     )
+}
+
+async fn runtime_state_with_settings_runtime_for_workspace(
+    workspace: PathBuf,
+) -> DesktopRuntimeState {
+    std::fs::create_dir_all(&workspace).unwrap();
+    let settings_runtime = test_settings_runtime(&workspace).await;
+    let mut state = DesktopRuntimeState::with_settings_runtime_for_workspace(
+        workspace.clone(),
+        settings_runtime,
+    )
+    .unwrap();
+    let layout = test_layout(&workspace);
+    state.set_skill_store_for_test(Arc::new(DesktopSkillStore::global(layout.clone())));
+    state.set_config_stores_for_test(
+        GlobalConfigStore::new(layout.clone()),
+        Some(ProjectConfigStore::new(layout, workspace)),
+    );
+    state
+}
+
+fn unique_workspace(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "jyowo-desktop-skill-{name}-{}-{}",
+        std::process::id(),
+        SessionId::new()
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    path.canonicalize().unwrap()
+}
+
+fn test_storage_layout_for_workspace(workspace: &Path) -> StorageLayout {
+    test_layout(workspace)
+}
+
+fn skill_markdown(name: &str, description: &str) -> String {
+    format!("---\nname: {name}\ndescription: {description}\n---\nSkill body for {name}.\n")
+}
+
+fn register_test_skill(state: &DesktopRuntimeState, name: &str, description: &str) {
+    let skill = parse_skill_markdown(
+        &skill_markdown(name, description),
+        SkillSource::Workspace("data/skills".into()),
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    state
+        .settings_runtime()
+        .unwrap()
+        .skill_registry()
+        .register_batch(vec![skill])
+        .unwrap();
+}
+
+fn write_skill_package(
+    root: &Path,
+    package_name: &str,
+    skill_name: &str,
+    description: &str,
+    resource: Option<(&str, &str)>,
+) -> PathBuf {
+    let package_path = root.join(package_name);
+    std::fs::create_dir_all(&package_path).unwrap();
+    std::fs::write(
+        package_path.join("SKILL.md"),
+        skill_markdown(skill_name, description),
+    )
+    .unwrap();
+    if let Some((relative_path, content)) = resource {
+        let resource_path = package_path.join(relative_path);
+        std::fs::create_dir_all(resource_path.parent().unwrap()).unwrap();
+        std::fs::write(resource_path, content).unwrap();
+    }
+    package_path.canonicalize().unwrap()
 }

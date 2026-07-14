@@ -74,6 +74,10 @@ pub struct SkillScriptArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A receipt of the limits and isolation policy applied to one script execution.
+///
+/// Fields that the selected backend cannot enforce must fail preflight instead of
+/// being reported here.
 pub struct SkillScriptEnforcedPolicy {
     pub backend_id: String,
     pub timeout_ms: u64,

@@ -880,7 +880,22 @@ async fn result_serialization_contains_only_enforced_policy_fields() {
     .expect("script should execute");
     let value = serde_json::to_value(result).expect("result should serialize");
 
-    assert!(value.get("enforced_policy").is_some());
+    let policy = value["enforced_policy"]
+        .as_object()
+        .expect("enforced policy should be an object");
+    assert_eq!(
+        policy.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "backend_id",
+            "max_artifact_bytes",
+            "max_artifact_count",
+            "max_output_bytes",
+            "max_stderr_bytes",
+            "max_stdout_bytes",
+            "network",
+            "timeout_ms",
+        ])
+    );
     assert!(value.get("memory_mb").is_none());
     assert!(value.get("memory_limit_mb").is_none());
     assert!(value.get("network_enabled").is_none());

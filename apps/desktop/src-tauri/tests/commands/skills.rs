@@ -1,3 +1,4 @@
+// This module is included only by the dedicated `skill_commands` integration target.
 use super::*;
 
 struct SkillTestHome {
@@ -59,7 +60,7 @@ async fn import_skill_persists_enabled_skill_without_exposing_source_path() {
     assert_eq!(imported.skill.name, "summarize");
     assert!(imported.skill.enabled);
     assert!(imported.skill.manageable);
-    assert_eq!(imported.skill.source_kind, "workspace");
+    assert_eq!(imported.skill.source_kind, "user");
     assert!(!serialized.contains(&source_dir.to_string_lossy().to_string()));
     assert!(home
         .package_path(&imported.skill.id)

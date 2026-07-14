@@ -96,8 +96,6 @@ mod provider_support;
 mod runtime_execution_status;
 #[path = "commands/runtime_tools.rs"]
 mod runtime_tools;
-#[path = "commands/skills.rs"]
-mod skills;
 #[path = "commands/support.rs"]
 mod support;
 
