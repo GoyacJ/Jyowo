@@ -1,16 +1,20 @@
 #![cfg(all(feature = "sqlite", feature = "blob-file"))]
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use harness_contracts::{
-    now, BlobId, BlobRef, BudgetMetric, CausationId, ClientId, CommandId, ConfigHash,
-    ConversationAttachmentReference, ConversationModelCapability, CorrelationId, EndReason, Event,
-    ExecuteCodeStepInvokedEvent, JournalOffset, Message, MessageId, MessagePart, MessageRole,
-    ModelProtocol, NoopRedactor, OverflowMetadata, PermissionMode, RedactRules, Redactor,
-    RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, SnapshotId, TaskId,
-    TenantId, ToolResultOffloadedEvent, ToolUseId, TurnInput, UnexpectedErrorEvent,
+    now, BlobId, BlobRef, BudgetMetric, CausationId, ClientId, CommandId, ConfigHash, ContentHash,
+    ConversationAttachmentReference, ConversationContextReference, ConversationModelCapability,
+    CorrelationId, EndReason, Event, ExecuteCodeStepInvokedEvent, JournalOffset, Message,
+    MessageId, MessagePart, MessageRole, ModelProtocol, NoopRedactor, OverflowMetadata,
+    PermissionMode, RedactRules, Redactor, RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent,
+    SessionId, SkillContextAssembledEvent, SkillContextConsumedEvent, SkillContextPreparedEvent,
+    SkillContextProviderAcceptedEvent, SkillId, SkillSourceKind, SnapshotId, TaskId, TenantId,
+    ToolResultOffloadedEvent, ToolUseId, TurnInput, UnexpectedErrorEvent,
+    CURRENT_CONTEXT_REFERENCE_VERSION,
 };
 use harness_journal::{
     AcceptedCommand, AppendMetadata, EventStore, NewTaskEvent, ReplayCursor, TaskBlobStore,
@@ -144,6 +148,149 @@ async fn adapter_replays_engine_envelopes_from_the_unified_task_log() {
         .unwrap();
     assert_eq!(queried.len(), 1);
     assert_eq!(queried[0].payload, events[1]);
+
+    drop((adapter, store));
+    cleanup(&database_path);
+}
+
+#[tokio::test]
+async fn adapter_persists_skill_context_lifecycle_and_rejects_illegal_transitions() {
+    let database_path = temp_path("skill-context-lifecycle");
+    let store = Arc::new(TaskStore::open(&database_path).unwrap());
+    let task_id = TaskId::new();
+    create_task(&store, task_id);
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+
+    let assembled = Event::SkillContextAssembled(SkillContextAssembledEvent {
+        session_id,
+        run_id,
+        delivery_key: "delivery-1".into(),
+        at: now(),
+    });
+    assert!(adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            std::slice::from_ref(&assembled)
+        )
+        .await
+        .is_err());
+    assert_eq!(store.stream_version(task_id).unwrap(), 1);
+
+    let prepared = Event::SkillContextPrepared(SkillContextPreparedEvent {
+        session_id,
+        run_id,
+        delivery_key: "delivery-1".into(),
+        reference: skill_reference(),
+        body_hash: ContentHash([8; 32]),
+        at: now(),
+    });
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[prepared.clone(), assembled.clone()],
+        )
+        .await
+        .unwrap();
+
+    let recovery_run = RunId::new();
+    let accepted = Event::SkillContextProviderAccepted(SkillContextProviderAcceptedEvent {
+        session_id,
+        run_id: recovery_run,
+        delivery_key: "delivery-1".into(),
+        at: now(),
+    });
+    // Provider acceptance may be observed again after recovering the approved
+    // at-least-once crash window.
+    adapter
+        .append(
+            TenantId::SINGLE,
+            session_id,
+            &[accepted.clone(), accepted.clone()],
+        )
+        .await
+        .unwrap();
+    let consumed = Event::SkillContextConsumed(SkillContextConsumedEvent {
+        session_id,
+        run_id: recovery_run,
+        delivery_key: "delivery-1".into(),
+        at: now(),
+    });
+    adapter
+        .append(TenantId::SINGLE, session_id, &[consumed])
+        .await
+        .unwrap();
+
+    assert!(adapter
+        .append(TenantId::SINGLE, session_id, &[assembled])
+        .await
+        .is_err());
+    let events = store.events_after(0, 16).unwrap();
+    let prepared_payload = &events
+        .iter()
+        .find(|event| event.event_type == "engine.skill_context_prepared")
+        .unwrap()
+        .payload;
+    assert!(prepared_payload["event"].get("body").is_none());
+    assert!(!prepared_payload
+        .to_string()
+        .contains("rendered-secret-body"));
+
+    let replayed = adapter
+        .read_envelopes(TenantId::SINGLE, session_id, ReplayCursor::FromStart)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(
+        &replayed.last().unwrap().payload,
+        Event::SkillContextConsumed(_)
+    ));
+
+    drop((adapter, store));
+    cleanup(&database_path);
+}
+
+#[tokio::test]
+async fn adapter_rejects_non_skill_prepared_references() {
+    let database_path = temp_path("skill-context-reference");
+    let store = Arc::new(TaskStore::open(&database_path).unwrap());
+    let task_id = TaskId::new();
+    create_task(&store, task_id);
+    let session_id = SessionId::new();
+    let adapter = TaskEventStoreAdapter::new(
+        Arc::clone(&store),
+        task_id,
+        TenantId::SINGLE,
+        session_id,
+        Arc::new(NoopRedactor),
+    );
+    let event = Event::SkillContextPrepared(SkillContextPreparedEvent {
+        session_id,
+        run_id: RunId::new(),
+        delivery_key: "delivery-1".into(),
+        reference: ConversationContextReference::WorkspaceFile {
+            path: "SKILL.md".into(),
+            label: "SKILL.md".into(),
+        },
+        body_hash: ContentHash([1; 32]),
+        at: now(),
+    });
+
+    assert!(adapter
+        .append(TenantId::SINGLE, session_id, &[event])
+        .await
+        .is_err());
+    assert_eq!(store.stream_version(task_id).unwrap(), 1);
 
     drop((adapter, store));
     cleanup(&database_path);
@@ -530,6 +677,16 @@ fn run_started_with_input(
         correlation_id: CorrelationId::new(),
         permission_mode: PermissionMode::Default,
     })
+}
+
+fn skill_reference() -> ConversationContextReference {
+    ConversationContextReference::Skill {
+        version: CURRENT_CONTEXT_REFERENCE_VERSION,
+        skill_id: SkillId("user/review".into()),
+        label: "Review".into(),
+        parameters: BTreeMap::from([("language".into(), json!("rust"))]),
+        source: Some(SkillSourceKind::User),
+    }
 }
 
 fn create_task(store: &TaskStore, task_id: TaskId) {

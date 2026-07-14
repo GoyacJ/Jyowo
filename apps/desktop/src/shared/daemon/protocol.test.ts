@@ -17,7 +17,13 @@ const completeSubmitMessageFrame: ClientFrame = {
     taskId: '00000000000000000000000002',
     content: 'continue with the queued change',
     attachments: ['00000000000000000000000003'],
-    contextReferences: ['src/main.ts:10'],
+    contextReferences: [
+      {
+        kind: 'workspace_file',
+        label: 'src/main.ts:10',
+        path: 'src/main.ts:10',
+      },
+    ],
   },
 }
 
@@ -56,6 +62,32 @@ describe('daemon protocol validation', () => {
 
   it('accepts a complete generated command payload', () => {
     expect(parseClientFrame(completeSubmitMessageFrame)).toEqual(completeSubmitMessageFrame)
+  })
+
+  it.each([
+    {
+      kind: 'skill',
+      skillId: 'user:review',
+      label: 'Review',
+      version: 2,
+    },
+    {
+      kind: 'skill',
+      skillId: 'user:review',
+      label: 'Review',
+      version: 1,
+      unexpected: true,
+    },
+  ])('rejects a skill reference outside the current typed contract', (reference) => {
+    expect(() =>
+      parseClientFrame({
+        ...completeSubmitMessageFrame,
+        request: {
+          ...completeSubmitMessageFrame.request,
+          contextReferences: [reference],
+        },
+      }),
+    ).toThrow('Invalid daemon client frame')
   })
 
   it('accepts bounded printable ASCII request IDs', () => {

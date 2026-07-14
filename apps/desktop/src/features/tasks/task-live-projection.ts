@@ -1,4 +1,5 @@
 import type {
+  ConversationContextReference,
   PermissionProjection,
   QueueItemProjection,
   RunProjection,
@@ -13,6 +14,8 @@ import type {
 } from '@/generated/daemon-protocol'
 
 import type { TaskSnapshot } from './task-store'
+
+type SkillContextReference = Extract<ConversationContextReference, { kind: 'skill' }>
 
 export function deriveLiveTaskSnapshot(
   snapshot: TaskSnapshot,
@@ -221,7 +224,7 @@ function applyQueueEvent(
     const item: QueueItemProjection = {
       attachments: typedIdArray(payload.attachments),
       content,
-      contextReferences: stringArray(payload.contextReferences),
+      contextReferences: contextReferenceArray(payload.contextReferences),
       createdAt,
       createdGlobalOffset: event.globalOffset,
       queueItemId,
@@ -242,7 +245,7 @@ function applyQueueEvent(
       ...current,
       attachments: typedIdArray(payload.attachments),
       content,
-      contextReferences: stringArray(payload.contextReferences),
+      contextReferences: contextReferenceArray(payload.contextReferences),
       revision,
     })
     queueContent.set(queueItemId, content)
@@ -637,6 +640,69 @@ function stringArray(value: unknown) {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
     ? (value as string[])
     : []
+}
+
+function contextReferenceArray(value: unknown): ConversationContextReference[] {
+  if (!Array.isArray(value)) return []
+  const references: ConversationContextReference[] = []
+  for (const candidate of value) {
+    if (typeof candidate === 'string') {
+      references.push({ kind: 'workspace_file', label: candidate, path: candidate })
+      continue
+    }
+    const reference = contextReference(candidate)
+    if (!reference) return []
+    references.push(reference)
+  }
+  return references
+}
+
+function contextReference(value: unknown): ConversationContextReference | null {
+  const candidate = record(value)
+  if (!candidate) return null
+  const kind = stringValue(candidate.kind)
+  const label = stringValue(candidate.label)
+  if (!kind || !label) return null
+  if (kind === 'workspace_file') {
+    const path = stringValue(candidate.path)
+    return path ? { kind, label, path } : null
+  }
+  if (kind === 'skill') {
+    const skillId = stringValue(candidate.skillId)
+    const version = candidate.version === undefined ? 1 : numberValue(candidate.version)
+    const parameters = candidate.parameters === undefined ? {} : record(candidate.parameters)
+    const source = skillSource(candidate.source)
+    if (
+      !skillId ||
+      version !== 1 ||
+      !parameters ||
+      (candidate.source !== undefined && source === undefined)
+    ) {
+      return null
+    }
+    return { kind, label, parameters, skillId, source, version }
+  }
+  const id = stringValue(candidate.id)
+  if (!id) return null
+  if (kind === 'artifact' || kind === 'conversation' || kind === 'tool' || kind === 'mcp_server') {
+    return { id, kind, label }
+  }
+  if (kind === 'memory') {
+    const resolved_content = stringValue(candidate.resolved_content)
+    return { id, kind, label, resolved_content }
+  }
+  return null
+}
+
+function skillSource(value: unknown): SkillContextReference['source'] {
+  if (value === undefined || value === null) return value
+  if (value === 'bundled' || value === 'workspace' || value === 'user') return value
+  const source = record(value)
+  if (!source || Object.keys(source).length !== 1) return undefined
+  const plugin = stringValue(source.plugin)
+  if (plugin) return { plugin }
+  const mcp = stringValue(source.mcp)
+  return mcp ? { mcp } : undefined
 }
 
 function typedIdArray(value: unknown) {

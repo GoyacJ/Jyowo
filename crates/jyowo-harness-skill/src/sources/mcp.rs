@@ -7,6 +7,9 @@ use crate::{
     SkillSource,
 };
 
+/// An explicit extension record supplied by an MCP integration.
+///
+/// Product runtimes do not discover MCP prompts as local skill packages.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct McpSkillRecord {
     pub name: String,
@@ -14,6 +17,7 @@ pub struct McpSkillRecord {
     pub body: String,
 }
 
+/// Adapter for extensions that explicitly opt into representing MCP records as skills.
 #[derive(Debug, Clone)]
 pub struct McpSource {
     server_id: McpServerId,

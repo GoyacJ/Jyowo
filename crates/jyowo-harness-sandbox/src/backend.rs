@@ -88,11 +88,17 @@ pub enum StdioSpec {
     File(PathBuf),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ExecSpec {
     pub command: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    pub authorized_env_keys: BTreeSet<String>,
+    /// Explicitly authorized environment keys whose values are secret.
+    ///
+    /// Secret values are injected into the target process but are excluded from
+    /// deterministic fingerprints and host-visible launcher arguments.
+    pub secret_env_keys: BTreeSet<String>,
     pub cwd: Option<PathBuf>,
     pub stdin: StdioSpec,
     pub stdout: StdioSpec,
@@ -102,26 +108,81 @@ pub struct ExecSpec {
     pub policy: SandboxPolicy,
     pub workspace_access: WorkspaceAccess,
     pub output_policy: OutputPolicy,
+    pub required_kill_scope: Option<KillScope>,
+    pub required_synchronous_kill_scope: Option<KillScope>,
+}
+
+impl std::fmt::Debug for ExecSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env = self
+            .env
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key,
+                    if self.secret_env_keys.contains(key) {
+                        "[REDACTED]"
+                    } else {
+                        value.as_str()
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        formatter
+            .debug_struct("ExecSpec")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &env)
+            .field("authorized_env_keys", &self.authorized_env_keys)
+            .field("secret_env_keys", &self.secret_env_keys)
+            .field("cwd", &self.cwd)
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            .field("timeout", &self.timeout)
+            .field("activity_timeout", &self.activity_timeout)
+            .field("policy", &self.policy)
+            .field("workspace_access", &self.workspace_access)
+            .field("output_policy", &self.output_policy)
+            .field("required_kill_scope", &self.required_kill_scope)
+            .field(
+                "required_synchronous_kill_scope",
+                &self.required_synchronous_kill_scope,
+            )
+            .finish()
+    }
 }
 
 impl ExecSpec {
     pub fn canonical_fingerprint(&self, base: &SandboxBaseConfig) -> ExecFingerprint {
         let mut hasher = blake3::Hasher::new();
-        write_field(&mut hasher, b"jyowo.exec_fingerprint.v1");
+        write_field(&mut hasher, b"jyowo.exec_fingerprint.v2");
         write_string(&mut hasher, &self.command);
         write_usize(&mut hasher, self.args.len());
         for arg in &self.args {
             write_string(&mut hasher, arg);
         }
 
-        let filtered_env = self
-            .env
-            .iter()
-            .filter(|(key, _)| base.passthrough_env_keys.contains(*key));
+        write_usize(&mut hasher, self.authorized_env_keys.len());
+        for key in &self.authorized_env_keys {
+            write_string(&mut hasher, key);
+        }
+        write_usize(&mut hasher, self.secret_env_keys.len());
+        for key in &self.secret_env_keys {
+            write_string(&mut hasher, key);
+        }
+        let filtered_env = self.env.iter().filter(|(key, _)| {
+            base.passthrough_env_keys.contains(*key) || self.authorized_env_keys.contains(*key)
+        });
         write_usize(&mut hasher, filtered_env.clone().count());
         for (key, value) in filtered_env {
             write_string(&mut hasher, key);
-            write_string(&mut hasher, value);
+            if self.secret_env_keys.contains(key) {
+                write_field(&mut hasher, b"env:secret:present");
+            } else {
+                write_field(&mut hasher, b"env:public");
+                write_string(&mut hasher, value);
+            }
         }
 
         match &self.cwd {
@@ -144,6 +205,8 @@ impl Default for ExecSpec {
             command: String::new(),
             args: Vec::new(),
             env: BTreeMap::new(),
+            authorized_env_keys: BTreeSet::new(),
+            secret_env_keys: BTreeSet::new(),
             cwd: None,
             stdin: StdioSpec::Piped,
             stdout: StdioSpec::Piped,
@@ -153,6 +216,8 @@ impl Default for ExecSpec {
             policy: default_sandbox_policy(),
             workspace_access: WorkspaceAccess::None,
             output_policy: OutputPolicy::default(),
+            required_kill_scope: None,
+            required_synchronous_kill_scope: None,
         }
     }
 }
@@ -235,6 +300,13 @@ pub trait ActivityHandle: Send + Sync + 'static {
     async fn wait(&self) -> Result<ExecOutcome, SandboxError>;
 
     async fn kill(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError>;
+
+    fn kill_sync(&self, _signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        Err(SandboxError::CapabilityMismatch {
+            capability: "synchronous_kill".to_owned(),
+            detail: format!("activity cannot synchronously kill execution scope: {scope:?}"),
+        })
+    }
 
     fn touch(&self);
 
@@ -449,6 +521,10 @@ impl ActivityHandle for LifecycleActivity {
         self.inner.kill(signal, scope).await
     }
 
+    fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        self.inner.kill_sync(signal, scope)
+    }
+
     fn touch(&self) {
         self.inner.touch();
     }
@@ -509,8 +585,64 @@ pub fn validate_preflight_capabilities(
         });
     }
 
+    validate_secret_environment(backend_id, spec)?;
+
+    if !spec.authorized_env_keys.is_empty() && !capabilities.supports_per_exec_env {
+        return Err(SandboxError::CapabilityMismatch {
+            capability: "environment".to_owned(),
+            detail: format!(
+                "sandbox backend `{backend_id}` cannot inject explicitly authorized environment variables"
+            ),
+        });
+    }
+
+    if let Some(required_scope) = spec.required_kill_scope {
+        if !capabilities.supports_kill_scope.contains(&required_scope) {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "kill_scope".to_owned(),
+                detail: format!(
+                    "sandbox backend `{backend_id}` cannot kill execution scope: {required_scope:?}"
+                ),
+            });
+        }
+    }
+
+    if let Some(required_scope) = spec.required_synchronous_kill_scope {
+        if !capabilities
+            .supports_synchronous_kill_scope
+            .contains(&required_scope)
+        {
+            return Err(SandboxError::CapabilityMismatch {
+                capability: "synchronous_kill".to_owned(),
+                detail: format!(
+                    "sandbox backend `{backend_id}` cannot synchronously kill execution scope: {required_scope:?}"
+                ),
+            });
+        }
+    }
+
     validate_resource_preflight(capabilities, &spec.policy.resource_limits)?;
     Ok(())
+}
+
+pub(crate) fn validate_secret_environment(
+    backend_id: &str,
+    spec: &ExecSpec,
+) -> Result<(), SandboxError> {
+    if spec.secret_env_keys.is_subset(&spec.authorized_env_keys)
+        && spec
+            .secret_env_keys
+            .iter()
+            .all(|key| spec.env.contains_key(key))
+    {
+        return Ok(());
+    }
+    Err(SandboxError::CapabilityMismatch {
+        capability: "secret_environment".to_owned(),
+        detail: format!(
+            "sandbox backend `{backend_id}` requires every secret environment key to be explicitly authorized and present"
+        ),
+    })
 }
 
 fn validate_resource_preflight(
@@ -648,8 +780,12 @@ pub struct SandboxCapabilities {
     pub cwd_marker_support: CwdMarkerSupport,
     pub supports_activity_heartbeat: bool,
     pub supports_interactive_shell: bool,
+    pub supports_per_exec_env: bool,
     pub network: NetworkPolicySupport,
     pub workspace: WorkspacePolicySupport,
+    /// The backend prevents a process from reading arbitrary host files outside
+    /// the materialized sandbox workspace.
+    pub host_filesystem_isolation: bool,
     pub supports_gpu: bool,
     pub supports_pty: bool,
     pub supports_detach: bool,
@@ -657,6 +793,7 @@ pub struct SandboxCapabilities {
     pub supports_session_snapshot: bool,
     pub max_concurrent_execs: u32,
     pub supports_kill_scope: Vec<KillScope>,
+    pub supports_synchronous_kill_scope: Vec<KillScope>,
     pub snapshot_kinds: BTreeSet<SessionSnapshotKind>,
     pub resource_limit_support: ResourceLimitSupport,
     pub default_timeout: Duration,
@@ -671,8 +808,10 @@ impl Default for SandboxCapabilities {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: false,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport::default(),
             workspace: WorkspacePolicySupport::default(),
+            host_filesystem_isolation: false,
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -680,6 +819,7 @@ impl Default for SandboxCapabilities {
             supports_session_snapshot: false,
             max_concurrent_execs: 0,
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds: BTreeSet::new(),
             resource_limit_support: ResourceLimitSupport::default(),
             default_timeout: Duration::from_secs(300),

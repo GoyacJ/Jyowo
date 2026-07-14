@@ -483,6 +483,7 @@ impl SandboxBackend for DockerSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport {
                 none: true,
                 loopback_only: false,
@@ -494,6 +495,7 @@ impl SandboxBackend for DockerSandbox {
                 read_only: false,
                 writable_subpaths: false,
             },
+            host_filesystem_isolation: true,
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -505,6 +507,7 @@ impl SandboxBackend for DockerSandbox {
                 _ => 1,
             },
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds,
             resource_limit_support: match self.lifecycle {
                 ContainerLifecycle::EphemeralPerExec => ResourceLimitSupport {

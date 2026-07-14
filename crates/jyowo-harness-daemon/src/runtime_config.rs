@@ -14,7 +14,7 @@ use harness_contracts::{
     ProviderCapabilityRouteSettings, ProviderCredential, ProviderCredentialResolveContext,
     ProviderCredentialResolverCap, ProviderProfileDefinition, ProviderSecretEntry,
     ProviderSecretsRecord, ProviderSelectionRecord, ProviderServiceCapability,
-    ProviderServiceCategory, SandboxMode, SkillSelectionRecord, ToolError,
+    ProviderServiceCategory, SandboxMode, SkillConfigDocument, SkillSelectionRecord, ToolError,
 };
 use harness_plugin::{
     CargoExtensionRuntimeLoader, DiscoverySource, FileManifestLoader, ManifestLoadReport,
@@ -25,7 +25,7 @@ use harness_sandbox::{LocalIsolation, LocalSandbox};
 use jyowo_harness_sdk::{
     builtin_agent_profiles,
     ext::{DirectorySourceKind, SkillLoader, SkillSourceConfig},
-    SkillConfigSnapshot,
+    KeyringSkillSecretStore, SkillConfigSnapshot, SkillConfigStoreError, SkillSecretStore,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -37,6 +37,7 @@ const EXECUTION_OVERRIDES_FILE: &str = "execution-overrides.json";
 const PROVIDER_ROUTES_FILE: &str = "provider-capability-routes.json";
 const MCP_SERVERS_FILE: &str = "mcp-servers.json";
 const SKILLS_FILE: &str = "skills.json";
+const SKILL_CONFIG_FILE: &str = "skill-config.json";
 const PLUGINS_FILE: &str = "plugins.json";
 const AGENT_PROFILES_FILE: &str = "agent-profiles.json";
 const AGENT_PROFILE_SELECTION_FILE: &str = "agent-profile-selection.json";
@@ -45,9 +46,10 @@ const PROVIDER_SECRETS_FILE: &str = "provider-secrets.json";
 const MAX_FROZEN_PLUGIN_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Resolves immutable SDK factory inputs for one canonical workspace.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeConfigResolver {
     global_config_root: PathBuf,
+    skill_secret_store: Arc<dyn SkillSecretStore>,
 }
 
 impl RuntimeConfigResolver {
@@ -55,7 +57,17 @@ impl RuntimeConfigResolver {
     pub fn new(global_config_root: impl Into<PathBuf>) -> Self {
         Self {
             global_config_root: global_config_root.into(),
+            skill_secret_store: Arc::new(KeyringSkillSecretStore),
         }
+    }
+
+    #[must_use]
+    pub fn with_skill_secret_store(
+        mut self,
+        skill_secret_store: Arc<dyn SkillSecretStore>,
+    ) -> Self {
+        self.skill_secret_store = skill_secret_store;
+        self
     }
 
     pub fn resolve_memory_database_path(
@@ -235,6 +247,16 @@ impl RuntimeConfigResolver {
             &project_config_root.join(SKILLS_FILE),
             "project skill selection",
         )?;
+        let global_skill_index = read_optional_json::<Vec<SkillIndexRecord>>(
+            &global_home.join("skills/index.json"),
+            "global skill index",
+        )?
+        .unwrap_or_default();
+        let project_skill_index = read_optional_json::<Vec<SkillIndexRecord>>(
+            &project_root.join("skills/index.json"),
+            "project skill index",
+        )?
+        .unwrap_or_default();
         let enabled_skill_ids = project_skill_selection
             .as_ref()
             .map(|selection| selection.enabled.iter().cloned().collect())
@@ -244,12 +266,23 @@ impl RuntimeConfigResolver {
             &workspace_root,
             &global_skill_selection,
             project_skill_selection.as_ref(),
+            &global_skill_index,
+            &project_skill_index,
         )
         .freeze_directory_sources()
         .map_err(|source| RuntimeConfigError::Invalid {
             kind: "skill packages",
             reason: source.to_string(),
         })?;
+        let skill_config_document = read_optional_json::<SkillConfigDocument>(
+            &global_config_root.join(SKILL_CONFIG_FILE),
+            "global skill config",
+        )?
+        .unwrap_or_default();
+        let skill_config = SkillConfigSnapshot::from_document(
+            skill_config_document,
+            self.skill_secret_store.clone(),
+        )?;
 
         let global_plugin_records = read_optional_json::<PluginSettingsFile>(
             &global_home.join("plugins/index.json"),
@@ -334,7 +367,7 @@ impl RuntimeConfigResolver {
             mcp_servers,
             plugin_snapshot,
             skill_loader,
-            skill_config: SkillConfigSnapshot::new(),
+            skill_config,
             enabled_skill_ids,
             enabled_plugin_ids,
             allow_project_plugins,
@@ -347,6 +380,16 @@ impl RuntimeConfigResolver {
                 routes: provider_routes,
             }),
         })
+    }
+}
+
+impl fmt::Debug for RuntimeConfigResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeConfigResolver")
+            .field("global_config_root", &self.global_config_root)
+            .field("skill_secret_store", &"SkillSecretStore")
+            .finish()
     }
 }
 
@@ -1021,11 +1064,26 @@ pub enum RuntimeConfigError {
     PluginRegistry {
         source: harness_plugin::PluginError,
     },
+    SkillConfigStore {
+        source: SkillConfigStoreError,
+    },
 }
 
 impl From<ProviderConfigError> for RuntimeConfigError {
     fn from(source: ProviderConfigError) -> Self {
         Self::Provider(source)
+    }
+}
+
+impl From<SkillConfigStoreError> for RuntimeConfigError {
+    fn from(source: SkillConfigStoreError) -> Self {
+        match source {
+            SkillConfigStoreError::SecretStoreUnavailable => Self::SkillConfigStore { source },
+            SkillConfigStoreError::UnsupportedDocumentVersion(version) => Self::Invalid {
+                kind: "global skill config",
+                reason: format!("unsupported document version {version}"),
+            },
+        }
     }
 }
 
@@ -1045,6 +1103,9 @@ impl fmt::Display for RuntimeConfigError {
             }
             Self::Invalid { kind, .. } => format!("invalid {kind}"),
             Self::PluginRegistry { .. } => "failed to initialize plugin registry".to_owned(),
+            Self::SkillConfigStore { .. } => {
+                "failed to load skill configuration from secure storage".to_owned()
+            }
         };
         formatter.write_str(&bounded_runtime_config_diagnostic(message))
     }
@@ -1490,24 +1551,44 @@ fn build_skill_loader(
     workspace_root: &Path,
     global: &SkillSelectionRecord,
     project: Option<&SkillSelectionRecord>,
+    global_index: &[SkillIndexRecord],
+    project_index: &[SkillIndexRecord],
 ) -> SkillLoader {
-    let global_allowed = project
-        .map(|selection| selection.enabled.iter().cloned().collect())
-        .unwrap_or_else(|| global.enabled.iter().cloned().collect());
-    let project_allowed = project
-        .map(|selection| selection.enabled.iter().cloned().collect())
+    let global_enabled = project.unwrap_or(global);
+    let global_expected = expected_skill_package_hashes(global_index, global_enabled);
+    let project_expected = project
+        .map(|selection| expected_skill_package_hashes(project_index, selection))
         .unwrap_or_default();
     SkillLoader::default()
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: global_home.join("skills/packages"),
             source_kind: DirectorySourceKind::User,
-            allowed_package_ids: Some(global_allowed),
+            expected_package_hashes: global_expected,
         })
         .with_source(SkillSourceConfig::DirectoryPackages {
             path: workspace_root.join(".jyowo/skills/packages"),
             source_kind: DirectorySourceKind::Workspace,
-            allowed_package_ids: Some(project_allowed),
+            expected_package_hashes: project_expected,
         })
+}
+
+fn expected_skill_package_hashes(
+    index: &[SkillIndexRecord],
+    selection: &SkillSelectionRecord,
+) -> BTreeMap<String, String> {
+    let enabled = selection.enabled.iter().collect::<HashSet<_>>();
+    index
+        .iter()
+        .filter(|record| enabled.contains(&record.id))
+        .map(|record| (record.id.clone(), record.content_hash.clone()))
+        .collect()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillIndexRecord {
+    id: String,
+    content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

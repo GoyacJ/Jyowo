@@ -73,8 +73,8 @@ pub use harness_session::{
     BootstrapFileSpec, SessionOptions, Workspace, WorkspaceBootstrap, WorkspaceSpec,
 };
 pub use harness_skill::{
-    DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader, SkillParamType, SkillPlatform,
-    SkillSourceConfig,
+    hash_skill_package, DirectorySourceKind, Skill, SkillConfigResolver, SkillLoader,
+    SkillParamType, SkillPlatform, SkillRegistry, SkillSourceConfig,
 };
 pub use harness_tool::{
     AuthorizationTicketClaims, AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset,
@@ -83,8 +83,9 @@ pub use harness_tool::{
 };
 
 pub use crate::skill_config::{
-    validate_required_skill_config, SkillConfigError, SkillConfigSnapshot,
-    SkillConfigSnapshotResolver,
+    apply_skill_config_statuses, validate_required_skill_config, KeyringSkillSecretStore,
+    SkillConfigError, SkillConfigSnapshot, SkillConfigSnapshotResolver, SkillConfigStoreError,
+    SkillSecretStore,
 };
 pub use crate::skill_pack_loader::{
     LockedSkillPackFile, LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,

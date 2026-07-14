@@ -32,7 +32,15 @@ fn skill_registry_session_can_use_skill_tools_without_full_builtin_toolset() {
         .collect::<Vec<_>>();
     names.sort();
 
-    assert_eq!(names, ["skills_invoke", "skills_list", "skills_view"]);
+    assert_eq!(
+        names,
+        [
+            "skills_invoke",
+            "skills_list",
+            "skills_run_script",
+            "skills_view",
+        ]
+    );
     for forbidden in ["bash", "file_read", "file_write", "web_fetch", "web_search"] {
         assert!(
             !names.iter().any(|name| name == forbidden),
@@ -188,7 +196,16 @@ current body
             )))
             .build()
             .snapshot();
-        registry.commit_snapshot((*replacement).clone());
+        registry
+            .replace_source(
+                SkillSource::Workspace("data/skills".into()),
+                replacement
+                    .entries
+                    .values()
+                    .map(|skill| skill.as_ref().clone())
+                    .collect(),
+            )
+            .expect("current registry should be replaced");
 
         let service = SkillRegistryService::new(
             registry,
@@ -285,7 +302,7 @@ async fn session_start_hook_count(store: &InMemoryEventStore, session_id: Sessio
             let matches = matches!(
                 event,
                 Event::HookTriggered(triggered)
-                    if triggered.handler_id == "skill:audit:start"
+                    if triggered.handler_id.starts_with("skill:audit:start:")
                         && triggered.hook_event_kind == HookEventKind::SessionStart
             );
             async move { matches }

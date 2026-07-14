@@ -1,10 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::{
     Harness, HarnessBuilder, HarnessError, HarnessOptions, McpConfig, RuntimeSkillSummary,
-    RuntimeSkillView, Unset,
+    RuntimeSkillView, SkillConfigSnapshot, Unset,
 };
 
 /// Desktop-only facade for configuration, catalog, and diagnostics APIs.
@@ -81,12 +81,22 @@ impl DesktopSettingsRuntime {
         self.inner.runtime_execution_status()
     }
 
-    pub fn list_runtime_skills(&self) -> Vec<RuntimeSkillSummary> {
+    pub fn list_runtime_skills(
+        &self,
+    ) -> Result<Vec<RuntimeSkillSummary>, crate::SkillConfigStoreError> {
         self.inner.list_runtime_skills()
     }
 
-    pub fn view_runtime_skill(&self, name: &str, full: bool) -> Option<RuntimeSkillView> {
+    pub fn view_runtime_skill(
+        &self,
+        name: &str,
+        full: bool,
+    ) -> Result<Option<RuntimeSkillView>, crate::SkillConfigStoreError> {
         self.inner.view_runtime_skill(name, full)
+    }
+
+    pub fn replace_skill_config_snapshot(&self, snapshot: SkillConfigSnapshot) {
+        self.inner.replace_skill_config_snapshot(snapshot);
     }
 
     pub async fn validate_workspace_skill_markdown(
@@ -99,13 +109,16 @@ impl DesktopSettingsRuntime {
             .await
     }
 
-    pub async fn reload_user_managed_skills_with_allowed_package_ids(
+    pub async fn reload_user_managed_skills_with_expected_package_hashes(
         &self,
         enabled_dir: impl AsRef<Path>,
-        allowed_package_ids: Option<BTreeSet<String>>,
+        expected_package_hashes: BTreeMap<String, String>,
     ) -> Result<(), HarnessError> {
         self.inner
-            .reload_user_managed_skills_with_allowed_package_ids(enabled_dir, allowed_package_ids)
+            .reload_user_managed_skills_with_expected_package_hashes(
+                enabled_dir,
+                expected_package_hashes,
+            )
             .await
     }
 }

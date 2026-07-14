@@ -1,6 +1,8 @@
 use harness_contracts::{
-    daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest, HandshakeResponse,
-    ServerFrame, TaskProjection, TimelineItemProjection, WorkspaceMode, PROTOCOL_VERSION,
+    daemon_protocol_schema, AgentCapabilities, ClientFrame, ClientRequest,
+    ConversationContextReference, HandshakeResponse, ListSkillReferenceCandidatesResponse,
+    ServerFrame, ServerMessage, SkillId, SkillReferenceCandidate, SkillSourceKind, TaskProjection,
+    TimelineItemProjection, WorkspaceMode, CURRENT_CONTEXT_REFERENCE_VERSION, PROTOCOL_VERSION,
 };
 use serde_json::json;
 
@@ -27,6 +29,7 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "event_history_page",
         "read_blob",
         "list_runtime_tools",
+        "list_skill_reference_candidates",
         "list_memory_items",
         "get_memory_item",
         "delete_memory_item",
@@ -51,6 +54,35 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn skill_reference_candidates_preserve_runtime_identity_and_source() {
+    let request = ClientRequest::ListSkillReferenceCandidates {
+        task_id: harness_contracts::TaskId::from_u128(1),
+    };
+    let request_value = serde_json::to_value(&request).expect("serialize candidate request");
+    assert_eq!(request_value["type"], "list_skill_reference_candidates");
+    assert_eq!(request_value["taskId"], "00000000000000000000000001");
+    assert!(serde_json::from_value::<ClientRequest>(json!({
+        "type": "list_skill_reference_candidates",
+        "taskId": "00000000000000000000000001",
+        "workspaceRoot": "/client-controlled"
+    }))
+    .is_err());
+
+    let response = ServerMessage::SkillReferenceCandidates(ListSkillReferenceCandidatesResponse {
+        skills: vec![SkillReferenceCandidate {
+            skill_id: SkillId("workspace:review".into()),
+            label: "review".into(),
+            source: SkillSourceKind::Workspace,
+        }],
+    });
+    let value = serde_json::to_value(&response).expect("serialize candidate response");
+    assert_eq!(value["type"], "skill_reference_candidates");
+    assert_eq!(value["skills"][0]["skillId"], "workspace:review");
+    assert_eq!(value["skills"][0]["source"], "workspace");
+    assert!(value["skills"][0].get("status").is_none());
 }
 
 #[test]
@@ -238,6 +270,113 @@ fn submit_message_carries_runtime_choices() {
     let encoded = serde_json::to_value(parsed).expect("runtime choices serialize");
     assert_eq!(encoded["request"]["modelConfigId"], "provider-config-001");
     assert_eq!(encoded["request"]["permissionMode"], "auto");
+}
+
+#[test]
+fn context_reference_legacy_strings_normalize_to_typed_workspace_files() {
+    let frame = json!({
+        "requestId": "req-legacy-context",
+        "protocolVersion": PROTOCOL_VERSION,
+        "request": {
+            "type": "submit_message",
+            "metadata": {
+                "commandId": "00000000000000000000000001",
+                "idempotencyKey": "submit-legacy-context",
+                "expectedStreamVersion": 0
+            },
+            "taskId": "00000000000000000000000002",
+            "content": "inspect",
+            "attachments": [],
+            "contextReferences": ["src/lib.rs"]
+        }
+    });
+
+    let parsed = serde_json::from_value::<ClientFrame>(frame).expect("legacy reference parses");
+    let encoded = serde_json::to_value(parsed).expect("normalized reference serializes");
+
+    assert_eq!(
+        encoded["request"]["contextReferences"],
+        json!([{
+            "kind": "workspace_file",
+            "path": "src/lib.rs",
+            "label": "src/lib.rs"
+        }])
+    );
+}
+
+#[test]
+fn context_reference_skill_round_trips_versioned_metadata() {
+    let value = json!({
+        "kind": "skill",
+        "version": CURRENT_CONTEXT_REFERENCE_VERSION,
+        "skillId": "user:code-review",
+        "label": "Code review",
+        "parameters": {
+            "focus": ["correctness", "security"],
+            "strict": true
+        },
+        "source": "user"
+    });
+
+    let reference: ConversationContextReference =
+        serde_json::from_value(value.clone()).expect("typed skill reference parses");
+    assert_eq!(
+        reference,
+        ConversationContextReference::Skill {
+            version: CURRENT_CONTEXT_REFERENCE_VERSION,
+            skill_id: SkillId("user:code-review".into()),
+            label: "Code review".into(),
+            parameters: [
+                ("focus".into(), json!(["correctness", "security"])),
+                ("strict".into(), json!(true)),
+            ]
+            .into_iter()
+            .collect(),
+            source: Some(SkillSourceKind::User),
+        }
+    );
+    assert_eq!(serde_json::to_value(reference).unwrap(), value);
+}
+
+#[test]
+fn context_reference_legacy_typed_skill_defaults_and_reencodes_current_form() {
+    let reference: ConversationContextReference = serde_json::from_value(json!({
+        "kind": "skill",
+        "id": "user:legacy-review",
+        "label": "Legacy review"
+    }))
+    .expect("legacy typed skill parses");
+
+    assert_eq!(
+        serde_json::to_value(reference).unwrap(),
+        json!({
+            "kind": "skill",
+            "version": CURRENT_CONTEXT_REFERENCE_VERSION,
+            "skillId": "user:legacy-review",
+            "label": "Legacy review",
+            "parameters": {}
+        })
+    );
+}
+
+#[test]
+fn context_reference_rejects_unknown_skill_versions_and_fields() {
+    for value in [
+        json!({
+            "kind": "skill",
+            "version": CURRENT_CONTEXT_REFERENCE_VERSION + 1,
+            "skillId": "user:code-review",
+            "label": "Code review"
+        }),
+        json!({
+            "kind": "workspace_file",
+            "path": "src/lib.rs",
+            "label": "src/lib.rs",
+            "unexpected": true
+        }),
+    ] {
+        assert!(serde_json::from_value::<ConversationContextReference>(value).is_err());
+    }
 }
 
 #[test]

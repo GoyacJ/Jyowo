@@ -1279,6 +1279,19 @@ fn context_patch_from_request(request: ContextPatchRequest) -> (ContextPatch, Op
                 })),
             )
         }
+        ContextPatchSource::SkillReference {
+            skill_id,
+            skill_name,
+            delivery_key: _,
+        } => (
+            ContextPatch::SkillInjection {
+                skill_id: skill_id.0,
+                skill_name,
+                body: request.body,
+                lifecycle,
+            },
+            None,
+        ),
         ContextPatchSource::HookAddContext {
             handler_id,
             hook_event_kind: _,

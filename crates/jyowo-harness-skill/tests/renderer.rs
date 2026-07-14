@@ -39,33 +39,34 @@ Retries: ${retries}
 }
 
 #[tokio::test]
-async fn shell_invocation_uses_structured_command_args() {
+async fn legacy_shell_blocks_never_execute_even_when_allowlisted() {
+    let marker = tempfile::tempdir().unwrap().path().join("legacy-shell-ran");
     let skill = parse_skill_markdown(
-        r#"---
+        &format!(
+            r#"---
 name: shell
 description: Shell params
 ---
-Today: !`printf "hi %s" jyowo`.
+Today: !`touch {}`.
 "#,
+            marker.display()
+        ),
         SkillSource::Workspace("data/skills".into()),
         None,
         SkillPlatform::Macos,
     )
     .expect("skill should parse");
     let renderer = harness_skill::SkillRenderer::new(Arc::new(TestConfigResolver))
-        .with_shell_allowlist(["printf".to_owned()]);
+        .with_shell_allowlist(["touch".to_owned()]);
 
     let rendered = renderer
         .render(&skill, json!({}))
         .await
         .expect("render should succeed");
 
-    assert!(rendered.content.contains("Today: hi jyowo."));
-    assert_eq!(rendered.shell_invocations.len(), 1);
-    assert_eq!(
-        rendered.shell_invocations[0].command,
-        r#"printf "hi %s" jyowo"#
-    );
+    assert!(rendered.content.contains("[SHELL_NOT_ALLOWED]"));
+    assert!(rendered.shell_invocations.is_empty());
+    assert!(!marker.exists(), "legacy shell block must not execute");
 }
 
 #[tokio::test]

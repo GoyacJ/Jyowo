@@ -17,7 +17,7 @@ workspace = true
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-permission = { path = "../jyowo-harness-permission" }
 jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox" }
-jyowo-harness-tool = { path = "../jyowo-harness-tool" }
+jyowo-harness-tool = { path = "../jyowo-harness-tool", default-features = false }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }

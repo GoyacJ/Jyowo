@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    BlobId, PermissionMode, PromotionMode, QueueItemId, QueueItemProjection, QueueItemState,
-    RunSegmentId, RunState, TaskProjection,
+    BlobId, ConversationContextReference, PermissionMode, PromotionMode, QueueItemId,
+    QueueItemProjection, QueueItemState, RunSegmentId, RunState, TaskProjection,
 };
 use harness_journal::{CommandRejection, NewTaskEvent};
 use serde_json::{json, Value};
@@ -12,14 +12,14 @@ pub enum QueueCommand {
         queue_item_id: QueueItemId,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         created_at: DateTime<Utc>,
     },
     SubmitWithRuntime {
         queue_item_id: QueueItemId,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
         model_config_id: Option<String>,
         permission_mode: PermissionMode,
         created_at: DateTime<Utc>,
@@ -28,7 +28,7 @@ pub enum QueueCommand {
         expected_revision: u64,
         content: String,
         attachments: Vec<BlobId>,
-        context_references: Vec<String>,
+        context_references: Vec<ConversationContextReference>,
     },
     Delete {
         expected_revision: u64,

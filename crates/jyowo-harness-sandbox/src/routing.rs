@@ -102,6 +102,9 @@ impl SandboxBackend for RoutingSandboxBackend {
         // The router reports the union of its children's capabilities. A policy is
         // supported when at least one child backend can enforce it.
         let mut caps = SandboxCapabilities::default();
+        // Host filesystem isolation is safe to advertise only when every child
+        // the router may select enforces it.
+        caps.host_filesystem_isolation = true;
         for backend in &self.backends {
             let child = backend.capabilities();
             // Accumulate per-policy support.
@@ -114,6 +117,8 @@ impl SandboxBackend for RoutingSandboxBackend {
             caps.workspace.read_only = caps.workspace.read_only || child.workspace.read_only;
             caps.workspace.writable_subpaths =
                 caps.workspace.writable_subpaths || child.workspace.writable_subpaths;
+            caps.host_filesystem_isolation =
+                caps.host_filesystem_isolation && child.host_filesystem_isolation;
             // Accumulate boolean capabilities.
             caps.supports_streaming = caps.supports_streaming || child.supports_streaming;
             caps.supports_stdin = caps.supports_stdin || child.supports_stdin;
@@ -129,6 +134,16 @@ impl SandboxBackend for RoutingSandboxBackend {
                 caps.supports_workspace_sync || child.supports_workspace_sync;
             caps.supports_session_snapshot =
                 caps.supports_session_snapshot || child.supports_session_snapshot;
+            for scope in child.supports_kill_scope {
+                if !caps.supports_kill_scope.contains(&scope) {
+                    caps.supports_kill_scope.push(scope);
+                }
+            }
+            for scope in child.supports_synchronous_kill_scope {
+                if !caps.supports_synchronous_kill_scope.contains(&scope) {
+                    caps.supports_synchronous_kill_scope.push(scope);
+                }
+            }
             // Take the max of max_concurrent_execs.
             caps.max_concurrent_execs = caps.max_concurrent_execs.max(child.max_concurrent_execs);
         }
@@ -326,6 +341,10 @@ impl ActivityHandle for RoutingActivityHandle {
         let result = self.inner.kill(signal, scope).await;
         self.run_after_execute_once(&ExecOutcome::default()).await;
         result
+    }
+
+    fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
+        self.inner.kill_sync(signal, scope)
     }
 
     fn touch(&self) {

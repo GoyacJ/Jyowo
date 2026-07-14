@@ -3138,6 +3138,9 @@ fn mcp_spec(id: &str) -> McpServerSpec {
 fn mcp_tool_descriptor(name: &str) -> McpToolDescriptor {
     McpToolDescriptor {
         name: name.to_owned(),
+        title: None,
+        icons: None,
+        execution: None,
         description: Some(format!("{name} tool")),
         input_schema: json!({ "type": "object" }),
         output_schema: None,
@@ -3184,6 +3187,7 @@ fn fake_skill(name: &str) -> Skill {
             allowlist_agents: None,
             parameters: Vec::new(),
             config: Vec::new(),
+            scripts: Vec::new(),
             platforms: Vec::new(),
             prerequisites: SkillPrerequisites::default(),
             hooks: Vec::new(),
@@ -3193,5 +3197,6 @@ fn fake_skill(name: &str) -> Skill {
         },
         body: String::new(),
         raw_path: None,
+        package_snapshot: None,
     }
 }

@@ -6,8 +6,9 @@ use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
     AutomationScheduler, IpcServerConfig, LocalIpcServer, MemoryService, PermissionBroker,
     RecoveryService, RuntimeConfigResolver, RuntimeGuard, SdkRunCoordinatorFactory,
-    SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory, Supervisor,
-    SupervisorAutomationTaskSubmitter, SupervisorQuotas, WorkspaceSubagentRunnerFactory,
+    SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory, SkillReferenceCandidateService,
+    Supervisor, SupervisorAutomationTaskSubmitter, SupervisorQuotas,
+    WorkspaceSubagentRunnerFactory,
 };
 use harness_journal::TaskStore;
 use harness_observability::DefaultRedactor;
@@ -46,6 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let config_root = config_root();
     let runtime_config = RuntimeConfigResolver::new(config_root.clone());
+    let skill_reference_candidates =
+        Arc::new(SkillReferenceCandidateService::new(runtime_config.clone()));
     let memory_service = Arc::new(MemoryService::new(runtime_config.clone()));
     let run_factory = Arc::new(
         SdkRunCoordinatorFactory::new_with_subagent_engines(
@@ -85,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&store),
         config,
         Arc::clone(&supervisor),
+        Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&automation_scheduler),
     )
@@ -95,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&store),
         config,
         Arc::clone(&supervisor),
+        Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&automation_scheduler),
     )

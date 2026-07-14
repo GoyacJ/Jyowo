@@ -261,7 +261,16 @@ describe('deriveLiveTaskSnapshot', () => {
       taskEvent(3, 'message.queued', {
         attachments: [],
         content: 'queued prompt',
-        contextReferences: [],
+        contextReferences: [
+          {
+            kind: 'skill',
+            label: 'Review',
+            parameters: { focus: 'correctness' },
+            skillId: 'user:review',
+            source: 'user',
+            version: 1,
+          },
+        ],
         createdAt: '2026-07-12T01:00:00Z',
         queueItemId,
       }),
@@ -271,7 +280,21 @@ describe('deriveLiveTaskSnapshot', () => {
 
     expect(result.projection.title).toBe(snapshot.projection.title)
     expect(result.projection.queue).toEqual([
-      expect.objectContaining({ content: 'queued prompt', queueItemId, state: 'queued' }),
+      expect.objectContaining({
+        content: 'queued prompt',
+        contextReferences: [
+          {
+            kind: 'skill',
+            label: 'Review',
+            parameters: { focus: 'correctness' },
+            skillId: 'user:review',
+            source: 'user',
+            version: 1,
+          },
+        ],
+        queueItemId,
+        state: 'queued',
+      }),
     ])
     expect(result.projection.pendingPermission).toBeNull()
     expect(result.projection.lastGlobalOffset).toBe(5)

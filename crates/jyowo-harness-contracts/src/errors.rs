@@ -11,6 +11,45 @@ use crate::{
 
 pub type Result<T, E = HarnessError> = std::result::Result<T, E>;
 
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema, thiserror::Error,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillContextError {
+    #[error("selected skill is unavailable: {skill_id}")]
+    Unavailable { skill_id: String },
+    #[error("selected skill is not visible: {skill_id}")]
+    NotVisible { skill_id: String },
+    #[error("selected skill source mismatch: {skill_id}")]
+    SourceMismatch { skill_id: String },
+    #[error("skill context reference mismatch for delivery `{delivery_key}`")]
+    ReferenceMismatch { delivery_key: String },
+    #[error("missing required parameter `{parameter}` for selected skill `{skill_id}`")]
+    MissingParameter { skill_id: String, parameter: String },
+    #[error(
+        "invalid parameter `{parameter}` for selected skill `{skill_id}`: expected {expected}"
+    )]
+    InvalidParameter {
+        skill_id: String,
+        parameter: String,
+        expected: String,
+    },
+    #[error("unknown parameter `{parameter}` for selected skill `{skill_id}`")]
+    UnknownParameter { skill_id: String, parameter: String },
+    #[error("selected skill `{skill_id}` is missing required config: {config_keys:?}")]
+    MissingConfig {
+        skill_id: String,
+        config_keys: Vec<String>,
+    },
+    #[error("skill context rendering failed for `{skill_id}`: {reason}")]
+    RenderFailed { skill_id: String, reason: String },
+    #[error("skill context integrity mismatch for delivery `{delivery_key}`")]
+    IntegrityMismatch { delivery_key: String },
+    #[error("persisted skill context delivery is invalid")]
+    InvalidPersistedReference,
+}
+
 macro_rules! define_error_family {
     ($($name:ident),+ $(,)?) => {
         $(
@@ -290,6 +329,8 @@ pub enum HarnessError {
     Hook(HookError),
     #[error("context: {0}")]
     Context(ContextError),
+    #[error("skill context: {0}")]
+    SkillContext(SkillContextError),
     #[error("tenant mismatch")]
     TenantMismatch,
     #[error("internal error: {0}")]
@@ -323,4 +364,10 @@ impl_from_family! {
     Mcp(McpError),
     Hook(HookError),
     Context(ContextError),
+}
+
+impl From<SkillContextError> for HarnessError {
+    fn from(value: SkillContextError) -> Self {
+        Self::SkillContext(value)
+    }
 }

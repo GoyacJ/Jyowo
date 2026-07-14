@@ -6,6 +6,8 @@ use crate::SkillPlatform;
 pub enum SkillError {
     #[error("parse frontmatter: {0}")]
     ParseFrontmatter(String),
+    #[error("invalid script declaration: {0}")]
+    InvalidScriptDeclaration(String),
     #[error("missing required parameter: {0}")]
     MissingParam(String),
     #[error("io: {0}")]
@@ -46,12 +48,32 @@ pub enum RenderError {
     ShellExec(#[from] std::io::Error),
     #[error("skill not visible: {0}")]
     SkillNotVisible(String),
+    #[error("skill `{skill_id}` is missing required config: {config_keys:?}")]
+    MissingConfig {
+        skill_id: String,
+        config_keys: Vec<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigResolveError {
     #[error("unknown config key: {0}")]
     UnknownKey(String),
+    #[error("skill config resolver is bound to `{expected_skill_id}`, not `{actual_skill_id}`")]
+    SkillIdentityMismatch {
+        expected_skill_id: String,
+        actual_skill_id: String,
+    },
+    #[error("skill `{skill_id}` is missing required config `{key}`")]
+    MissingRequiredConfig { skill_id: String, key: String },
+    #[error("secret config `{key}` for skill `{skill_id}` cannot be interpolated")]
+    SecretInterpolationForbidden { skill_id: String, key: String },
+    #[error("invalid config `{key}` for skill `{skill_id}`: expected {expected}")]
+    InvalidType {
+        skill_id: String,
+        key: String,
+        expected: &'static str,
+    },
     #[error("{0}")]
     Message(String),
 }

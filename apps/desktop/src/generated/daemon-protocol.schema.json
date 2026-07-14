@@ -412,7 +412,7 @@
             "contextReferences": {
               "type": "array",
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/ConversationContextReference"
               }
             },
             "metadata": {
@@ -461,7 +461,7 @@
             "contextReferences": {
               "type": "array",
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/ConversationContextReference"
               }
             },
             "expectedRevision": {
@@ -671,6 +671,32 @@
         {
           "type": "object",
           "properties": {
+            "afterGlobalOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "load_events"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "afterGlobalOffset",
+            "limit"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "taskId": {
               "$ref": "#/$defs/TypedUlid"
             },
@@ -747,6 +773,23 @@
           "additionalProperties": false,
           "required": [
             "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "list_skill_reference_candidates"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId"
           ]
         },
         {
@@ -1366,6 +1409,187 @@
       "maxItems": 32,
       "minItems": 32
     },
+    "ConversationContextReference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "workspace_file"
+            },
+            "label": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artifact"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "conversation"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "memory"
+            },
+            "label": {
+              "type": "string"
+            },
+            "resolved_content": {
+              "description": "Hydrated content, if resolved. Mutually exclusive with `label`-only rendering.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skill"
+            },
+            "label": {
+              "type": "string"
+            },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": true,
+              "default": {}
+            },
+            "skillId": {
+              "$ref": "#/$defs/SkillId"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SkillSourceKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint16",
+              "const": 1,
+              "default": 1,
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "skillId",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "tool"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "mcp_server"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "label"
+          ]
+        }
+      ]
+    },
     "DaemonMemoryItem": {
       "type": "object",
       "properties": {
@@ -1905,6 +2129,9 @@
         "seatbelt",
         "job_object"
       ]
+    },
+    "McpServerId": {
+      "type": "string"
     },
     "MemoryCandidate": {
       "type": "object",
@@ -3380,6 +3607,9 @@
         "saved_policy"
       ]
     },
+    "PluginId": {
+      "type": "string"
+    },
     "PromotionMode": {
       "type": "string",
       "enum": [
@@ -3423,7 +3653,7 @@
         "contextReferences": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/ConversationContextReference"
           }
         },
         "createdAt": {
@@ -3910,6 +4140,48 @@
         {
           "type": "object",
           "properties": {
+            "afterGlobalOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEventEnvelope"
+              }
+            },
+            "hasMore": {
+              "type": "boolean"
+            },
+            "latestGlobalOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "nextAfterGlobalOffset": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "event_history_page"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "afterGlobalOffset",
+            "latestGlobalOffset",
+            "nextAfterGlobalOffset",
+            "hasMore",
+            "events"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "tasks": {
               "type": "array",
               "items": {
@@ -3951,6 +4223,26 @@
             "type",
             "generation",
             "tools"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "skills": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillReferenceCandidate"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "skill_reference_candidates"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "skills"
           ]
         },
         {
@@ -4493,6 +4785,65 @@
             "type",
             "code",
             "message"
+          ]
+        }
+      ]
+    },
+    "SkillId": {
+      "type": "string"
+    },
+    "SkillReferenceCandidate": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "skillId": {
+          "$ref": "#/$defs/SkillId"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSourceKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "skillId",
+        "label",
+        "source"
+      ]
+    },
+    "SkillSourceKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "bundled",
+            "workspace",
+            "user"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "plugin": {
+              "$ref": "#/$defs/PluginId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "plugin"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mcp": {
+              "$ref": "#/$defs/McpServerId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mcp"
           ]
         }
       ]

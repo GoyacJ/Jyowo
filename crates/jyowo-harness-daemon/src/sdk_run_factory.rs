@@ -16,14 +16,14 @@ use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
     now, ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy,
     AgentTeamTopology, AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    CapabilityRegistry, ConversationAttachmentReference, ConversationContextReference,
-    ConversationTurnInput, Event, ExecutionDefaultsRecord, FallbackPolicy,
-    IndeterminateToolResolution, InteractivityLevel, McpActivationFailedEvent,
-    McpActivationFailureReason, McpServerId, McpServerScope, ModelError, PermissionMode,
-    PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId, RunTerminalReason, StopReason,
-    TaskId, TenantId, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError, ToolErrorPayload,
-    ToolResult, ToolUseFailedEvent, ToolUseId, UsageSnapshot,
-    WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState, WorkspaceMode,
+    CapabilityRegistry, ConversationAttachmentReference, ConversationTurnInput, Event,
+    ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution, InteractivityLevel,
+    McpActivationFailedEvent, McpActivationFailureReason, McpServerId, McpServerScope, ModelError,
+    PermissionMode, PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId,
+    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
+    ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId,
+    UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState,
+    WorkspaceMode,
 };
 use harness_engine::{EngineBoundSubagentFactory, RunControlHandle, TurnOutcome};
 use harness_execution::{
@@ -1340,17 +1340,12 @@ impl SdkRunCoordinatorFactory {
                 request.input.run_id,
             );
 
+            let skill_context_delivery_keys = (0..request.input.context_references.len())
+                .map(|reference_index| request.skill_context_delivery_key(reference_index))
+                .collect();
             let mut input = ConversationTurnInput::ask(request.input.content);
             input.client_message_id = Some(request.segment_id.to_string());
-            input.context_references = request
-                .input
-                .context_references
-                .into_iter()
-                .map(|path| ConversationContextReference::WorkspaceFile {
-                    label: path.clone(),
-                    path,
-                })
-                .collect();
+            input.context_references = request.input.context_references;
             input.attachments = load_attachments(
                 &store,
                 request.task_id,
@@ -1365,7 +1360,7 @@ impl SdkRunCoordinatorFactory {
                 .with_model_options(provider.model_options.clone());
             run_options.agent_tool_policy = Some(agent_tool_policy);
             harness
-                .submit_conversation_turn_with_run_control(
+                .submit_conversation_turn_with_run_control_and_skill_context_delivery_keys(
                     ConversationTurnRequest {
                         options: session_options,
                         run_options,
@@ -1374,6 +1369,7 @@ impl SdkRunCoordinatorFactory {
                     },
                     request.input.run_id,
                     control,
+                    skill_context_delivery_keys,
                 )
                 .await
                 .map_err(|error| SdkRunFactoryError::Sdk(error.to_string()))
@@ -5531,6 +5527,7 @@ exit 2
                 segment_id: RunSegmentId::new(),
                 input: SegmentRunInput {
                     queue_item_id: None,
+                    queue_item_revision: None,
                     content: "hello".into(),
                     attachments: Vec::new(),
                     context_references: Vec::new(),

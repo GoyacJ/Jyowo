@@ -1,9 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use secrecy::ExposeSecret;
 use secrecy::SecretString;
 use serde_json::Value;
 
@@ -15,13 +14,56 @@ use crate::{
 pub trait SkillConfigResolver: Send + Sync + 'static {
     async fn resolve(&self, key: &str) -> Result<Value, ConfigResolveError>;
     async fn resolve_secret(&self, key: &str) -> Result<SecretString, ConfigResolveError>;
+
+    async fn resolve_for(
+        &self,
+        _skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<Value, ConfigResolveError> {
+        self.resolve(key).await
+    }
+
+    async fn resolve_secret_for(
+        &self,
+        _skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<SecretString, ConfigResolveError> {
+        self.resolve_secret(key).await
+    }
+
+    async fn resolve_secret_for_script(
+        &self,
+        skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<SecretString, ConfigResolveError> {
+        Err(ConfigResolveError::Message(format!(
+            "script secret resolution is unavailable for config `{key}` in skill `{}`",
+            skill_id.0
+        )))
+    }
+}
+
+pub type SkillConfigResolverFactory =
+    dyn Fn(&Skill) -> Arc<dyn SkillConfigResolver> + Send + Sync + 'static;
+
+#[derive(Clone)]
+enum SkillConfigResolverBinding {
+    Shared(Arc<dyn SkillConfigResolver>),
+    PerSkill(Arc<SkillConfigResolverFactory>),
+}
+
+impl SkillConfigResolverBinding {
+    fn for_skill(&self, skill: &Skill) -> Arc<dyn SkillConfigResolver> {
+        match self {
+            Self::Shared(resolver) => Arc::clone(resolver),
+            Self::PerSkill(factory) => factory(skill),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct SkillRenderer {
-    config_resolver: Arc<dyn SkillConfigResolver>,
-    shell_allowlist: HashSet<String>,
-    max_shell_output: usize,
+    config_resolver: SkillConfigResolverBinding,
     metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
 }
 
@@ -45,32 +87,33 @@ impl SkillRenderer {
     #[must_use]
     pub fn new(config_resolver: Arc<dyn SkillConfigResolver>) -> Self {
         Self {
-            config_resolver,
-            shell_allowlist: SkillRenderPolicy::default()
-                .shell_allowlist
-                .into_iter()
-                .collect(),
-            max_shell_output: 4_000,
+            config_resolver: SkillConfigResolverBinding::Shared(config_resolver),
             metrics_sink: None,
         }
     }
 
     #[must_use]
-    pub fn with_policy(mut self, policy: SkillRenderPolicy) -> Self {
-        self.shell_allowlist = policy.shell_allowlist.into_iter().collect();
-        self.max_shell_output = policy.max_shell_output;
+    pub fn new_with_config_resolver_factory(
+        config_resolver_factory: Arc<SkillConfigResolverFactory>,
+    ) -> Self {
+        Self {
+            config_resolver: SkillConfigResolverBinding::PerSkill(config_resolver_factory),
+            metrics_sink: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_policy(self, _policy: SkillRenderPolicy) -> Self {
         self
     }
 
     #[must_use]
-    pub fn with_shell_allowlist(mut self, cmds: impl IntoIterator<Item = String>) -> Self {
-        self.shell_allowlist = cmds.into_iter().collect();
+    pub fn with_shell_allowlist(self, _cmds: impl IntoIterator<Item = String>) -> Self {
         self
     }
 
     #[must_use]
-    pub fn with_max_shell_output(mut self, max_shell_output: usize) -> Self {
-        self.max_shell_output = max_shell_output;
+    pub fn with_max_shell_output(self, _max_shell_output: usize) -> Self {
         self
     }
 
@@ -82,6 +125,7 @@ impl SkillRenderer {
 
     pub async fn render(&self, skill: &Skill, params: Value) -> Result<RenderedSkill, RenderError> {
         let started = Instant::now();
+        let config_resolver = self.config_resolver.for_skill(skill);
         for parameter in &skill.frontmatter.parameters {
             let value = params
                 .get(&parameter.name)
@@ -114,14 +158,23 @@ impl SkillRenderer {
         for config in &skill.frontmatter.config {
             let secret_pattern = format!("${{config.{}:secret}}", config.key);
             if content.contains(&secret_pattern) {
-                let value = self.config_resolver.resolve_secret(&config.key).await?;
-                content = content.replace(&secret_pattern, value.expose_secret());
-                consumed_config_keys.push(config.key.clone());
+                return Err(ConfigResolveError::SecretInterpolationForbidden {
+                    skill_id: skill.id.0.clone(),
+                    key: config.key.clone(),
+                }
+                .into());
             }
 
             let pattern = format!("${{config.{}}}", config.key);
             if content.contains(&pattern) {
-                let value = self.config_resolver.resolve(&config.key).await?;
+                if config.secret {
+                    return Err(ConfigResolveError::SecretInterpolationForbidden {
+                        skill_id: skill.id.0.clone(),
+                        key: config.key.clone(),
+                    }
+                    .into());
+                }
+                let value = config_resolver.resolve_for(&skill.id, &config.key).await?;
                 content = content.replace(&pattern, &render_value_for_template(&value));
                 if !consumed_config_keys.iter().any(|key| key == &config.key) {
                     consumed_config_keys.push(config.key.clone());
@@ -147,13 +200,61 @@ impl SkillRenderer {
         Ok(rendered)
     }
 
+    pub(crate) async fn resolve_script_environment(
+        &self,
+        skill: &Skill,
+        declaration: &crate::SkillScriptDecl,
+    ) -> Result<(BTreeMap<String, String>, BTreeSet<String>), ConfigResolveError> {
+        use secrecy::ExposeSecret;
+
+        let resolver = self.config_resolver.for_skill(skill);
+        let declarations = skill
+            .frontmatter
+            .config
+            .iter()
+            .map(|config| (config.key.as_str(), config))
+            .collect::<BTreeMap<_, _>>();
+        let mut env = BTreeMap::new();
+        let mut secret_env_keys = BTreeSet::new();
+        for (env_name, mapping) in &declaration.env {
+            let config = declarations
+                .get(mapping.config.as_str())
+                .ok_or_else(|| ConfigResolveError::UnknownKey(mapping.config.clone()))?;
+            if config.secret != mapping.secret {
+                return Err(ConfigResolveError::Message(format!(
+                    "script environment `{env_name}` does not match config secrecy"
+                )));
+            }
+            let value = if mapping.secret {
+                secret_env_keys.insert(env_name.clone());
+                resolver
+                    .resolve_secret_for_script(&skill.id, &mapping.config)
+                    .await?
+                    .expose_secret()
+                    .to_owned()
+            } else {
+                let value = resolver.resolve_for(&skill.id, &mapping.config).await?;
+                if !script_config_type_matches(&value, config.value_type) {
+                    return Err(ConfigResolveError::InvalidType {
+                        skill_id: skill.id.0.clone(),
+                        key: mapping.config.clone(),
+                        expected: expected_type_label(config.value_type),
+                    });
+                }
+                render_value_for_template(&value)
+            };
+            env.insert(env_name.clone(), value);
+        }
+        Ok((env, secret_env_keys))
+    }
+
     fn render_shell_blocks(
         &self,
         content: &str,
     ) -> Result<(String, Vec<ShellInvocation>), RenderError> {
         let mut output = String::with_capacity(content.len());
         let mut remaining = content;
-        let mut invocations = Vec::new();
+        let invocations = Vec::new();
 
         while let Some(start) = remaining.find("!`") {
             output.push_str(&remaining[..start]);
@@ -163,56 +264,27 @@ impl SkillRenderer {
                 return Ok((output, invocations));
             };
             let command = &after_start[..end];
-            if let Some(command) = self.allowed_command(command) {
-                let rendered = self.execute_shell(&command)?;
-                output.push_str(&rendered.0);
-                invocations.push(rendered.1);
-            } else {
-                if let Some(metrics) = &self.metrics_sink {
-                    metrics.skill_shell_blocked(command);
-                }
-                output.push_str("[SHELL_NOT_ALLOWED]");
+            if let Some(metrics) = &self.metrics_sink {
+                metrics.skill_shell_blocked(command);
             }
+            output.push_str("[SHELL_NOT_ALLOWED]");
             remaining = &after_start[end + 1..];
         }
 
         output.push_str(remaining);
         Ok((output, invocations))
     }
-
-    fn allowed_command(&self, command: &str) -> Option<StructuredShellCommand> {
-        let command = parse_shell_command(command).ok()?;
-        self.shell_allowlist
-            .contains(&command.program)
-            .then_some(command)
-    }
-
-    fn execute_shell(
-        &self,
-        command: &StructuredShellCommand,
-    ) -> Result<(String, ShellInvocation), RenderError> {
-        let output = std::process::Command::new(&command.program)
-            .args(&command.args)
-            .output()?;
-        let exit_code = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let (stdout, stdout_truncated) = truncate_chars(&stdout, self.max_shell_output);
-        Ok((
-            stdout,
-            ShellInvocation {
-                command: command.original.clone(),
-                stdout_truncated,
-                exit_code,
-            },
-        ))
-    }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct StructuredShellCommand {
-    original: String,
-    program: String,
-    args: Vec<String>,
+fn script_config_type_matches(value: &Value, value_type: SkillParamType) -> bool {
+    match value_type {
+        SkillParamType::String | SkillParamType::Path => value.is_string(),
+        SkillParamType::Url => value
+            .as_str()
+            .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://")),
+        SkillParamType::Number => value.is_number(),
+        SkillParamType::Boolean => value.is_boolean(),
+    }
 }
 
 fn validate_value_type(
@@ -248,53 +320,6 @@ fn expected_type_label(param_type: SkillParamType) -> &'static str {
     }
 }
 
-fn parse_shell_command(input: &str) -> Result<StructuredShellCommand, RenderError> {
-    let original = input.trim().to_owned();
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut chars = original.chars().peekable();
-    let mut quote: Option<char> = None;
-
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (None, '\n' | '\r') => return Err(RenderError::ShellNotAllowed(original)),
-            (None, ch) if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
-                }
-            }
-            (None, '\'' | '"') => quote = Some(ch),
-            (Some(active), ch) if ch == active => quote = None,
-            (None, '\\') | (Some('"'), '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            (None, ';' | '|' | '&' | '<' | '>' | '$' | '(' | ')') => {
-                return Err(RenderError::ShellNotAllowed(original));
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if quote.is_some() {
-        return Err(RenderError::ShellNotAllowed(original));
-    }
-    if !current.is_empty() {
-        args.push(current);
-    }
-    if args.is_empty() {
-        return Err(RenderError::ShellNotAllowed(original));
-    }
-
-    let program = args.remove(0);
-    Ok(StructuredShellCommand {
-        original,
-        program,
-        args,
-    })
-}
-
 fn render_value_for_template(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -303,13 +328,4 @@ fn render_value_for_template(value: &Value) -> String {
         Value::Null => String::new(),
         Value::Array(_) | Value::Object(_) => value.to_string(),
     }
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
-    if value.chars().count() <= max_chars {
-        return (value.to_owned(), false);
-    }
-
-    let truncated = value.chars().take(max_chars).collect::<String>();
-    (format!("{truncated}[...truncated]"), true)
 }

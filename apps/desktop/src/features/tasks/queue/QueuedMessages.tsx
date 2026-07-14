@@ -210,6 +210,6 @@ function isAtLeastAsFresh(item: QueueItemProjection, replacement: QueueItemProje
     item.content === replacement.content &&
     item.state === replacement.state &&
     item.attachments.join('\0') === replacement.attachments.join('\0') &&
-    item.contextReferences.join('\0') === replacement.contextReferences.join('\0')
+    JSON.stringify(item.contextReferences) === JSON.stringify(replacement.contextReferences)
   )
 }

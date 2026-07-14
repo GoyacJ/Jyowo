@@ -1,12 +1,16 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use harness_contracts::AgentId;
 use harness_skill::{
-    parse_skill_markdown, ConfigResolveError, SkillConfigResolver, SkillFilter, SkillPlatform,
-    SkillRegistry, SkillRegistryService, SkillSource,
+    hash_skill_package, parse_skill_markdown, ConfigResolveError, DirectorySourceKind,
+    SkillConfigResolver, SkillFilter, SkillLoader, SkillPlatform, SkillRegistry,
+    SkillRegistryService, SkillSource, SkillSourceConfig,
 };
 use serde_json::{json, Value};
 
@@ -210,7 +214,16 @@ allowlist_agents: ["{}"]
         "current body",
     ))
     .snapshot();
-    registry.commit_snapshot((*replacement).clone());
+    registry
+        .replace_source(
+            SkillSource::Workspace("data/skills".into()),
+            replacement
+                .entries
+                .values()
+                .map(|skill| skill.as_ref().clone())
+                .collect(),
+        )
+        .expect("current registry should be replaced");
     let service = SkillRegistryService::new(
         registry,
         harness_skill::SkillRenderer::new(Arc::new(TestConfigResolver)),
@@ -264,7 +277,196 @@ parameters:
     assert_eq!(rendered.content, "Daily M4\n");
 }
 
+#[tokio::test]
+async fn script_preparation_resolves_only_declared_script_environment() {
+    let package = tempfile::tempdir().unwrap();
+    let script_dir = package.path().join("scripts");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    std::fs::write(
+        script_dir.join("collect.sh"),
+        "#!/bin/sh\nprintf '%s:%s' \"$REGION\" \"$API_TOKEN\"\n",
+    )
+    .unwrap();
+    let markdown = r#"---
+name: collector
+description: Collector
+config:
+  - key: region
+    type: string
+    required: true
+  - key: apiToken
+    type: string
+    secret: true
+    required: true
+scripts:
+  - id: collect
+    path: scripts/collect.sh
+    network: deny
+    env:
+      REGION:
+        config: region
+      API_TOKEN:
+        config: apiToken
+        secret: true
+---
+Token ${config.apiToken:secret}
+"#;
+    let skill_path = package.path().join("SKILL.md");
+    std::fs::write(&skill_path, markdown).unwrap();
+    let expected_hash = hash_skill_package(package.path()).unwrap();
+    let skill = load_package_skill(package.path()).await;
+    std::fs::write(
+        script_dir.join("collect.sh"),
+        "#!/bin/sh\nprintf 'tampered'\n",
+    )
+    .unwrap();
+    let registry = registry_with_skill(skill);
+    let secret_reads = Arc::new(AtomicUsize::new(0));
+    let service = SkillRegistryService::new(
+        registry,
+        harness_skill::SkillRenderer::new(Arc::new(ScriptConfigResolver {
+            secret_reads: Arc::clone(&secret_reads),
+        })),
+    );
+
+    let prepared = service
+        .prepare_script(
+            &AgentId::from_u128(1),
+            "collector",
+            "collect",
+            json!({ "query": "open" }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.skill_name, "collector");
+    assert_eq!(prepared.script_id, "collect");
+    assert_eq!(prepared.package_hash, expected_hash);
+    assert_eq!(prepared.arguments, json!({ "query": "open" }));
+    assert!(prepared.env.is_empty());
+    assert_eq!(secret_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        prepared.declaration.secret_env_keys,
+        std::collections::BTreeSet::from(["API_TOKEN".to_owned()])
+    );
+    assert!(prepared
+        .files
+        .iter()
+        .any(|file| file.path == "scripts/collect.sh"
+            && file.content.contains("$REGION")
+            && !file.content.contains("tampered")));
+    assert!(!format!("{prepared:?}").contains("secret-token"));
+
+    let authorized = service
+        .prepare_script_authorized(
+            &AgentId::from_u128(1),
+            "collector",
+            "collect",
+            json!({ "query": "open" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.env["REGION"], "cn-east");
+    assert_eq!(authorized.env["API_TOKEN"], "secret-token");
+    assert_eq!(secret_reads.load(Ordering::SeqCst), 1);
+
+    let undeclared = service
+        .prepare_script(&AgentId::from_u128(1), "collector", "missing", json!({}))
+        .await
+        .unwrap_err();
+    assert!(undeclared.to_string().contains("undeclared"));
+
+    let render_error = service
+        .render(&AgentId::from_u128(1), "collector", json!({}))
+        .await
+        .unwrap_err();
+    assert!(render_error.to_string().contains("cannot be interpolated"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn script_preparation_rejects_package_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let package = tempfile::tempdir().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    let script_dir = package.path().join("scripts");
+    std::fs::create_dir_all(&script_dir).unwrap();
+    symlink(outside.path(), script_dir.join("collect.sh")).unwrap();
+    let markdown = r#"---
+name: collector
+description: Collector
+scripts:
+  - id: collect
+    path: scripts/collect.sh
+    network: deny
+---
+Collector
+"#;
+    let skill_path = package.path().join("SKILL.md");
+    std::fs::write(&skill_path, markdown).unwrap();
+    let report = package_skill_loader(package.path())
+        .load_all()
+        .await
+        .unwrap();
+    assert!(report.loaded.is_empty());
+    assert_eq!(report.rejected.len(), 1);
+    assert!(format!("{:?}", report.rejected[0].reason).contains("symlink"));
+}
+
+fn package_skill_loader(package_root: &std::path::Path) -> SkillLoader {
+    SkillLoader::default()
+        .with_runtime_platform(SkillPlatform::Macos)
+        .with_source(SkillSourceConfig::Directory {
+            path: package_root.to_path_buf(),
+            source_kind: DirectorySourceKind::Workspace,
+        })
+}
+
+async fn load_package_skill(package_root: &std::path::Path) -> harness_skill::Skill {
+    let report = package_skill_loader(package_root).load_all().await.unwrap();
+    assert!(report.rejected.is_empty(), "{:#?}", report.rejected);
+    assert_eq!(report.loaded.len(), 1);
+    report.loaded.into_iter().next().unwrap()
+}
+
 struct TestConfigResolver;
+
+struct ScriptConfigResolver {
+    secret_reads: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SkillConfigResolver for ScriptConfigResolver {
+    async fn resolve(&self, key: &str) -> Result<Value, ConfigResolveError> {
+        match key {
+            "region" => Ok(json!("cn-east")),
+            other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
+        }
+    }
+
+    async fn resolve_secret(&self, key: &str) -> Result<secrecy::SecretString, ConfigResolveError> {
+        Err(ConfigResolveError::SecretInterpolationForbidden {
+            skill_id: "workspace:collector".to_owned(),
+            key: key.to_owned(),
+        })
+    }
+
+    async fn resolve_secret_for_script(
+        &self,
+        skill_id: &harness_contracts::SkillId,
+        key: &str,
+    ) -> Result<secrecy::SecretString, ConfigResolveError> {
+        assert_eq!(skill_id.0, "workspace:collector");
+        match key {
+            "apiToken" => {
+                self.secret_reads.fetch_add(1, Ordering::SeqCst);
+                Ok(secrecy::SecretString::from("secret-token".to_owned()))
+            }
+            other => Err(ConfigResolveError::UnknownKey(other.to_owned())),
+        }
+    }
+}
 
 #[async_trait]
 impl SkillConfigResolver for TestConfigResolver {

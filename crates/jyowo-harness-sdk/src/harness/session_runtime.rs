@@ -136,8 +136,11 @@ impl Harness {
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
+                skill_registry_snapshot: None,
                 skill_metrics_sink: self.skill_metrics_sink(),
-                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+                skill_render_policy: self.skill_render_policy(),
+                skill_config_snapshot: self.skill_config_snapshot(),
+                pending_skill_context_deliveries: parking_lot::Mutex::new(HashMap::new()),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),
@@ -315,6 +318,7 @@ impl Harness {
         run_options: &ConversationRunOptions,
         projection: SessionProjection,
         controlled_run: Option<(RunId, RunControlHandle)>,
+        skill_turn_snapshot: Option<SkillTurnSnapshot>,
     ) -> Result<Session, HarnessError> {
         let limit_permit = self.inner.session_limits.try_acquire()?;
         let prompt_inputs = self.load_effective_prompt_inputs(&options)?;
@@ -386,9 +390,21 @@ impl Harness {
                 active_conversation_runs: Arc::clone(&self.inner.active_conversation_runs),
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
-                skill_registry: Some(self.inner.skill_registry.clone()),
+                skill_registry: Some(
+                    skill_turn_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.registry.clone())
+                        .unwrap_or_else(|| self.inner.skill_registry.clone()),
+                ),
+                skill_registry_snapshot: skill_turn_snapshot
+                    .as_ref()
+                    .map(|snapshot| Arc::clone(&snapshot.registry_snapshot)),
                 skill_metrics_sink: self.skill_metrics_sink(),
-                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+                skill_render_policy: self.skill_render_policy(),
+                skill_config_snapshot: skill_turn_snapshot
+                    .map(|snapshot| snapshot.config_snapshot)
+                    .unwrap_or_else(|| self.skill_config_snapshot()),
+                pending_skill_context_deliveries: parking_lot::Mutex::new(HashMap::new()),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),
@@ -545,6 +561,7 @@ impl Harness {
             })?;
         }
         let mut cap_registry = (*self.inner.cap_registry).clone();
+        cap_registry.install(ToolCapability::ProcessSandbox, Arc::new(()));
         if let Some(blob_store) = &self.inner.blob_store {
             cap_registry.install::<dyn harness_contracts::BlobReaderCap>(
                 ToolCapability::BlobReader,
@@ -1141,6 +1158,11 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
         ctx: SessionTurnContext,
         parts: Vec<MessagePart>,
     ) -> Result<Vec<Event>, SessionError> {
+        let skill_context_delivery_keys = self
+            .pending_skill_context_deliveries
+            .lock()
+            .remove(&(ctx.tenant_id, ctx.session_id, ctx.run_id))
+            .unwrap_or_default();
         let input = TurnInput {
             message: Message {
                 id: ctx.message_id,
@@ -1152,6 +1174,7 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
                 ctx.turn_index,
                 ctx.client_message_id.clone(),
                 ctx.attachments.clone(),
+                skill_context_delivery_keys,
             ),
         };
         let cancellation = CancellationToken::new();
@@ -1225,6 +1248,15 @@ impl SessionTurnRunner for EngineSessionTurnRunner {
     }
 
     async fn push_context_patch(&self, request: ContextPatchRequest) -> Result<(), SessionError> {
+        if let harness_contracts::ContextPatchSource::SkillReference { delivery_key, .. } =
+            &request.source
+        {
+            self.pending_skill_context_deliveries
+                .lock()
+                .entry((request.tenant_id, request.session_id, request.run_id))
+                .or_default()
+                .push(delivery_key.clone());
+        }
         self.engine
             .context_engine()
             .push_patch(request)
@@ -1237,6 +1269,7 @@ fn conversation_turn_metadata(
     turn_index: usize,
     client_message_id: Option<String>,
     attachments: Vec<ConversationAttachmentReference>,
+    skill_context_delivery_keys: Vec<String>,
 ) -> serde_json::Value {
     let mut metadata = json!({ "turn": turn_index });
     if let Some(client_message_id) = client_message_id.filter(|value| is_uuid_v4_like(value)) {
@@ -1244,6 +1277,9 @@ fn conversation_turn_metadata(
     }
     if !attachments.is_empty() {
         metadata["attachments"] = json!(attachments);
+    }
+    if !skill_context_delivery_keys.is_empty() {
+        metadata["skillContextDeliveryKeys"] = json!(skill_context_delivery_keys);
     }
     metadata
 }
@@ -1280,11 +1316,12 @@ mod conversation_metadata_tests {
         let uuid_v1 = "00000000-0000-1000-8000-000000000001";
 
         assert_eq!(
-            conversation_turn_metadata(1, Some(uuid_v4.to_owned()), Vec::new())["clientMessageId"],
+            conversation_turn_metadata(1, Some(uuid_v4.to_owned()), Vec::new(), Vec::new())
+                ["clientMessageId"],
             uuid_v4
         );
         assert!(
-            conversation_turn_metadata(1, Some(uuid_v1.to_owned()), Vec::new())
+            conversation_turn_metadata(1, Some(uuid_v1.to_owned()), Vec::new(), Vec::new())
                 .get("clientMessageId")
                 .is_none()
         );
@@ -1313,16 +1350,26 @@ impl EngineSessionTurnRunner {
             return Ok(engine);
         };
 
-        let snapshot = registry.snapshot();
-        let mut cap_registry = engine.cap_registry().as_ref().clone();
-        validate_required_skill_config(&snapshot, &self.skill_config_snapshot)
+        let mut snapshot = self
+            .skill_registry_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.as_ref().clone())
+            .unwrap_or_else(|| registry.snapshot().as_ref().clone());
+        apply_skill_config_statuses(&mut snapshot, &self.skill_config_snapshot)
             .map_err(|error| SessionError::Message(error.to_string()))?;
-        let mut renderer = SkillRenderer::new(Arc::new(
-            SkillConfigSnapshotResolver::from_registry_snapshot(
-                &snapshot,
-                self.skill_config_snapshot.clone(),
-            ),
-        ));
+        let snapshot = Arc::new(snapshot);
+        let mut cap_registry = engine.cap_registry().as_ref().clone();
+        let resolver_snapshot = self.skill_config_snapshot.clone();
+        let mut renderer = SkillRenderer::new_with_config_resolver_factory(Arc::new(
+            move |skill: &Skill| -> Arc<dyn harness_skill::SkillConfigResolver> {
+                Arc::new(SkillConfigSnapshotResolver::for_skill(
+                    skill.id.0.clone(),
+                    resolver_snapshot.clone(),
+                    skill.frontmatter.config.clone(),
+                ))
+            },
+        ))
+        .with_policy(self.skill_render_policy.clone());
         if let Some(metrics_sink) = &self.skill_metrics_sink {
             renderer = renderer.with_metrics_sink(Arc::clone(metrics_sink));
         }

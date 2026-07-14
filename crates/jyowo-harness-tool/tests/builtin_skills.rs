@@ -1,16 +1,20 @@
 #![cfg(feature = "builtin-toolset")]
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::{future::BoxFuture, StreamExt};
 use harness_contracts::{
     ActionResource, AgentId, CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap,
-    ContextPatchSource, RenderedSkill, SkillFilter, SkillId, SkillParameterInfo, SkillRegistryCap,
-    SkillStatus, SkillSummary, SkillView, TenantId, ToolActionPlan, ToolCapability, ToolError,
-    ToolGroup, ToolOrigin, ToolResult, ToolUseId,
+    ContextPatchSource, NetworkAccess, PermissionSubject, RenderedSkill, SkillFilter, SkillId,
+    SkillParameterInfo, SkillRegistryCap, SkillScriptRunDeclaration, SkillScriptRunFile,
+    SkillScriptRunPreparation, SkillStatus, SkillSummary, SkillView, TenantId, ToolActionPlan,
+    ToolCapability, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolResult, ToolUseId,
+    WorkspaceAccess,
 };
 use harness_tool::{
-    builtin::{SkillsInvokeTool, SkillsListTool, SkillsViewTool},
+    builtin::{SkillsInvokeTool, SkillsListTool, SkillsRunScriptTool, SkillsViewTool},
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
     ToolContext, ToolRegistry,
 };
@@ -21,6 +25,7 @@ fn skill_tools_declare_meta_descriptors_and_defer_policies() {
     let list = SkillsListTool::default();
     let view = SkillsViewTool::default();
     let invoke = SkillsInvokeTool::default();
+    let run_script = SkillsRunScriptTool::default();
 
     assert_eq!(list.descriptor().name, "skills_list");
     assert_eq!(list.descriptor().group, ToolGroup::Meta);
@@ -60,6 +65,35 @@ fn skill_tools_declare_meta_descriptors_and_defer_policies() {
         invoke.descriptor().properties.defer_policy,
         harness_contracts::DeferPolicy::AutoDefer
     );
+
+    assert_eq!(run_script.descriptor().name, "skills_run_script");
+    assert_eq!(run_script.descriptor().group, ToolGroup::Meta);
+    assert_eq!(run_script.descriptor().origin, ToolOrigin::Builtin);
+    assert_eq!(
+        run_script.descriptor().required_capabilities,
+        vec![
+            ToolCapability::SkillRegistry,
+            ToolCapability::ProcessSandbox,
+        ]
+    );
+    assert_eq!(
+        run_script.descriptor().properties.defer_policy,
+        harness_contracts::DeferPolicy::AutoDefer
+    );
+}
+
+#[test]
+fn skills_run_script_has_an_independent_sandbox_capability() {
+    let tool = SkillsRunScriptTool::default();
+
+    assert_eq!(tool.descriptor().name, "skills_run_script");
+    assert_eq!(
+        tool.descriptor().required_capabilities,
+        vec![
+            ToolCapability::SkillRegistry,
+            ToolCapability::ProcessSandbox,
+        ]
+    );
 }
 
 #[test]
@@ -69,14 +103,24 @@ fn default_builtin_toolset_registers_skill_tools() {
         .build()
         .unwrap();
 
-    for name in ["skills_list", "skills_view", "skills_invoke"] {
+    for name in [
+        "skills_list",
+        "skills_view",
+        "skills_invoke",
+        "skills_run_script",
+    ] {
         assert!(registry.get(name).is_some(), "{name} should be registered");
     }
 }
 
 #[tokio::test]
 async fn skill_tools_plan_declares_skill_resources() {
-    let ctx = tool_ctx(AgentId::from_u128(7), CapabilityRegistry::default());
+    let mut caps = CapabilityRegistry::default();
+    caps.install::<dyn SkillRegistryCap>(
+        ToolCapability::SkillRegistry,
+        Arc::new(TestSkillRegistryCap),
+    );
+    let ctx = tool_ctx(AgentId::from_u128(7), caps);
 
     let list_plan = SkillsListTool::default()
         .plan(&json!({}), &ctx)
@@ -106,6 +150,40 @@ async fn skill_tools_plan_declares_skill_resources() {
         invoke_plan.resources.as_slice(),
         [ActionResource::Skill { action, name }]
             if action == "invoke" && name.as_deref() == Some("daily")
+    ));
+
+    let run_plan = SkillsRunScriptTool::default()
+        .plan(
+            &json!({
+                "name": "daily",
+                "script_id": "collect",
+                "arguments": { "topic": "M4" }
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        run_plan.resources.as_slice(),
+        [ActionResource::Skill { action, name }]
+            if action == "run_script" && name.as_deref() == Some("daily")
+    ));
+    assert_eq!(
+        run_plan.execution_channel,
+        ToolExecutionChannel::ProcessSandbox
+    );
+    assert_eq!(run_plan.workspace_access, WorkspaceAccess::None);
+    assert_eq!(run_plan.network_access, NetworkAccess::None);
+    assert!(matches!(
+        &run_plan.subject,
+        PermissionSubject::Custom { kind, payload }
+            if kind == "skill_script"
+                && payload["skill_id"] == "skill-daily"
+                && payload["script_id"] == "collect"
+                && payload["package_hash"] == "package-hash"
+                && payload["arguments"] == json!({ "topic": "M4" })
+                && payload["workspace_access"] == "none"
+                && payload["network_access"] == "none"
     ));
 }
 
@@ -280,6 +358,61 @@ impl SkillRegistryCap for TestSkillRegistryCap {
                 consumed_config_keys: vec!["github.org".to_owned()],
             })
         })
+    }
+
+    fn prepare_script(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        assert_eq!(*agent, AgentId::from_u128(7));
+        assert_eq!(name, "daily");
+        assert_eq!(script_id, "collect");
+        Box::pin(async move { Ok(test_script_preparation(arguments, false)) })
+    }
+
+    fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        assert_eq!(*agent, AgentId::from_u128(7));
+        assert_eq!(name, "daily");
+        assert_eq!(script_id, "collect");
+        Box::pin(async move { Ok(test_script_preparation(arguments, true)) })
+    }
+}
+
+fn test_script_preparation(arguments: Value, authorized: bool) -> SkillScriptRunPreparation {
+    SkillScriptRunPreparation {
+        skill_id: SkillId("skill-daily".to_owned()),
+        skill_name: "daily".to_owned(),
+        script_id: "collect".to_owned(),
+        package_hash: "package-hash".to_owned(),
+        arguments,
+        declaration: SkillScriptRunDeclaration {
+            path: PathBuf::from("scripts/collect.sh"),
+            timeout_seconds: 30,
+            max_stdout_bytes: 1024,
+            max_stderr_bytes: 1024,
+            max_output_bytes: 2048,
+            max_artifact_count: 4,
+            max_artifact_bytes: 4096,
+            network_access: NetworkAccess::None,
+            env_config_keys: BTreeMap::from([("API_TOKEN".to_owned(), "apiToken".to_owned())]),
+            secret_env_keys: BTreeSet::from(["API_TOKEN".to_owned()]),
+        },
+        files: vec![SkillScriptRunFile {
+            path: "scripts/collect.sh".to_owned(),
+            content: "#!/bin/sh\n".to_owned(),
+        }],
+        env: authorized
+            .then(|| BTreeMap::from([("API_TOKEN".to_owned(), "secret".to_owned())]))
+            .unwrap_or_default(),
     }
 }
 

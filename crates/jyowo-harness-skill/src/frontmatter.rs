@@ -1,14 +1,20 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
 use harness_contracts::{HookEventKind, HookFailureMode, SkillId};
 use serde_json::{Map, Number, Value};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::{
-    BuiltinHookKind, Skill, SkillConfigDecl, SkillError, SkillFrontmatter, SkillHookDecl,
-    SkillHookExecSpec, SkillHookHttpSecuritySpec, SkillHookHttpSpec, SkillHookTransport,
-    SkillParamType, SkillParameter, SkillPlatform, SkillPrerequisites, SkillSource,
+    skill_script_path_has_reserved_component, BuiltinHookKind, Skill, SkillConfigDecl, SkillError,
+    SkillFrontmatter, SkillHookDecl, SkillHookExecSpec, SkillHookHttpSecuritySpec,
+    SkillHookHttpSpec, SkillHookTransport, SkillParamType, SkillParameter, SkillPlatform,
+    SkillPrerequisites, SkillScriptDecl, SkillScriptEnvDecl, SkillScriptNetworkPolicy, SkillSource,
+    DEFAULT_SKILL_SCRIPT_ARTIFACT_BYTES, DEFAULT_SKILL_SCRIPT_ARTIFACT_COUNT,
+    DEFAULT_SKILL_SCRIPT_OUTPUT_BYTES, DEFAULT_SKILL_SCRIPT_STDERR_BYTES,
+    DEFAULT_SKILL_SCRIPT_STDOUT_BYTES, DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS,
+    MAX_SKILL_SCRIPT_ARTIFACT_BYTES, MAX_SKILL_SCRIPT_ARTIFACT_COUNT,
+    MAX_SKILL_SCRIPT_OUTPUT_BYTES, MAX_SKILL_SCRIPT_STREAM_BYTES, MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
 };
 
 pub fn parse_skill_markdown(
@@ -47,6 +53,7 @@ pub fn parse_skill_markdown(
         frontmatter,
         body: body.trim_start_matches('\n').to_owned(),
         raw_path,
+        package_snapshot: None,
     })
 }
 
@@ -81,12 +88,16 @@ fn parse_frontmatter(yaml: &Yaml) -> Result<SkillFrontmatter, SkillError> {
     let category = optional_string(yaml_hash_get(yaml, "category"))
         .or_else(|| jyowo_meta.and_then(|meta| optional_string(yaml_hash_get(meta, "category"))));
 
+    let config = parse_config(yaml_hash_get(yaml, "config"))?;
+    let scripts = parse_scripts(yaml_hash_get(yaml, "scripts"), &config)?;
+
     Ok(SkillFrontmatter {
         name,
         description,
         allowlist_agents: string_vec(yaml_hash_get(yaml, "allowlist_agents")),
         parameters: parse_parameters(yaml_hash_get(yaml, "parameters"))?,
-        config: parse_config(yaml_hash_get(yaml, "config"))?,
+        config,
+        scripts,
         platforms: parse_platforms(yaml_hash_get(yaml, "platforms"))?,
         prerequisites: parse_prerequisites(yaml_hash_get(yaml, "prerequisites")),
         hooks: parse_hooks(yaml_hash_get(yaml, "hooks"))?,
@@ -94,6 +105,249 @@ fn parse_frontmatter(yaml: &Yaml) -> Result<SkillFrontmatter, SkillError> {
         category,
         metadata,
     })
+}
+
+fn parse_scripts(
+    yaml: Option<&Yaml>,
+    config: &[SkillConfigDecl],
+) -> Result<Vec<SkillScriptDecl>, SkillError> {
+    let Some(yaml) = yaml else {
+        return Ok(Vec::new());
+    };
+    let Yaml::Array(items) = yaml else {
+        return Err(script_error("scripts must be a list"));
+    };
+    let config_by_key = config
+        .iter()
+        .map(|decl| (decl.key.as_str(), decl))
+        .collect::<HashMap<_, _>>();
+    let mut ids = HashSet::new();
+    let mut scripts = Vec::with_capacity(items.len());
+
+    for item in items {
+        reject_unknown_fields(
+            item,
+            &[
+                "id",
+                "path",
+                "timeoutSeconds",
+                "network",
+                "env",
+                "maxStdoutBytes",
+                "maxStderrBytes",
+                "maxOutputBytes",
+                "maxArtifactCount",
+                "maxArtifactBytes",
+            ],
+            "script",
+        )?;
+        let id = required_script_string(item, "id")?;
+        if id.trim().is_empty() {
+            return Err(script_error("script id must not be empty"));
+        }
+        if !ids.insert(id.clone()) {
+            return Err(script_error(format!("duplicate script id: {id}")));
+        }
+        let path_value = required_script_string(item, "path")?;
+        let path = relative_package_path(&path_value)?;
+        let network = parse_script_network(yaml_hash_get(item, "network"))?;
+        let env = parse_script_env(yaml_hash_get(item, "env"), &id, &config_by_key)?;
+
+        scripts.push(SkillScriptDecl {
+            id,
+            path,
+            timeout_seconds: bounded_script_u64(
+                item,
+                "timeoutSeconds",
+                DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS,
+                MAX_SKILL_SCRIPT_TIMEOUT_SECONDS,
+            )?,
+            network,
+            env,
+            max_stdout_bytes: bounded_script_u64(
+                item,
+                "maxStdoutBytes",
+                DEFAULT_SKILL_SCRIPT_STDOUT_BYTES,
+                MAX_SKILL_SCRIPT_STREAM_BYTES,
+            )?,
+            max_stderr_bytes: bounded_script_u64(
+                item,
+                "maxStderrBytes",
+                DEFAULT_SKILL_SCRIPT_STDERR_BYTES,
+                MAX_SKILL_SCRIPT_STREAM_BYTES,
+            )?,
+            max_output_bytes: bounded_script_u64(
+                item,
+                "maxOutputBytes",
+                DEFAULT_SKILL_SCRIPT_OUTPUT_BYTES,
+                MAX_SKILL_SCRIPT_OUTPUT_BYTES,
+            )?,
+            max_artifact_count: bounded_script_u64(
+                item,
+                "maxArtifactCount",
+                DEFAULT_SKILL_SCRIPT_ARTIFACT_COUNT,
+                MAX_SKILL_SCRIPT_ARTIFACT_COUNT,
+            )?,
+            max_artifact_bytes: bounded_script_u64(
+                item,
+                "maxArtifactBytes",
+                DEFAULT_SKILL_SCRIPT_ARTIFACT_BYTES,
+                MAX_SKILL_SCRIPT_ARTIFACT_BYTES,
+            )?,
+        });
+    }
+    Ok(scripts)
+}
+
+fn parse_script_network(yaml: Option<&Yaml>) -> Result<SkillScriptNetworkPolicy, SkillError> {
+    let Some(yaml) = yaml else {
+        return Ok(SkillScriptNetworkPolicy::Deny);
+    };
+    let Some(value) = yaml.as_str() else {
+        return Err(script_error("script network policy must be a string"));
+    };
+    match value {
+        "deny" => Ok(SkillScriptNetworkPolicy::Deny),
+        _ => Err(script_error(format!(
+            "unsupported script network policy: {value}"
+        ))),
+    }
+}
+
+fn parse_script_env(
+    yaml: Option<&Yaml>,
+    script_id: &str,
+    config_by_key: &HashMap<&str, &SkillConfigDecl>,
+) -> Result<BTreeMap<String, SkillScriptEnvDecl>, SkillError> {
+    let Some(yaml) = yaml else {
+        return Ok(BTreeMap::new());
+    };
+    let Yaml::Hash(entries) = yaml else {
+        return Err(script_error(format!(
+            "script `{script_id}` env must be a mapping"
+        )));
+    };
+    let mut env = BTreeMap::new();
+    for (env_name, value) in entries {
+        let Some(env_name) = env_name.as_str() else {
+            return Err(script_error(format!(
+                "script `{script_id}` env name must be a string"
+            )));
+        };
+        reject_unknown_fields(value, &["config", "secret"], "script env")?;
+        let config_key = required_script_string(value, "config")?;
+        let config = config_by_key.get(config_key.as_str()).ok_or_else(|| {
+            script_error(format!(
+                "script `{script_id}` env `{env_name}` references unknown config `{config_key}`"
+            ))
+        })?;
+        let secret = optional_bool(yaml_hash_get(value, "secret")).unwrap_or(false);
+        if secret && !config.secret {
+            return Err(script_error(format!(
+                "script `{script_id}` env `{env_name}` must reference config declared secret"
+            )));
+        }
+        if config.secret && !secret {
+            return Err(script_error(format!(
+                "script `{script_id}` env `{env_name}` must set secret: true"
+            )));
+        }
+        if env
+            .insert(
+                env_name.to_owned(),
+                SkillScriptEnvDecl {
+                    config: config_key,
+                    secret,
+                },
+            )
+            .is_some()
+        {
+            return Err(script_error(format!(
+                "script `{script_id}` has duplicate env `{env_name}`"
+            )));
+        }
+    }
+    Ok(env)
+}
+
+fn bounded_script_u64(yaml: &Yaml, field: &str, default: u64, max: u64) -> Result<u64, SkillError> {
+    let Some(value) = yaml_hash_get(yaml, field) else {
+        return Ok(default);
+    };
+    let value = optional_u64(Some(value)).ok_or_else(|| {
+        script_error(format!(
+            "script {field} must be an integer between 1 and {max}"
+        ))
+    })?;
+    if !(1..=max).contains(&value) {
+        return Err(script_error(format!(
+            "script {field} must be between 1 and {max}"
+        )));
+    }
+    Ok(value)
+}
+
+fn relative_package_path(value: &str) -> Result<PathBuf, SkillError> {
+    let normalized_value = value.replace('\\', "/");
+    let path = Path::new(&normalized_value);
+    let windows_absolute = normalized_value
+        .as_bytes()
+        .get(1)
+        .is_some_and(|value| *value == b':');
+    if path.is_absolute() || windows_absolute || normalized_value.starts_with("//") {
+        return Err(script_error(format!(
+            "script path `{value}` must be a relative package path"
+        )));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(script_error(format!(
+                    "script path `{value}` must be a relative package path"
+                )));
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(script_error(format!(
+            "script path `{value}` must be a relative package path"
+        )));
+    }
+    if skill_script_path_has_reserved_component(&normalized) {
+        return Err(script_error(format!(
+            "script path `{value}` uses reserved .jyowo- path component"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn reject_unknown_fields(yaml: &Yaml, allowed: &[&str], subject: &str) -> Result<(), SkillError> {
+    let Yaml::Hash(hash) = yaml else {
+        return Err(script_error(format!("{subject} must be a mapping")));
+    };
+    for (key, _) in hash {
+        let Some(key) = key.as_str() else {
+            return Err(script_error(format!(
+                "{subject} field name must be a string"
+            )));
+        };
+        if !allowed.contains(&key) {
+            return Err(script_error(format!("unknown {subject} field: {key}")));
+        }
+    }
+    Ok(())
+}
+
+fn required_script_string(yaml: &Yaml, key: &str) -> Result<String, SkillError> {
+    optional_string(yaml_hash_get(yaml, key))
+        .ok_or_else(|| script_error(format!("missing required script field: {key}")))
+}
+
+fn script_error(message: impl Into<String>) -> SkillError {
+    SkillError::InvalidScriptDeclaration(message.into())
 }
 
 fn parse_parameters(yaml: Option<&Yaml>) -> Result<Vec<SkillParameter>, SkillError> {
@@ -436,6 +690,7 @@ fn reject_unknown_top_level_fields(yaml: &Yaml) -> Result<(), SkillError> {
         "allowlist_agents",
         "parameters",
         "config",
+        "scripts",
         "platforms",
         "prerequisites",
         "hooks",

@@ -219,6 +219,7 @@ impl SandboxBackend for SshSandbox {
             cwd_marker_support: CwdMarkerSupport::Disabled,
             supports_activity_heartbeat: true,
             supports_interactive_shell: false,
+            supports_per_exec_env: false,
             network: NetworkPolicySupport {
                 none: false,
                 loopback_only: false,
@@ -230,6 +231,7 @@ impl SandboxBackend for SshSandbox {
                 read_only: false,
                 writable_subpaths: false,
             },
+            host_filesystem_isolation: false,
             supports_gpu: false,
             supports_pty: false,
             supports_detach: false,
@@ -237,6 +239,7 @@ impl SandboxBackend for SshSandbox {
             supports_session_snapshot: true,
             max_concurrent_execs: u32::MAX,
             supports_kill_scope: vec![KillScope::Process],
+            supports_synchronous_kill_scope: Vec::new(),
             snapshot_kinds: BTreeSet::from([SessionSnapshotKind::FilesystemImage]),
             resource_limit_support: ResourceLimitSupport {
                 wall_clock: true,

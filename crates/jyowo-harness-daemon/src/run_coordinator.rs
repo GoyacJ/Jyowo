@@ -100,6 +100,29 @@ pub struct StartSegmentRequest {
     pub indeterminate_tools: Vec<IndeterminateToolDecision>,
 }
 
+impl StartSegmentRequest {
+    #[must_use]
+    pub fn skill_context_delivery_key(&self, reference_index: usize) -> Option<String> {
+        let queue_item_id = self.input.queue_item_id?;
+        let queue_item_revision = self.input.queue_item_revision?;
+        let encoded_reference_index = u64::try_from(reference_index).ok()?;
+        if !matches!(
+            self.input.context_references.get(reference_index),
+            Some(harness_contracts::ConversationContextReference::Skill { .. })
+        ) {
+            return None;
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"jyowo.skill-context-delivery.v1\0");
+        hasher.update(&self.task_id.as_bytes());
+        hasher.update(&queue_item_id.as_bytes());
+        hasher.update(&queue_item_revision.to_be_bytes());
+        hasher.update(&encoded_reference_index.to_be_bytes());
+        Some(format!("skill-context-v1:{}", hasher.finalize().to_hex()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunCoordinatorEvent {
     Completed {
@@ -296,7 +319,56 @@ impl WorkspaceBoundRunCoordinatorFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use harness_contracts::{
+        ConversationContextReference, PermissionMode, QueueItemId, RunId, SessionId, SkillId,
+        SkillSourceKind, CURRENT_CONTEXT_REFERENCE_VERSION,
+    };
+
     use super::*;
+
+    #[test]
+    fn skill_context_delivery_key_is_stable_and_revision_scoped() {
+        let task_id = TaskId::new();
+        let queue_item_id = QueueItemId::new();
+        let skill = || ConversationContextReference::Skill {
+            version: CURRENT_CONTEXT_REFERENCE_VERSION,
+            skill_id: SkillId("user:review".into()),
+            label: "Review".into(),
+            parameters: BTreeMap::new(),
+            source: Some(SkillSourceKind::User),
+        };
+        let request = StartSegmentRequest {
+            task_id,
+            segment_id: RunSegmentId::new(),
+            input: SegmentRunInput {
+                queue_item_id: Some(queue_item_id),
+                queue_item_revision: Some(2),
+                content: "review".into(),
+                attachments: Vec::new(),
+                context_references: vec![skill(), skill()],
+                model_config_id: None,
+                permission_mode: PermissionMode::Default,
+                workspace: None,
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
+                workspace_lease_id: None,
+            },
+            indeterminate_tools: Vec::new(),
+        };
+
+        let first = request.skill_context_delivery_key(0).unwrap();
+        let mut resumed = request.clone();
+        resumed.segment_id = RunSegmentId::new();
+        assert_eq!(resumed.skill_context_delivery_key(0).unwrap(), first);
+
+        let mut edited = request.clone();
+        edited.input.queue_item_revision = Some(3);
+        assert_ne!(edited.skill_context_delivery_key(0).unwrap(), first);
+        assert_ne!(request.skill_context_delivery_key(1).unwrap(), first);
+        assert_eq!(request.skill_context_delivery_key(2), None);
+    }
 
     #[tokio::test]
     async fn a_ready_control_outcome_wins_over_a_ready_completed_event() {

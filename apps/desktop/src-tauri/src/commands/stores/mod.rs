@@ -39,6 +39,8 @@ mod mcp;
 pub(crate) mod plugin;
 mod project_config;
 pub(crate) mod skill;
+mod skill_catalog_tasks;
+mod skill_config;
 
 pub use global_config::GlobalConfigStore;
 pub use mcp::DesktopMcpDiagnosticStore;
@@ -46,6 +48,8 @@ pub(crate) use mcp::DesktopMcpServerStore;
 pub use plugin::DesktopPluginStore;
 pub use project_config::ProjectConfigStore;
 pub use skill::DesktopSkillStore;
+pub(crate) use skill_catalog_tasks::DesktopSkillCatalogTaskStore;
+pub use skill_config::{DesktopSkillConfigStore, SkillConfigStoreFault};
 
 pub(crate) fn read_json_file<T: DeserializeOwned>(
     path: &Path,
@@ -639,6 +643,22 @@ impl NoFollowParentDir {
             Path::new(destination_name),
         )
         .map_err(|error| runtime_operation_failed(format!("{label} commit failed: {error}")))
+    }
+
+    fn rename_to(
+        &self,
+        destination: &NoFollowParentDir,
+        label: &str,
+    ) -> Result<(), CommandErrorPayload> {
+        rustix::fs::renameat(
+            &self.directory,
+            Path::new(self.file_name()),
+            &destination.directory,
+            Path::new(destination.file_name()),
+        )
+        .map_err(|error| runtime_operation_failed(format!("{label} final swap failed: {error}")))?;
+        self.sync_all(label)?;
+        destination.sync_all(label)
     }
 
     fn hard_link_file(
@@ -1478,72 +1498,8 @@ pub(crate) fn ensure_no_symlink_components(
 }
 
 pub(crate) fn hash_skill_package(source_path: &Path) -> Result<String, CommandErrorPayload> {
-    let mut hasher = blake3::Hasher::new();
-    let mut file_count = 0_usize;
-    let mut total_bytes = 0_u64;
-    hash_skill_package_dir(
-        source_path,
-        source_path,
-        &mut hasher,
-        &mut file_count,
-        &mut total_bytes,
-    )?;
-    Ok(hasher.finalize().to_hex().to_string())
-}
-
-pub(crate) fn hash_skill_package_dir(
-    root: &Path,
-    dir: &Path,
-    hasher: &mut blake3::Hasher,
-    file_count: &mut usize,
-    total_bytes: &mut u64,
-) -> Result<(), CommandErrorPayload> {
-    ensure_no_symlink_components(dir, "skill package directory")?;
-    let mut entries = std::fs::read_dir(dir)
-        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| runtime_operation_failed(format!("skill package read failed: {error}")))?;
-    entries.sort();
-    for path in entries {
-        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-            runtime_operation_failed(format!("skill package metadata failed: {error}"))
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(runtime_operation_failed(
-                "skill package must not use symlinks".to_owned(),
-            ));
-        }
-        if metadata.is_dir() {
-            hash_skill_package_dir(root, &path, hasher, file_count, total_bytes)?;
-            continue;
-        }
-        if !metadata.is_file() {
-            return Err(invalid_payload(
-                "skill package may contain only files and directories".to_owned(),
-            ));
-        }
-        *file_count += 1;
-        if *file_count > MAX_SKILL_PACKAGE_FILES {
-            return Err(invalid_payload(
-                "skill package has too many files".to_owned(),
-            ));
-        }
-        let bytes =
-            read_regular_file_no_follow(&path, "skill package file", MAX_SKILL_PACKAGE_FILE_BYTES)?;
-        *total_bytes = total_bytes.saturating_add(bytes.len() as u64);
-        if *total_bytes > MAX_SKILL_PACKAGE_BYTES {
-            return Err(invalid_payload("skill package is too large".to_owned()));
-        }
-        let relative_path = path.strip_prefix(root).map_err(|_| {
-            runtime_operation_failed("skill package path escaped its root".to_owned())
-        })?;
-        hasher.update(path_to_workspace_string(relative_path).as_bytes());
-        hasher.update(&[0]);
-        hasher.update(&bytes);
-        hasher.update(&[0]);
-    }
-    Ok(())
+    harness_skill::hash_skill_package(source_path)
+        .map_err(|error| runtime_operation_failed(format!("skill package hash failed: {error}")))
 }
 
 fn remove_package_dir_if_exists(path: &Path, label: &str) -> Result<(), CommandErrorPayload> {
@@ -2397,9 +2353,11 @@ pub struct DesktopRuntimeState {
     pub(crate) execution_settings_store: Arc<DesktopExecutionSettingsStore>,
     pub(crate) global_config_store: Option<GlobalConfigStore>,
     pub(crate) project_config_store: Option<ProjectConfigStore>,
-    pub(crate) skill_catalog_install_tasks:
-        Arc<RwLock<HashMap<SkillCatalogInstallTaskKey, SkillCatalogInstallTaskPayload>>>,
+    pub(crate) skill_catalog_install_task_store: Arc<DesktopSkillCatalogTaskStore>,
+    pub(crate) catalog_download_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) catalog_materialize_hook: Option<SkillCatalogMaterializeHook>,
     pub(crate) skill_store: Arc<dyn SkillStore>,
+    pub(crate) skill_config_store: Arc<DesktopSkillConfigStore>,
     pub(crate) skill_store_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) settings_reload_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) runtime_layout: crate::storage_layout::RuntimeLayout,

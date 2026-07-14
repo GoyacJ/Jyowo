@@ -12,10 +12,29 @@ use harness_contracts::{
 };
 use harness_sandbox::{
     execute_with_lifecycle, preflight_exec, restore_with_lifecycle, shutdown_with_lifecycle,
-    snapshot_with_lifecycle, ActivityHandle, EventSink, ExecContext, ExecOutcome, ExecSpec,
-    NetworkPolicySupport, ProcessHandle, SandboxBackend, SandboxCapabilities, SessionSnapshotFile,
-    SnapshotSpec,
+    snapshot_with_lifecycle, validate_preflight_capabilities, ActivityHandle, EventSink,
+    ExecContext, ExecOutcome, ExecSpec, NetworkPolicySupport, ProcessHandle, SandboxBackend,
+    SandboxCapabilities, SessionSnapshotFile, SnapshotSpec,
 };
+
+#[test]
+fn exec_spec_debug_redacts_declared_secret_environment_values() {
+    let mut spec = ExecSpec::default();
+    spec.env
+        .insert("PUBLIC".to_owned(), "visible-value".to_owned());
+    spec.env
+        .insert("SECRET".to_owned(), "must-not-leak".to_owned());
+    spec.secret_env_keys.insert("SECRET".to_owned());
+
+    let debug = format!("{spec:?}");
+
+    assert!(debug.contains("visible-value"));
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("must-not-leak"));
+}
+
+#[cfg(feature = "local")]
+use harness_sandbox::{LocalIsolation, LocalSandbox};
 
 #[derive(Default)]
 struct NullSink;
@@ -49,9 +68,132 @@ impl EventSink for RecordingSink {
 
 struct SecretRedactor;
 
+#[cfg(feature = "local")]
+#[test]
+fn local_process_group_capability_matches_platform_enforcement() {
+    let sandbox = LocalSandbox::new(std::env::temp_dir())
+        .with_isolation(LocalIsolation::for_current_platform());
+
+    let helpers_available = host_binary_available("sleep")
+        && host_binary_available("kill")
+        && absolute_host_binary_available("/bin/sh");
+    assert_eq!(
+        sandbox
+            .capabilities()
+            .supports_kill_scope
+            .contains(&KillScope::ProcessGroup),
+        cfg!(target_os = "linux") && helpers_available
+    );
+}
+
+#[cfg(feature = "local")]
+fn absolute_host_binary_available(path: &str) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(feature = "local")]
+fn host_binary_available(binary: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|directory| {
+        let path = directory.join(binary);
+        let Ok(metadata) = path.metadata() else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    })
+}
+
+#[cfg(all(feature = "local", target_os = "macos"))]
+#[test]
+fn seatbelt_does_not_claim_process_tree_containment() {
+    let capabilities = LocalSandbox::new(std::env::temp_dir())
+        .with_isolation(LocalIsolation::Seatbelt)
+        .capabilities();
+
+    assert!(!capabilities
+        .supports_kill_scope
+        .contains(&KillScope::ProcessGroup));
+    assert!(!capabilities
+        .supports_synchronous_kill_scope
+        .contains(&KillScope::ProcessGroup));
+}
+
 impl Redactor for SecretRedactor {
     fn redact(&self, input: &str, _rules: &RedactRules) -> String {
         input.replace("secret", "[MASK]")
+    }
+}
+
+#[test]
+fn preflight_rejects_secret_environment_keys_that_are_not_explicitly_authorized() {
+    let capabilities = environment_capabilities();
+    let mut spec = ExecSpec::default();
+    spec.env.insert("TOKEN".to_owned(), "secret".to_owned());
+    spec.secret_env_keys.insert("TOKEN".to_owned());
+
+    let error = validate_preflight_capabilities("test", &capabilities, &spec)
+        .expect_err("secret keys must be explicitly authorized");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "secret_environment"
+    ));
+}
+
+#[test]
+fn preflight_rejects_declared_secret_environment_keys_without_values() {
+    let capabilities = environment_capabilities();
+    let mut spec = ExecSpec::default();
+    spec.authorized_env_keys.insert("TOKEN".to_owned());
+    spec.secret_env_keys.insert("TOKEN".to_owned());
+
+    let error = validate_preflight_capabilities("test", &capabilities, &spec)
+        .expect_err("secret keys must have a value to inject");
+
+    assert!(matches!(
+        error,
+        SandboxError::CapabilityMismatch { ref capability, .. }
+            if capability == "secret_environment"
+    ));
+}
+
+fn environment_capabilities() -> SandboxCapabilities {
+    SandboxCapabilities {
+        supports_per_exec_env: true,
+        network: NetworkPolicySupport {
+            none: true,
+            ..NetworkPolicySupport::default()
+        },
+        max_concurrent_execs: 1,
+        ..SandboxCapabilities::default()
     }
 }
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,7 +16,8 @@ use harness_plugin::{
     DiscoverySource, HookManifestEntry, ManifestLoaderError, ManifestOrigin, ManifestRecord,
     McpManifestEntry, Plugin, PluginActivationContext, PluginActivationResult, PluginCapabilities,
     PluginCapabilityRegistries, PluginError, PluginManifest, PluginManifestLoader, PluginName,
-    PluginRegistry, PluginRuntimeLoader, RuntimeLoaderError, SkillManifestEntry, ToolManifestEntry,
+    PluginRegistry, PluginRuntimeLoader, RuntimeLoaderError, SkillManifestEntry,
+    SkillRegistryReconciler, ToolManifestEntry,
 };
 use harness_skill::{
     BuiltinHookKind, Skill, SkillConfigDecl, SkillFrontmatter, SkillHookDecl, SkillHookTransport,
@@ -65,14 +67,123 @@ async fn deactivate_unregisters_registered_capabilities() {
     registry.discover().await.expect("discover");
 
     registry.activate(&plugin_id()).await.expect("activate");
-    registries
-        .hooks
-        .register(Box::new(FakeSkillBoundHook))
-        .expect("skill-bound hook should register");
     registries.assert_registered().await;
 
     registry.deactivate(&plugin_id()).await.expect("deactivate");
     registries.assert_unregistered().await;
+}
+
+#[tokio::test]
+async fn deactivate_restores_shadow_skill_hook_through_reconciler() {
+    let registries = Registries::new();
+    let mut shadow = fake_skill();
+    shadow.id = SkillId("shadow-skill".to_owned());
+    shadow.source = SkillSource::Bundled;
+    shadow.frontmatter.hooks[0].events = vec![HookEventKind::PostToolUse];
+    registries.skills.register(shadow).unwrap();
+    let reconciler = Arc::new(TestSkillHookReconciler {
+        skills: registries.skills.clone(),
+        hooks: registries.hooks.clone(),
+    });
+    reconciler
+        .reconcile(
+            &harness_skill::SkillRegistrySnapshot::default(),
+            &registries.skills.snapshot(),
+        )
+        .unwrap();
+    let shadow_handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    let record = manifest();
+    let registry = registry_with(
+        record.clone(),
+        Arc::new(RegisteringPlugin {
+            manifest: record.manifest.clone(),
+            invalid_result: false,
+        }),
+        registries.capabilities().with_skill_reconciler(reconciler),
+    );
+    registry.discover().await.unwrap();
+
+    registry.activate(&plugin_id()).await.unwrap();
+    let plugin_handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    assert_ne!(plugin_handler_id, shadow_handler_id);
+    assert!(registries.hooks.origin_for(&plugin_handler_id).is_some());
+    assert!(registries.hooks.origin_for(&shadow_handler_id).is_none());
+
+    registry.deactivate(&plugin_id()).await.unwrap();
+
+    assert_eq!(
+        registries.skills.get("registered-skill").unwrap().source,
+        SkillSource::Bundled
+    );
+    assert!(registries.hooks.origin_for(&plugin_handler_id).is_none());
+    assert!(registries.hooks.origin_for(&shadow_handler_id).is_some());
+}
+
+#[tokio::test]
+async fn fallback_deactivate_does_not_delete_host_hook_with_skill_handler_id() {
+    let registries = Registries::new();
+    let record = manifest();
+    let registry = registry_with(
+        record.clone(),
+        Arc::new(RegisteringPlugin {
+            manifest: record.manifest.clone(),
+            invalid_result: false,
+        }),
+        registries.capabilities_without_skill_reconciler(),
+    );
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id()).await.unwrap();
+    let handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    registries
+        .hooks
+        .register(Box::new(FakeSkillBoundHook {
+            handler_id: handler_id.clone(),
+        }))
+        .unwrap();
+
+    registry.deactivate(&plugin_id()).await.unwrap();
+
+    assert_eq!(
+        registries.hooks.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Host)
+    );
+}
+
+#[tokio::test]
+async fn fallback_deactivate_does_not_delete_other_skill_owner_hook() {
+    let registries = Registries::new();
+    let record = manifest();
+    let registry = registry_with(
+        record.clone(),
+        Arc::new(RegisteringPlugin {
+            manifest: record.manifest.clone(),
+            invalid_result: false,
+        }),
+        registries.capabilities_without_skill_reconciler(),
+    );
+    registry.discover().await.unwrap();
+    registry.activate(&plugin_id()).await.unwrap();
+    let handler_id = registries.skills.hook_bindings()[0].handler_id.clone();
+    let foreign_registry = SkillRegistry::builder().build();
+    let foreign_owner = foreign_registry.hook_owner_token();
+    registries
+        .hooks
+        .register_from_skill(
+            foreign_owner.clone(),
+            Box::new(FakeSkillBoundHook {
+                handler_id: handler_id.clone(),
+            }),
+        )
+        .unwrap();
+
+    registry.deactivate(&plugin_id()).await.unwrap();
+
+    assert_eq!(
+        registries.hooks.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Skill {
+            owner: foreign_owner
+        })
+    );
 }
 
 struct Registries {
@@ -96,6 +207,18 @@ impl Registries {
     }
 
     fn capabilities(&self) -> PluginCapabilityRegistries {
+        PluginCapabilityRegistries::default()
+            .with_tool_registry(self.tools.clone())
+            .with_hook_registry(self.hooks.clone())
+            .with_mcp_registry(self.mcp.clone())
+            .with_skill_registry(self.skills.clone())
+            .with_skill_reconciler(Arc::new(TestSkillHookReconciler {
+                skills: self.skills.clone(),
+                hooks: self.hooks.clone(),
+            }))
+    }
+
+    fn capabilities_without_skill_reconciler(&self) -> PluginCapabilityRegistries {
         PluginCapabilityRegistries::default()
             .with_tool_registry(self.tools.clone())
             .with_hook_registry(self.hooks.clone())
@@ -125,8 +248,9 @@ impl Registries {
         assert!(self.skills.get("registered-skill").is_none());
         assert!(self
             .hooks
-            .origin_for("skill:registered-skill:audit")
-            .is_none());
+            .snapshot()
+            .handlers_for(HookEventKind::SessionStart)
+            .is_empty());
     }
 }
 
@@ -292,6 +416,7 @@ fn fake_skill() -> Skill {
             allowlist_agents: None,
             parameters: Vec::new(),
             config: Vec::<SkillConfigDecl>::new(),
+            scripts: Vec::new(),
             platforms: Vec::new(),
             prerequisites: SkillPrerequisites::default(),
             hooks: vec![SkillHookDecl {
@@ -305,6 +430,7 @@ fn fake_skill() -> Skill {
         },
         body: String::new(),
         raw_path: None,
+        package_snapshot: None,
     }
 }
 
@@ -325,12 +451,63 @@ impl HookHandler for FakeHook {
     }
 }
 
-struct FakeSkillBoundHook;
+struct FakeSkillBoundHook {
+    handler_id: String,
+}
+
+struct TestSkillHookReconciler {
+    skills: SkillRegistry,
+    hooks: HookRegistry,
+}
+
+impl SkillRegistryReconciler for TestSkillHookReconciler {
+    fn reconcile(
+        &self,
+        current: &harness_skill::SkillRegistrySnapshot,
+        candidate: &harness_skill::SkillRegistrySnapshot,
+    ) -> Result<(), String> {
+        let old_ids = self
+            .skills
+            .hook_bindings_in_snapshot(current)
+            .into_iter()
+            .map(|binding| binding.handler_id)
+            .collect::<HashSet<_>>();
+        let next_bindings = self.skills.hook_bindings_in_snapshot(candidate);
+        let next_ids = next_bindings
+            .iter()
+            .map(|binding| binding.handler_id.clone())
+            .collect::<HashSet<_>>();
+        let reusable = old_ids
+            .intersection(&next_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let removed = old_ids
+            .difference(&next_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let handlers = next_bindings
+            .into_iter()
+            .map(|binding| {
+                Box::new(FakeSkillBoundHook {
+                    handler_id: binding.handler_id,
+                }) as Box<dyn HookHandler>
+            })
+            .collect();
+        self.hooks
+            .reconcile_skill_handlers(
+                self.skills.hook_owner_token(),
+                handlers,
+                &reusable,
+                &removed,
+            )
+            .map_err(|error| error.to_string())
+    }
+}
 
 #[async_trait]
 impl HookHandler for FakeSkillBoundHook {
     fn handler_id(&self) -> &str {
-        "skill:registered-skill:audit"
+        &self.handler_id
     }
 
     fn interested_events(&self) -> &[HookEventKind] {

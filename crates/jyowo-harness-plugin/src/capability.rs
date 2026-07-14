@@ -6,7 +6,7 @@ use harness_contracts::{HookFailureMode, PluginId, SteeringId, SteeringRequest, 
 use harness_hook::HookRegistry;
 use harness_hook::{HookHandler, HookRegistrationKind};
 use harness_mcp::{McpConnection, McpRegistry, McpServerSpec, TransportChoice};
-use harness_skill::{Skill, SkillRegistry};
+use harness_skill::{Skill, SkillRegistry, SkillRegistrySnapshot};
 use harness_tool::Tool;
 use harness_tool::ToolRegistry;
 use parking_lot::Mutex;
@@ -19,7 +19,16 @@ pub struct PluginCapabilityRegistries {
     pub hooks: Option<HookRegistry>,
     pub mcp: Option<McpRegistry>,
     pub skills: Option<SkillRegistry>,
+    pub skill_reconciler: Option<Arc<dyn SkillRegistryReconciler>>,
     pub steering: Option<Arc<dyn SteeringRegistration>>,
+}
+
+pub trait SkillRegistryReconciler: Send + Sync {
+    fn reconcile(
+        &self,
+        current: &SkillRegistrySnapshot,
+        candidate: &SkillRegistrySnapshot,
+    ) -> Result<(), String>;
 }
 
 impl PluginCapabilityRegistries {
@@ -44,6 +53,12 @@ impl PluginCapabilityRegistries {
     #[must_use]
     pub fn with_skill_registry(mut self, registry: SkillRegistry) -> Self {
         self.skills = Some(registry);
+        self
+    }
+
+    #[must_use]
+    pub fn with_skill_reconciler(mut self, reconciler: Arc<dyn SkillRegistryReconciler>) -> Self {
+        self.skill_reconciler = Some(reconciler);
         self
     }
 
@@ -448,6 +463,7 @@ pub(crate) struct ScopedSkillRegistration {
     plugin_id: PluginId,
     trust_level: TrustLevel,
     registry: Option<SkillRegistry>,
+    reconciler: Option<Arc<dyn SkillRegistryReconciler>>,
     state: Arc<CapabilityRegistrationState>,
     metrics: Option<Arc<dyn PluginMetricsSink>>,
 }
@@ -456,6 +472,7 @@ impl ScopedSkillRegistration {
     pub(crate) fn new(
         manifest: &PluginManifest,
         registry: Option<SkillRegistry>,
+        reconciler: Option<Arc<dyn SkillRegistryReconciler>>,
         state: Arc<CapabilityRegistrationState>,
         metrics: Option<Arc<dyn PluginMetricsSink>>,
     ) -> Self {
@@ -469,6 +486,7 @@ impl ScopedSkillRegistration {
             plugin_id: manifest.plugin_id(),
             trust_level: manifest.trust_level,
             registry,
+            reconciler,
             state,
             metrics,
         }
@@ -484,12 +502,31 @@ impl SkillRegistration for ScopedSkillRegistration {
             return Err(RegistrationError::UndeclaredSkill { name });
         }
         if let Some(registry) = &self.registry {
-            registry
-                .register_from_plugin(self.plugin_id.clone(), self.trust_level, skill.clone())
-                .map_err(|error| RegistrationError::OwnerRegistry {
-                    kind: "skill",
-                    details: error.to_string(),
-                })?;
+            if let Some(reconciler) = &self.reconciler {
+                registry
+                    .try_register_from_plugin(
+                        self.plugin_id.clone(),
+                        self.trust_level,
+                        skill.clone(),
+                        |current, candidate| reconciler.reconcile(current, candidate),
+                    )
+                    .map_err(|error| RegistrationError::OwnerRegistry {
+                        kind: "skill",
+                        details: match error {
+                            harness_skill::SkillRegistryUpdateError::Registry(error) => {
+                                error.to_string()
+                            }
+                            harness_skill::SkillRegistryUpdateError::Reconcile(error) => error,
+                        },
+                    })?;
+            } else {
+                registry
+                    .register_from_plugin(self.plugin_id.clone(), self.trust_level, skill.clone())
+                    .map_err(|error| RegistrationError::OwnerRegistry {
+                        kind: "skill",
+                        details: error.to_string(),
+                    })?;
+            }
         }
         self.state.skills.lock().insert(name);
         Ok(())

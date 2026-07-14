@@ -23,6 +23,18 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     schemas.insert("daemon_protocol".to_owned(), daemon_protocol_schema());
     insert_schema!(schemas, "event", Event);
     insert_schema!(schemas, "event_kind", EventKind);
+    insert_schema!(schemas, "skill_context_prepared", SkillContextPreparedEvent);
+    insert_schema!(
+        schemas,
+        "skill_context_assembled",
+        SkillContextAssembledEvent
+    );
+    insert_schema!(
+        schemas,
+        "skill_context_provider_accepted",
+        SkillContextProviderAcceptedEvent
+    );
+    insert_schema!(schemas, "skill_context_consumed", SkillContextConsumedEvent);
     insert_schema!(schemas, "session_id", SessionId);
     insert_schema!(schemas, "run_id", RunId);
     insert_schema!(schemas, "message_id", MessageId);

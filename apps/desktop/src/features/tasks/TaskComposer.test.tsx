@@ -187,6 +187,49 @@ describe('TaskComposer', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Task A failed late')
   })
 
+  it('preserves a tagged context reference in the daemon command', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    render(
+      <TaskComposer
+        client={clientWith(request)}
+        connectionState="connected"
+        onListReferenceCandidates={vi.fn().mockResolvedValue({
+          artifacts: [],
+          conversations: [],
+          files: [{ label: 'lib.rs', path: 'src/lib.rs' }],
+          memories: [],
+          mcpServers: [],
+          skills: [],
+          tools: [],
+        })}
+        streamVersion={9}
+        taskId={taskId}
+        taskState="idle"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'lib.rs' }))
+    fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
+      target: { value: 'Inspect this file' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contextReferences: [
+            {
+              kind: 'workspace_file',
+              label: 'lib.rs',
+              path: 'src/lib.rs',
+            },
+          ],
+        }),
+      ),
+    )
+  })
+
   it('stages a selected attachment in the daemon task blob store', async () => {
     const request = vi.fn().mockResolvedValue(acceptedFrame())
     const stageBlobFromPath = vi.fn().mockResolvedValue({

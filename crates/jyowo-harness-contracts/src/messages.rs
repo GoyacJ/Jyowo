@@ -1,16 +1,18 @@
 //! Message, turn input, and tool result contracts.
 //!
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
-    BlobRef, JournalOffset, MemoryId, MessageId, ModelModality, ToolUseId, TranscriptRef,
-    UsageSnapshot,
+    BlobRef, JournalOffset, MemoryId, MessageId, ModelModality, SkillId, SkillSourceKind,
+    ToolUseId, TranscriptRef, UsageSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -19,8 +21,11 @@ pub struct TurnInput {
     pub metadata: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub const CURRENT_CONTEXT_REFERENCE_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[schemars(deny_unknown_fields)]
 pub enum ConversationContextReference {
     WorkspaceFile {
         path: String,
@@ -42,8 +47,16 @@ pub enum ConversationContextReference {
         resolved_content: Option<String>,
     },
     Skill {
-        id: String,
+        #[serde(default = "current_context_reference_version")]
+        #[schemars(extend("const" = CURRENT_CONTEXT_REFERENCE_VERSION))]
+        version: u16,
+        #[serde(rename = "skillId", alias = "id", alias = "skill_id")]
+        skill_id: SkillId,
         label: String,
+        #[serde(default)]
+        parameters: BTreeMap<String, Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SkillSourceKind>,
     },
     Tool {
         id: String,
@@ -53,6 +66,137 @@ pub enum ConversationContextReference {
         id: String,
         label: String,
     },
+}
+
+const fn current_context_reference_version() -> u16 {
+    CURRENT_CONTEXT_REFERENCE_VERSION
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TypedConversationContextReference {
+    WorkspaceFile {
+        path: String,
+        label: String,
+    },
+    Artifact {
+        id: String,
+        label: String,
+    },
+    Conversation {
+        id: String,
+        label: String,
+    },
+    Memory {
+        id: String,
+        label: String,
+        #[serde(default)]
+        resolved_content: Option<String>,
+    },
+    Skill {
+        #[serde(default = "current_context_reference_version")]
+        version: u16,
+        #[serde(rename = "skillId", alias = "id", alias = "skill_id")]
+        skill_id: SkillId,
+        label: String,
+        #[serde(default)]
+        parameters: BTreeMap<String, Value>,
+        #[serde(default)]
+        source: Option<SkillSourceKind>,
+    },
+    Tool {
+        id: String,
+        label: String,
+    },
+    McpServer {
+        id: String,
+        label: String,
+    },
+}
+
+impl From<TypedConversationContextReference> for ConversationContextReference {
+    fn from(reference: TypedConversationContextReference) -> Self {
+        match reference {
+            TypedConversationContextReference::WorkspaceFile { path, label } => {
+                Self::WorkspaceFile { path, label }
+            }
+            TypedConversationContextReference::Artifact { id, label } => {
+                Self::Artifact { id, label }
+            }
+            TypedConversationContextReference::Conversation { id, label } => {
+                Self::Conversation { id, label }
+            }
+            TypedConversationContextReference::Memory {
+                id,
+                label,
+                resolved_content,
+            } => Self::Memory {
+                id,
+                label,
+                resolved_content,
+            },
+            TypedConversationContextReference::Skill {
+                version,
+                skill_id,
+                label,
+                parameters,
+                source,
+            } => Self::Skill {
+                version,
+                skill_id,
+                label,
+                parameters,
+                source,
+            },
+            TypedConversationContextReference::Tool { id, label } => Self::Tool { id, label },
+            TypedConversationContextReference::McpServer { id, label } => {
+                Self::McpServer { id, label }
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ConversationContextReference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum CompatibleReference {
+            LegacyWorkspaceFile(String),
+            Typed(TypedConversationContextReference),
+        }
+
+        match CompatibleReference::deserialize(deserializer)? {
+            CompatibleReference::LegacyWorkspaceFile(path) => Ok(Self::WorkspaceFile {
+                label: path.clone(),
+                path,
+            }),
+            CompatibleReference::Typed(TypedConversationContextReference::Skill {
+                version,
+                ..
+            }) if version != CURRENT_CONTEXT_REFERENCE_VERSION => Err(D::Error::custom(format!(
+                "unsupported skill context reference version {version}"
+            ))),
+            CompatibleReference::Typed(reference) => Ok(reference.into()),
+        }
+    }
+}
+
+impl From<String> for ConversationContextReference {
+    fn from(path: String) -> Self {
+        Self::WorkspaceFile {
+            label: path.clone(),
+            path,
+        }
+    }
+}
+
+impl From<&str> for ConversationContextReference {
+    fn from(path: &str) -> Self {
+        path.to_owned().into()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

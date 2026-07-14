@@ -298,6 +298,12 @@ const deleteConversationResponseSchema = z
   })
   .strict()
 
+const skillReferenceSourceSchema = z.union([
+  z.enum(['bundled', 'workspace', 'user']),
+  z.object({ plugin: z.string().trim().min(1) }).strict(),
+  z.object({ mcp: z.string().trim().min(1) }).strict(),
+])
+
 const contextReferenceSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -329,9 +335,12 @@ const contextReferenceSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      id: z.string().trim().min(1),
       kind: z.literal('skill'),
       label: z.string().trim().min(1),
+      parameters: z.record(z.string(), z.unknown()).default({}),
+      skillId: z.string().trim().min(1),
+      source: skillReferenceSourceSchema.nullable().optional(),
+      version: z.literal(1).default(1),
     })
     .strict(),
   z
@@ -419,6 +428,14 @@ const referenceCandidateSchema = z
   })
   .strict()
 
+const skillReferenceCandidateSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    source: skillReferenceSourceSchema,
+  })
+  .strict()
+
 const listReferenceCandidatesResponseSchema = z
   .object({
     artifacts: z.array(referenceCandidateSchema),
@@ -426,14 +443,14 @@ const listReferenceCandidatesResponseSchema = z
     files: z.array(referenceCandidateSchema),
     memories: z.array(referenceCandidateSchema),
     mcpServers: z.array(referenceCandidateSchema),
-    skills: z.array(referenceCandidateSchema),
+    skills: z.array(skillReferenceCandidateSchema),
     tools: z.array(referenceCandidateSchema),
   })
   .strict()
 
 const listReferenceCandidatesRequestSchema = z
   .object({
-    conversationId: z.string().min(1),
+    taskId: z.string().min(1),
   })
   .strict()
 
@@ -3106,12 +3123,7 @@ const skillSourceKindSchema = z.enum(['workspace', 'user', 'bundled', 'plugin', 
 const skillStatusSchema = z.enum(['ready', 'prerequisite_missing', 'disabled', 'rejected'])
 const skillParamTypeSchema = z.enum(['string', 'number', 'boolean', 'path', 'url'])
 const skillFileKindSchema = z.enum(['directory', 'file'])
-const skillCatalogSourceIdSchema = z.enum([
-  'anthropic',
-  'agent-skills-spec',
-  'awesome-agent-skills',
-  'clawhub',
-])
+const skillCatalogSourceIdSchema = z.string().trim().min(1)
 const skillCatalogTrustLevelSchema = z.enum(['official', 'standard', 'curated', 'community'])
 
 const skillInstallOriginSchema = z
@@ -3154,6 +3166,36 @@ const skillParameterSchema = z
   })
   .strict()
 
+const skillScriptEnvSchema = z
+  .object({
+    configKey: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    secret: z.boolean(),
+  })
+  .strict()
+
+const skillScriptSchema = z
+  .object({
+    env: z.array(skillScriptEnvSchema),
+    id: z.string().trim().min(1),
+    maxArtifactBytes: z.number().int().nonnegative(),
+    maxArtifactCount: z.number().int().nonnegative(),
+    maxOutputBytes: z.number().int().nonnegative(),
+    maxStderrBytes: z.number().int().nonnegative(),
+    maxStdoutBytes: z.number().int().nonnegative(),
+    network: z.literal('deny'),
+    path: z.string().trim().min(1),
+    timeoutSeconds: z.number().int().positive(),
+  })
+  .strict()
+
+const skillPrerequisiteSchema = z
+  .object({
+    missingConfigKeys: z.array(z.string().trim().min(1)),
+    missingEnvVars: z.array(z.string().trim().min(1)),
+  })
+  .strict()
+
 const skillFileSchema = z
   .object({
     depth: z.number().int().nonnegative(),
@@ -3177,8 +3219,84 @@ const skillDetailSchema = z
     configKeys: z.array(z.string().min(1)),
     files: z.array(skillFileSchema),
     parameters: z.array(skillParameterSchema),
+    prerequisites: skillPrerequisiteSchema,
+    scripts: z.array(skillScriptSchema),
     summary: skillSummarySchema,
     validationError: z.string().optional(),
+  })
+  .strict()
+
+const skillConfigJsonSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number(),
+    z.string(),
+    z.array(skillConfigJsonSchema),
+    z.record(z.string(), skillConfigJsonSchema),
+  ]),
+)
+
+const skillConfigDeclarationSchema = z
+  .object({
+    default: skillConfigJsonSchema.optional(),
+    description: z.string().optional(),
+    key: z.string().trim().min(1),
+    required: z.boolean(),
+    secret: z.boolean(),
+    valueType: skillParamTypeSchema,
+  })
+  .strict()
+
+const skillConfigEntrySchema = z
+  .object({
+    secrets: z.record(z.string().trim().min(1), z.object({ configured: z.boolean() }).strict()),
+    values: z.record(z.string().trim().min(1), skillConfigJsonSchema),
+  })
+  .strict()
+
+const getSkillConfigRequestSchema = z
+  .object({
+    skillId: skillIdSchema,
+  })
+  .strict()
+
+const getSkillConfigResponseSchema = z
+  .object({
+    config: skillConfigEntrySchema,
+    declarations: z.array(skillConfigDeclarationSchema),
+    skillId: skillIdSchema,
+  })
+  .strict()
+
+const setSkillConfigValueRequestSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    skillId: skillIdSchema,
+    value: skillConfigJsonSchema,
+  })
+  .strict()
+
+const setSkillSecretRequestSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    skillId: skillIdSchema,
+    value: z.string().min(1),
+  })
+  .strict()
+
+const clearSkillSecretRequestSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    skillId: skillIdSchema,
+  })
+  .strict()
+
+const skillConfigMutationResponseSchema = z
+  .object({
+    configured: z.boolean(),
+    key: z.string().trim().min(1),
+    skillId: skillIdSchema,
   })
   .strict()
 
@@ -3594,7 +3712,7 @@ const skillCatalogInstallTaskSchema = z
     message: z.string().min(1).optional(),
     operationId: z.string().min(1),
     percent: z.number().int().min(0).max(100),
-    sourceId: z.string().min(1),
+    sourceId: skillCatalogSourceIdSchema,
     stage: z.enum([
       'preparing',
       'resolving',
@@ -3605,10 +3723,11 @@ const skillCatalogInstallTaskSchema = z
       'reloading',
       'completed',
       'failed',
+      'interrupted',
     ]),
-    startedAt: z.string().min(1),
-    status: z.enum(['running', 'completed', 'failed']),
-    updatedAt: z.string().min(1),
+    startedAt: z.string().datetime({ offset: true }),
+    status: z.enum(['running', 'completed', 'failed', 'interrupted']),
+    updatedAt: z.string().datetime({ offset: true }),
     version: z.string().min(1).optional(),
   })
   .strict()
@@ -3631,7 +3750,7 @@ const skillCatalogInstallProgressPayloadSchema = z
     message: z.string().min(1).optional(),
     operationId: z.string().min(1),
     percent: z.number().int().min(0).max(100),
-    sourceId: z.string().min(1),
+    sourceId: skillCatalogSourceIdSchema,
     stage: z.enum([
       'preparing',
       'resolving',
@@ -3642,6 +3761,7 @@ const skillCatalogInstallProgressPayloadSchema = z
       'reloading',
       'completed',
       'failed',
+      'interrupted',
     ]),
     version: z.string().min(1).optional(),
   })
@@ -3960,6 +4080,9 @@ export type UnsubscribeMcpDiagnosticsResponse = z.infer<
 >
 export type McpDiagnosticBatchPayload = z.infer<typeof mcpDiagnosticBatchPayloadSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
+export type SkillConfigDeclaration = z.infer<typeof skillConfigDeclarationSchema>
+export type GetSkillConfigResponse = z.infer<typeof getSkillConfigResponseSchema>
+export type SkillConfigMutationResponse = z.infer<typeof skillConfigMutationResponseSchema>
 export type SkillFile = z.infer<typeof skillFileSchema>
 export type SkillCatalogSource = z.infer<typeof skillCatalogSourceSchema>
 export type SkillCatalogEntry = z.infer<typeof skillCatalogEntrySchema>
@@ -4002,6 +4125,7 @@ export type ListArtifactsRequest = z.infer<typeof listArtifactsRequestSchema>
 export type ListReferenceCandidatesRequest = z.infer<typeof listReferenceCandidatesRequestSchema>
 
 export interface CommandClient {
+  clearSkillSecret: (skillId: string, key: string) => Promise<SkillConfigMutationResponse>
   deleteAgentProfile: (id: string) => Promise<DeleteAgentProfileResponse>
   deleteMcpServer: (
     configLayer: McpConfigLayer,
@@ -4030,6 +4154,7 @@ export interface CommandClient {
     request: GetSkillCatalogEntryRequest,
   ) => Promise<GetSkillCatalogEntryResponse>
   getSkillCatalogFile: (request: GetSkillCatalogFileRequest) => Promise<GetSkillCatalogFileResponse>
+  getSkillConfig: (skillId: string) => Promise<GetSkillConfigResponse>
   getSkillDetail: (id: string) => Promise<GetSkillDetailResponse>
   getSkillFile: (id: string, path: string) => Promise<GetSkillFileResponse>
   importSkill: (sourcePath: string) => Promise<ImportSkillResponse>
@@ -4040,6 +4165,7 @@ export interface CommandClient {
   listSkillCatalogInstallTasks: () => Promise<ListSkillCatalogInstallTasksResponse>
   listenSkillCatalogInstallProgress: (
     onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
+    onError?: (error: unknown) => void,
   ) => Promise<() => void>
   getExecutionSettings: (
     request?: GetExecutionSettingsRequest,
@@ -4104,6 +4230,16 @@ export interface CommandClient {
     request: SetExecutionSettingsRequest,
   ) => Promise<SetExecutionSettingsResponse>
   setSkillEnabled: (id: string, enabled: boolean) => Promise<SetSkillEnabledResponse>
+  setSkillConfigValue: (
+    skillId: string,
+    key: string,
+    value: unknown,
+  ) => Promise<SkillConfigMutationResponse>
+  setSkillSecret: (
+    skillId: string,
+    key: string,
+    value: string,
+  ) => Promise<SkillConfigMutationResponse>
   subscribeMcpDiagnostics: (
     request: SubscribeMcpDiagnosticsRequest,
   ) => Promise<SubscribeMcpDiagnosticsResponse>
@@ -4149,6 +4285,11 @@ function parseArgs<T>(command: string, schema: z.ZodType<T>, args: unknown): T {
 
 export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): CommandClient {
   return {
+    async clearSkillSecret(skillId, key) {
+      const command = 'clear_skill_secret'
+      const args = parseArgs(command, clearSkillSecretRequestSchema, { key, skillId })
+      return parsePayload(command, skillConfigMutationResponseSchema, await invoke(command, args))
+    },
     async deleteAgentProfile(id) {
       const command = 'delete_agent_profile'
       const args = parseArgs(command, deleteAgentProfileRequestSchema, { id })
@@ -4235,6 +4376,11 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
       const args = parseArgs(command, getSkillCatalogFileRequestSchema, request)
       return parsePayload(command, getSkillCatalogFileResponseSchema, await invoke(command, args))
     },
+    async getSkillConfig(skillId) {
+      const command = 'get_skill_config'
+      const args = parseArgs(command, getSkillConfigRequestSchema, { skillId })
+      return parsePayload(command, getSkillConfigResponseSchema, await invoke(command, args))
+    },
     async probeProviderConfig(request) {
       const command = 'probe_provider_config'
       const args = parseArgs(command, probeProviderConfigRequestSchema, request)
@@ -4282,15 +4428,23 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         await invoke(command),
       )
     },
-    async listenSkillCatalogInstallProgress(onProgress) {
+    async listenSkillCatalogInstallProgress(onProgress, onError) {
       const unlisten = await tauriListen<unknown>('skill_catalog_install_progress', (event) => {
-        onProgress(
-          parsePayload(
-            'skill_catalog_install_progress',
-            skillCatalogInstallProgressPayloadSchema,
-            event.payload,
-          ),
-        )
+        try {
+          onProgress(
+            parsePayload(
+              'skill_catalog_install_progress',
+              skillCatalogInstallProgressPayloadSchema,
+              event.payload,
+            ),
+          )
+        } catch (error) {
+          if (onError) {
+            onError(error)
+            return
+          }
+          throw error
+        }
       })
 
       return unlisten
@@ -4528,6 +4682,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
         id,
       })
       return parsePayload(command, setSkillEnabledResponseSchema, await invoke(command, args))
+    },
+    async setSkillConfigValue(skillId, key, value) {
+      const command = 'set_skill_config_value'
+      const args = parseArgs(command, setSkillConfigValueRequestSchema, { key, skillId, value })
+      return parsePayload(command, skillConfigMutationResponseSchema, await invoke(command, args))
+    },
+    async setSkillSecret(skillId, key, value) {
+      const command = 'set_skill_secret'
+      const args = parseArgs(command, setSkillSecretRequestSchema, { key, skillId, value })
+      return parsePayload(command, skillConfigMutationResponseSchema, await invoke(command, args))
     },
     async installPluginFromPath(sourcePath) {
       const command = 'install_plugin_from_path'
@@ -4792,6 +4956,39 @@ export function listSkills(
   return client.listSkills()
 }
 
+export function getSkillConfig(
+  skillId: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<GetSkillConfigResponse> {
+  return client.getSkillConfig(skillId)
+}
+
+export function setSkillConfigValue(
+  skillId: string,
+  key: string,
+  value: unknown,
+  client: CommandClient = tauriCommandClient,
+): Promise<SkillConfigMutationResponse> {
+  return client.setSkillConfigValue(skillId, key, value)
+}
+
+export function setSkillSecret(
+  skillId: string,
+  key: string,
+  value: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<SkillConfigMutationResponse> {
+  return client.setSkillSecret(skillId, key, value)
+}
+
+export function clearSkillSecret(
+  skillId: string,
+  key: string,
+  client: CommandClient = tauriCommandClient,
+): Promise<SkillConfigMutationResponse> {
+  return client.clearSkillSecret(skillId, key)
+}
+
 export function listAgentProfiles(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListAgentProfilesResponse> {
@@ -4870,8 +5067,9 @@ export function listSkillCatalogInstallTasks(
 export function listenSkillCatalogInstallProgress(
   onProgress: (progress: SkillCatalogInstallProgressPayload) => void,
   client: CommandClient = tauriCommandClient,
+  onError?: (error: unknown) => void,
 ): Promise<() => void> {
-  return client.listenSkillCatalogInstallProgress(onProgress)
+  return client.listenSkillCatalogInstallProgress(onProgress, onError)
 }
 
 export function importSkill(

@@ -25,6 +25,7 @@ threat-scanner = ["jyowo-harness-memory/threat-scanner"]
 jyowo-harness-contracts = { path = "../jyowo-harness-contracts" }
 jyowo-harness-memory = { path = "../jyowo-harness-memory" }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,3 +34,13 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 yaml-rust2 = { workspace = true }
 parking_lot = "0.12.5"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+cap-std = "4.0.2"
+windows-sys = { version = "0.60.2", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -942,10 +942,842 @@ unused body
 
         assert!(events.iter().any(|event| {
             matches!(event, Event::HookTriggered(triggered)
-                if triggered.handler_id == "skill:audit:start"
+                if triggered.handler_id.starts_with("skill:audit:start:")
                     && triggered.hook_event_kind == HookEventKind::SessionStart)
         }));
     });
+}
+
+#[tokio::test]
+async fn initial_skill_hook_reconcile_removes_stale_owned_handler() {
+    let workspace = unique_workspace("sdk-skill-hook-initial-stale-owner");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .unwrap();
+    let source = SkillSource::Plugin {
+        plugin_id: PluginId("trusted-plugin".to_owned()),
+        trust: TrustLevel::AdminTrusted,
+    };
+    let stale = skill_registration_from(
+        r"---
+name: audit
+description: Stale audit skill
+hooks:
+  - id: start
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let current = skill_registration_from(
+        r"---
+name: audit
+description: Current audit skill
+hooks:
+  - id: start
+    events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source,
+    )
+    .skill;
+    let stale_id = harness_skill::SkillRegistry::builder()
+        .with_skill(stale)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    harness.skill_registry().register(current).unwrap();
+    let current_id = harness.skill_registry().hook_bindings()[0]
+        .handler_id
+        .clone();
+    let owner = harness.skill_registry().hook_owner_token();
+    hook_registry
+        .register_from_skill(
+            owner.clone(),
+            Box::new(CollidingHookHandler {
+                handler_id: stale_id.clone(),
+            }),
+        )
+        .unwrap();
+
+    harness
+        .create_session(SessionOptions::new(&workspace))
+        .await
+        .unwrap();
+
+    assert!(hook_registry.origin_for(&stale_id).is_none());
+    assert_eq!(
+        hook_registry.origin_for(&current_id),
+        Some(harness_hook::HookOrigin::Skill { owner })
+    );
+}
+
+#[test]
+fn current_hook_reconcile_serializes_replacement_and_finishes_with_registry_winner() {
+    let source = SkillSource::Workspace("/workspace/skills".into());
+    let initial = skill_registration_from(
+        r"---
+name: audit
+description: Initial audit skill
+hooks:
+  - id: start
+    events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let replacement = skill_registration_from(
+        r"---
+name: audit
+description: Replacement audit skill
+hooks:
+  - id: start
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    )
+    .skill;
+    let registry = harness_skill::SkillRegistry::builder()
+        .with_skill(initial)
+        .build();
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let initial_id = registry.hook_bindings()[0].handler_id.clone();
+    let owner = registry.hook_owner_token();
+    let reconcile_registry = registry.clone();
+    let reconcile_hooks = hook_registry.clone();
+    let reconcile_owner = owner.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let initial_reconcile = std::thread::spawn(move || {
+        reconcile_registry.reconcile_current_snapshot(|snapshot| {
+            let handlers = test_skill_handlers(&reconcile_registry, snapshot);
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            reconcile_hooks.replace_skill_handlers(reconcile_owner, handlers)
+        })
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+
+    let mutation_registry = registry.clone();
+    let mutation_hooks = hook_registry.clone();
+    let mutation_owner = owner.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (mutated_tx, mutated_rx) = std::sync::mpsc::channel();
+    let mutation = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result =
+            mutation_registry.try_replace_source(source, vec![replacement], |_, candidate| {
+                mutation_hooks.replace_skill_handlers(
+                    mutation_owner,
+                    test_skill_handlers(&mutation_registry, candidate),
+                )
+            });
+        mutated_tx.send(result.is_ok()).unwrap();
+    });
+
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("replacement should start");
+    assert!(matches!(
+        mutated_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    initial_reconcile.join().unwrap().unwrap();
+    assert_eq!(
+        mutated_rx.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(true)
+    );
+    mutation.join().unwrap();
+
+    let winner_id = registry.hook_bindings()[0].handler_id.clone();
+    assert_ne!(winner_id, initial_id);
+    assert!(hook_registry.origin_for(&initial_id).is_none());
+    assert_eq!(
+        hook_registry.origin_for(&winner_id),
+        Some(harness_hook::HookOrigin::Skill { owner })
+    );
+}
+
+#[tokio::test]
+async fn workspace_hook_reload_replaces_old_handler_after_new_handler_registers() {
+    let workspace = unique_workspace("sdk-skill-hook-replacement");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let enabled = workspace.join("enabled");
+    let package = enabled.join("audit-package");
+    std::fs::create_dir_all(&package).unwrap();
+    write_package_hook(&package, "events: [SessionStart]");
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .expect("harness should build");
+
+    harness
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
+        .await
+        .expect("initial hook should load");
+    let old_id = hook_registry
+        .snapshot()
+        .handlers_for(HookEventKind::SessionStart)[0]
+        .handler_id()
+        .to_owned();
+
+    write_package_hook(&package, "events: [PostToolUse]");
+    harness
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
+        .await
+        .expect("changed hook should load");
+
+    assert!(hook_registry
+        .snapshot()
+        .handlers_for(HookEventKind::SessionStart)
+        .is_empty());
+    let new_id = hook_registry
+        .snapshot()
+        .handlers_for(HookEventKind::PostToolUse)[0]
+        .handler_id()
+        .to_owned();
+    assert_ne!(new_id, old_id);
+}
+
+#[tokio::test]
+async fn workspace_hook_removal_rejects_foreign_replacement_without_deleting_it() {
+    let workspace = unique_workspace("sdk-skill-hook-removal-owner-collision");
+    let enabled = workspace.join("enabled");
+    let package = enabled.join("audit-package");
+    std::fs::create_dir_all(&package).unwrap();
+    write_package_hook(&package, "events: [SessionStart]");
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .unwrap();
+    harness
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::from([(
+                "audit-package".to_owned(),
+                harness_skill::hash_skill_package(&package).unwrap(),
+            )]),
+        )
+        .await
+        .unwrap();
+    let handler_id = hook_registry
+        .snapshot()
+        .handlers_for(HookEventKind::SessionStart)[0]
+        .handler_id()
+        .to_owned();
+    assert!(hook_registry
+        .deregister_from_skill(&harness.skill_registry().hook_owner_token(), &handler_id,));
+    hook_registry
+        .register(Box::new(CollidingHookHandler {
+            handler_id: handler_id.clone(),
+        }))
+        .unwrap();
+    std::fs::remove_dir_all(&package).unwrap();
+
+    let result = harness
+        .reload_workspace_managed_skills_with_expected_package_hashes(
+            &enabled,
+            std::collections::BTreeMap::new(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(harness.skill_registry().get("audit").is_some());
+    assert_eq!(
+        hook_registry.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Host)
+    );
+}
+
+#[tokio::test]
+async fn failed_hook_replacement_keeps_old_handler_and_registry_snapshot() {
+    let workspace = unique_workspace("sdk-skill-hook-replacement-rollback");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .expect("harness should build");
+    let session = harness
+        .create_session(SessionOptions::new(&workspace))
+        .await
+        .expect("session should build");
+    let source = SkillSource::Plugin {
+        plugin_id: PluginId("trusted-plugin".to_owned()),
+        trust: TrustLevel::AdminTrusted,
+    };
+    let initial = skill_registration_from(
+        r"---
+name: old-audit
+description: Existing audit skill
+hooks:
+  - id: start
+    events: [SessionStart]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    );
+    let outcome = session
+        .reload_with(ConfigDelta::for_tenant(TenantId::SINGLE).add_skill(initial))
+        .await
+        .expect("initial reload should finish");
+    assert_eq!(outcome.mode, ReloadMode::AppliedInPlace);
+    let before = harness.skill_registry().snapshot();
+    let old_id = hook_registry
+        .snapshot()
+        .handlers_for(HookEventKind::SessionStart)[0]
+        .handler_id()
+        .to_owned();
+
+    let first_new = skill_registration_from(
+        r"---
+name: a-new-hook
+description: First new hook
+hooks:
+  - id: notify
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source.clone(),
+    );
+    let collision = skill_registration_from(
+        r"---
+name: z-colliding-hook
+description: Colliding hook
+hooks:
+  - id: notify
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source,
+    );
+    let ids = harness_skill::SkillRegistry::builder()
+        .with_skills(vec![first_new.skill.clone(), collision.skill.clone()])
+        .build()
+        .hook_bindings();
+    let first_new_id = ids
+        .iter()
+        .find(|binding| binding.skill_name == "a-new-hook")
+        .unwrap()
+        .handler_id
+        .clone();
+    let collision_id = ids
+        .iter()
+        .find(|binding| binding.skill_name == "z-colliding-hook")
+        .unwrap()
+        .handler_id
+        .clone();
+    hook_registry
+        .register(Box::new(CollidingHookHandler {
+            handler_id: collision_id.clone(),
+        }))
+        .expect("unrelated handler should reserve the deterministic id");
+
+    let outcome = session
+        .reload_with(
+            ConfigDelta::for_tenant(TenantId::SINGLE)
+                .add_skill(first_new)
+                .add_skill(collision),
+        )
+        .await
+        .expect("colliding reload should return outcome");
+
+    assert!(matches!(outcome.mode, ReloadMode::Rejected { .. }));
+    assert_eq!(
+        harness.skill_registry().snapshot().generation,
+        before.generation
+    );
+    assert!(hook_registry.origin_for(&old_id).is_some());
+    assert!(hook_registry.origin_for(&first_new_id).is_none());
+    assert!(hook_registry.origin_for(&collision_id).is_some());
+    assert!(harness.skill_registry().get("old-audit").is_some());
+    assert!(harness.skill_registry().get("a-new-hook").is_none());
+    assert!(harness.skill_registry().get("z-colliding-hook").is_none());
+}
+
+#[tokio::test]
+async fn initial_skill_hook_registration_rejects_host_collision() {
+    let workspace = unique_workspace("sdk-skill-hook-initial-owner-collision");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let source = SkillSource::Plugin {
+        plugin_id: PluginId("trusted-plugin".to_owned()),
+        trust: TrustLevel::AdminTrusted,
+    };
+    let skill = skill_registration_from(
+        r"---
+name: initial-collision
+description: Initial collision
+hooks:
+  - id: audit
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        source,
+    )
+    .skill;
+    let handler_id = harness_skill::SkillRegistry::builder()
+        .with_skill(skill.clone())
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    hook_registry
+        .register(Box::new(CollidingHookHandler {
+            handler_id: handler_id.clone(),
+        }))
+        .unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .build()
+        .await
+        .unwrap();
+    harness.skill_registry().register(skill).unwrap();
+
+    let result = harness
+        .create_session(SessionOptions::new(&workspace))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        hook_registry.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Host)
+    );
+}
+
+#[tokio::test]
+async fn plugin_skill_hook_collision_does_not_publish_skill_candidate() {
+    let workspace = unique_workspace("sdk-plugin-skill-hook-owner-collision");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut manifest = plugin_manifest("skill-hook-plugin");
+    manifest.manifest.capabilities = PluginCapabilities {
+        skills: vec![harness_plugin::SkillManifestEntry {
+            name: "plugin-audit".to_owned(),
+        }],
+        ..PluginCapabilities::default()
+    };
+    let skill = harness_skill::parse_skill_markdown(
+        r"---
+name: plugin-audit
+description: Plugin audit hook
+hooks:
+  - id: audit
+    events: [PostToolUse]
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+",
+        SkillSource::Bundled,
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    let plugin_source = SkillSource::Plugin {
+        plugin_id: manifest.manifest.plugin_id(),
+        trust: manifest.manifest.trust_level,
+    };
+    let mut registered_skill = skill.clone();
+    registered_skill.source = plugin_source;
+    let handler_id = harness_skill::SkillRegistry::builder()
+        .with_skill(registered_skill)
+        .build()
+        .hook_bindings()
+        .remove(0)
+        .handler_id;
+    let hook_registry = HookRegistry::builder().build().unwrap();
+    hook_registry
+        .register(Box::new(CollidingHookHandler {
+            handler_id: handler_id.clone(),
+        }))
+        .unwrap();
+    let plugin: Arc<dyn Plugin> = Arc::new(SkillHookRuntimePlugin {
+        manifest: manifest.manifest.clone(),
+        skill,
+    });
+    let runtime =
+        StaticLinkRuntimeLoader::default().with_plugin(plugin_id("skill-hook-plugin"), plugin);
+    let plugin_registry = PluginRegistry::builder()
+        .with_config(PluginConfig {
+            allow_project_plugins: true,
+            ..PluginConfig::default()
+        })
+        .with_source(DiscoverySource::Project("/workspace".into()))
+        .with_manifest_loader(Arc::new(SdkStaticManifestLoader {
+            records: vec![manifest],
+        }))
+        .with_runtime_loader(Arc::new(runtime))
+        .build()
+        .unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_hook_registry(hook_registry.clone())
+        .with_plugin_registry(plugin_registry)
+        .build()
+        .await
+        .unwrap();
+
+    let result = harness
+        .create_session(SessionOptions::new(&workspace))
+        .await;
+
+    assert!(result.is_err());
+    assert!(harness.skill_registry().get("plugin-audit").is_none());
+    assert_eq!(
+        hook_registry.origin_for(&handler_id),
+        Some(harness_hook::HookOrigin::Host)
+    );
+}
+
+#[tokio::test]
+async fn sdk_hook_binding_explicitly_rejects_mtls_when_loader_is_bypassed() {
+    let workspace = unique_workspace("sdk-skill-mtls-bypass");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .build()
+        .await
+        .expect("harness should build");
+    let skill = harness_skill::parse_skill_markdown(
+        r##"---
+name: mtls
+description: mTLS hook
+hooks:
+  - id: webhook
+    events: [PostToolUse]
+    transport:
+      type: http
+      url: https://hooks.example.test/audit
+      security:
+        allowlist: ["hooks.example.test"]
+        mtls_required: true
+---
+Body
+"##,
+        SkillSource::Plugin {
+            plugin_id: PluginId("trusted-plugin".to_owned()),
+            trust: TrustLevel::AdminTrusted,
+        },
+        None,
+        SkillPlatform::Macos,
+    )
+    .unwrap();
+    harness.skill_registry().register(skill).unwrap();
+
+    let error = harness
+        .create_session(SessionOptions::new(&workspace))
+        .await
+        .expect_err("SDK binding must reject mTLS without a certificate source");
+
+    assert!(error.to_string().contains("mTLS"));
+}
+
+#[test]
+fn turn_renderer_does_not_reenable_legacy_shell_blocks() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-skill-render-policy");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tool_use_id = ToolUseId::new();
+        let model = Arc::new(ScriptedProvider::new(vec![
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::ToolUseComplete {
+                        id: tool_use_id,
+                        name: "skills_invoke".to_owned(),
+                        input: json!({ "name": "policy", "params": {} }),
+                    },
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("done".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+        ]));
+        let loader = SkillLoader::default()
+            .with_source(SkillSourceConfig::BundledRecords {
+                records: vec![BundledSkillRecord {
+                    name: "policy".to_owned(),
+                    description: "Render policy".to_owned(),
+                    body: "Value: !`printf policy`.".to_owned(),
+                }],
+            })
+            .with_shell_allowlist(["printf".to_owned()]);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .build()
+            .await
+            .expect("harness should build");
+        let session = harness
+            .create_session(
+                SessionOptions::new(&workspace)
+                    .with_permission_mode(PermissionMode::BypassPermissions),
+            )
+            .await
+            .expect("session should build");
+
+        session
+            .run_turn("invoke policy")
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        assert!(request_text(&requests[1]).contains("Value: [SHELL_NOT_ALLOWED]."));
+    });
+}
+
+#[test]
+fn restored_session_renderer_does_not_reenable_legacy_shell_blocks() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-restored-skill-render-policy");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(ScriptedProvider::new(vec![
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::ToolUseComplete {
+                        id: ToolUseId::new(),
+                        name: "skills_invoke".to_owned(),
+                        input: json!({ "name": "policy", "params": {} }),
+                    },
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+            ScriptedResponse::Stream(vec![
+                ModelStreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: ContentDelta::Text("done".to_owned()),
+                },
+                ModelStreamEvent::MessageStop,
+            ]),
+        ]));
+        let loader = SkillLoader::default()
+            .with_source(SkillSourceConfig::BundledRecords {
+                records: vec![BundledSkillRecord {
+                    name: "policy".to_owned(),
+                    description: "Render policy".to_owned(),
+                    body: "Restored: !`printf policy`.".to_owned(),
+                }],
+            })
+            .with_shell_allowlist(["printf".to_owned()]);
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model.clone())
+            .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+            .with_sandbox(NoopSandbox::new())
+            .with_permission_broker(TestBroker::new(vec![Decision::AllowOnce]))
+            .with_skill_loader(loader)
+            .build()
+            .await
+            .expect("harness should build");
+        let options = SessionOptions::new(&workspace)
+            .with_session_id(SessionId::new())
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("session should be persisted before restore");
+
+        harness
+            .submit_conversation_turn(conversation_turn_request(
+                options,
+                ConversationTurnInput::ask("invoke policy"),
+                Some(PermissionMode::BypassPermissions),
+                None,
+                None,
+            ))
+            .await
+            .expect("restored session turn should run");
+
+        let requests = model.requests().await;
+        assert!(request_text(&requests[1]).contains("Restored: [SHELL_NOT_ALLOWED]."));
+    });
+}
+
+fn write_package_hook(package: &std::path::Path, events: &str) {
+    std::fs::write(
+        package.join("SKILL.md"),
+        format!(
+            r"---
+name: audit
+description: Audited skill
+hooks:
+  - id: start
+    {events}
+    transport:
+      type: builtin
+      kind: AuditLog
+---
+Body
+"
+        ),
+    )
+    .unwrap();
+}
+
+struct CollidingHookHandler {
+    handler_id: String,
+}
+
+struct SkillHookRuntimePlugin {
+    manifest: PluginManifest,
+    skill: harness_skill::Skill,
+}
+
+#[async_trait]
+impl Plugin for SkillHookRuntimePlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    async fn activate(
+        &self,
+        ctx: PluginActivationContext,
+    ) -> Result<PluginActivationResult, PluginError> {
+        ctx.skills
+            .as_ref()
+            .expect("plugin skill handle")
+            .register(self.skill.clone())
+            .await?;
+        Ok(PluginActivationResult {
+            registered_skills: vec![self.skill.name.clone()],
+            ..PluginActivationResult::default()
+        })
+    }
+
+    async fn deactivate(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
+}
+
+fn test_skill_handlers(
+    registry: &harness_skill::SkillRegistry,
+    snapshot: &harness_skill::SkillRegistrySnapshot,
+) -> Vec<Box<dyn harness_hook::HookHandler>> {
+    registry
+        .hook_bindings_in_snapshot(snapshot)
+        .into_iter()
+        .map(|binding| {
+            Box::new(CollidingHookHandler {
+                handler_id: binding.handler_id,
+            }) as Box<dyn harness_hook::HookHandler>
+        })
+        .collect()
+}
+
+#[async_trait]
+impl harness_hook::HookHandler for CollidingHookHandler {
+    fn handler_id(&self) -> &str {
+        &self.handler_id
+    }
+
+    fn interested_events(&self) -> &[HookEventKind] {
+        &[HookEventKind::PostToolUse]
+    }
+
+    async fn handle(
+        &self,
+        _event: harness_hook::HookEvent,
+        _ctx: harness_hook::HookContext,
+    ) -> Result<harness_hook::HookOutcome, harness_contracts::HookError> {
+        Ok(harness_hook::HookOutcome::Continue)
+    }
 }
 
 #[tokio::test]
@@ -1071,4 +1903,78 @@ New body.
 
     assert!(completed.contains("old-skill"));
     assert!(!completed.contains("new-skill"));
+}
+
+#[tokio::test]
+async fn loader_rejection_removes_the_previously_executable_source_candidate() {
+    let workspace = unique_workspace("sdk-skill-package-tamper");
+    let packages = workspace.join("skills");
+    let package = packages.join("tamperable");
+    std::fs::create_dir_all(package.join("scripts")).unwrap();
+    std::fs::write(
+        package.join("SKILL.md"),
+        r#"---
+name: tamperable
+description: Tamperable package
+scripts:
+  - id: run
+    path: scripts/run.sh
+    network: deny
+---
+Body.
+"#,
+    )
+    .unwrap();
+    let script = package.join("scripts/run.sh");
+    std::fs::write(&script, "printf original\n").unwrap();
+    let expected_hash = harness_skill::hash_skill_package(&package).unwrap();
+    let loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
+        path: packages,
+        source_kind: harness_skill::DirectorySourceKind::Workspace,
+        expected_package_hashes: std::collections::BTreeMap::from([(
+            "tamperable".to_owned(),
+            expected_hash,
+        )]),
+    });
+    let harness = Harness::builder()
+        .with_workspace_root(&workspace)
+        .with_model(TestModelProvider::default())
+        .with_store_arc(Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor))))
+        .with_sandbox(NoopSandbox::new())
+        .with_skill_loader(loader)
+        .build()
+        .await
+        .expect("harness should build");
+    let options = SessionOptions::new(&workspace);
+    let session = harness
+        .create_session(options.clone())
+        .await
+        .expect("session should be created");
+
+    session
+        .run_turn("first")
+        .await
+        .expect("first turn should run");
+    let loaded_skill = harness
+        .skill_registry()
+        .get("tamperable")
+        .expect("validated package must be registered");
+    assert!(loaded_skill.package_snapshot.is_some());
+
+    std::fs::write(&script, "printf tampered\n").unwrap();
+    let mut request =
+        ConversationTurnRequest::from_prompt(options, ConversationRunOptions::default(), "second");
+    request.input.context_references = vec![ConversationContextReference::Skill {
+        version: harness_contracts::CURRENT_CONTEXT_REFERENCE_VERSION,
+        skill_id: loaded_skill.id.clone(),
+        label: loaded_skill.name.clone(),
+        parameters: std::collections::BTreeMap::new(),
+        source: Some(harness_contracts::SkillSourceKind::Workspace),
+    }];
+    harness
+        .submit_conversation_turn(request)
+        .await
+        .expect_err("the selected tampered package must be rejected");
+
+    assert!(harness.skill_registry().get("tamperable").is_none());
 }

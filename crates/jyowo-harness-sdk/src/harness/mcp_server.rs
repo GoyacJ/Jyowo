@@ -600,7 +600,10 @@ impl Harness {
             team_id: turn_options.team_id,
             project_workspace_root: turn_options.project_workspace_root.clone(),
             #[cfg(feature = "memory-provider-registry")]
-            memory_database_path: self.memory_database_path()?.to_path_buf(),
+            memory_database_path: self
+                .memory_database_path()
+                .map_err(|error| McpServerError::Internal(error.to_string()))?
+                .to_path_buf(),
             redactor: self.hook_redactor(),
             session_limits: Arc::clone(&self.inner.session_limits),
             deleted_conversation_sessions: Arc::clone(&self.inner.deleted_conversation_sessions),
@@ -623,8 +626,11 @@ impl Harness {
                 active_conversation_sessions: Arc::clone(&self.inner.active_conversation_sessions),
                 process_registry: self.run_scoped_process_registry(),
                 skill_registry: Some(self.inner.skill_registry.clone()),
+                skill_registry_snapshot: None,
                 skill_metrics_sink: self.skill_metrics_sink(),
-                skill_config_snapshot: self.inner.skill_config_snapshot.clone(),
+                skill_render_policy: self.skill_render_policy(),
+                skill_config_snapshot: self.skill_config_snapshot(),
+                pending_skill_context_deliveries: parking_lot::Mutex::new(HashMap::new()),
             }))
             .with_skill_reload_cap(Arc::new(SdkSkillReloadCap {
                 inner: Arc::clone(&self.inner),

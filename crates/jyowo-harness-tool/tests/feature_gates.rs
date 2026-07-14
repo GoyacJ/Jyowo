@@ -73,5 +73,13 @@ fn skill_tools_feature_registers_only_skills_toolset() {
         .map(|(name, _)| name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(names, vec!["skills_invoke", "skills_list", "skills_view"]);
+    assert_eq!(
+        names,
+        vec![
+            "skills_invoke",
+            "skills_list",
+            "skills_run_script",
+            "skills_view"
+        ]
+    );
 }

@@ -645,7 +645,12 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
     assert_eq!(queue_item.revision, 2);
     assert_eq!(queue_item.content, "edited");
     assert_eq!(queue_item.attachments, vec![blob_id]);
-    assert_eq!(queue_item.context_references, vec!["src/lib.rs"]);
+    assert_eq!(
+        queue_item.context_references,
+        vec![harness_contracts::ConversationContextReference::from(
+            "src/lib.rs"
+        )]
+    );
     assert_eq!(queue_item.created_at, queued_at);
     assert_eq!(
         before_resolution.pending_permission.unwrap().request_id,

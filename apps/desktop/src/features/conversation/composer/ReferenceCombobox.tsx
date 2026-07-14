@@ -189,9 +189,12 @@ export function referenceGroups(
         .map((candidate) => ({
           label: candidate.label,
           reference: {
-            id: candidate.id ?? '',
             kind: 'skill',
             label: candidate.label,
+            parameters: {},
+            skillId: candidate.id ?? '',
+            source: candidate.source,
+            version: 1,
           } satisfies ContextReference,
         })),
     },
@@ -231,6 +234,9 @@ export function flattenReferenceGroups(groups: ReferenceComboboxGroup[]) {
 export function referenceKey(reference: ContextReference) {
   if (reference.kind === 'workspace_file') {
     return `${reference.kind}:${reference.path}`
+  }
+  if (reference.kind === 'skill') {
+    return `${reference.kind}:${reference.skillId}`
   }
 
   return `${reference.kind}:${reference.id}`

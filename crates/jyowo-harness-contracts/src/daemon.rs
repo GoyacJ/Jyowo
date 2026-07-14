@@ -9,15 +9,16 @@ use crate::{
     ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
     AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
     AutomationRunsResponse, AutomationSavedResponse, AutomationSpec, AutomationsResponse, BlobId,
-    CheckpointId, ClientId, CommandId, EventId, GetMemoryRecallTraceRequest,
-    GetMemoryRecallTraceResponse, GetMemorySettingsRequest, GetMemorySettingsResponse,
-    GetModelRequestPreviewRequest, GetModelRequestPreviewResponse, GetThreadMemorySettingsRequest,
-    GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest, ListMemoryCandidatesResponse,
-    ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse, MemoryId,
-    MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode, QueueItemId,
-    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId, RunSegmentId,
-    SessionId, SubagentId, TaskId, UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
-    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
+    CheckpointId, ClientId, CommandId, ConversationContextReference, EventId,
+    GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
+    GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
+    GetThreadMemorySettingsRequest, GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest,
+    ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
+    MemoryId, MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode,
+    QueueItemId, RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId,
+    RunSegmentId, SessionId, SkillId, SkillSourceKind, SubagentId, TaskId,
+    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
 pub const PROTOCOL_VERSION: u16 = 3;
@@ -92,6 +93,9 @@ pub enum ClientRequest {
     ListTasks,
     ListRuntimeTools {
         workspace_root: Option<String>,
+    },
+    ListSkillReferenceCandidates {
+        task_id: TaskId,
     },
     ListMemoryItems {
         workspace_root: Option<String>,
@@ -213,6 +217,7 @@ pub enum ServerMessage {
     EventHistoryPage(TaskEventHistoryPage),
     TaskList { tasks: Vec<TaskProjection> },
     RuntimeTools(ListRuntimeToolsResponse),
+    SkillReferenceCandidates(ListSkillReferenceCandidatesResponse),
     MemoryItems(ListMemoryItemsResponse),
     MemoryItem(GetMemoryItemResponse),
     MemoryUpdated(UpdateMemoryItemResponse),
@@ -279,6 +284,20 @@ pub struct RuntimeToolServiceBindingSummary {
     pub provider_id: String,
     pub operation_id: String,
     pub route_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSkillReferenceCandidatesResponse {
+    pub skills: Vec<SkillReferenceCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillReferenceCandidate {
+    pub skill_id: SkillId,
+    pub label: String,
+    pub source: SkillSourceKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -465,7 +484,7 @@ pub struct SubmitMessageCommand {
     pub task_id: TaskId,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_config_id: Option<String>,
     #[serde(default)]
@@ -481,7 +500,7 @@ pub struct EditQueuedMessageCommand {
     pub expected_revision: u64,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -925,7 +944,7 @@ pub struct QueueItemProjection {
     pub revision: u64,
     pub content: String,
     pub attachments: Vec<BlobId>,
-    pub context_references: Vec<String>,
+    pub context_references: Vec<ConversationContextReference>,
     #[serde(
         serialize_with = "strict_rfc3339::serialize",
         deserialize_with = "strict_rfc3339::deserialize"

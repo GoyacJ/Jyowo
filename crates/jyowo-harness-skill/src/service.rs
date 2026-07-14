@@ -1,13 +1,19 @@
 use futures::future::BoxFuture;
 use harness_contracts::{
-    AgentId, RenderedSkill as ContractRenderedSkill, SkillFilter, SkillInjectionId,
-    SkillInvocationReceipt, SkillRegistryCap, SkillShellInvocation, SkillSummary, SkillView,
-    ToolError,
+    AgentId, NetworkAccess, RenderedSkill as ContractRenderedSkill, SkillFilter, SkillInjectionId,
+    SkillInvocationReceipt, SkillRegistryCap, SkillScriptRunDeclaration, SkillScriptRunFile,
+    SkillScriptRunPreparation, SkillShellInvocation, SkillSummary, SkillView, ToolError,
 };
 use serde_json::Value;
+use std::path::Path;
 use std::sync::Arc;
 
-use crate::{RenderError, SkillMetricsSink, SkillRegistry, SkillRegistrySnapshot, SkillRenderer};
+use crate::{
+    RenderError, Skill, SkillMetricsSink, SkillRegistry, SkillRegistrySnapshot, SkillRenderer,
+    SkillScriptNetworkPolicy,
+};
+
+const MAX_SCRIPT_ARGUMENT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct SkillRegistryService {
@@ -86,6 +92,19 @@ impl SkillRegistryService {
             }
         }
         .ok_or_else(|| RenderError::SkillNotVisible(name.to_owned()))?;
+        if let Some(snapshot) = &self.snapshot {
+            if let Some(harness_contracts::SkillStatus::PrerequisiteMissing {
+                config_keys, ..
+            }) = snapshot.status.get(&skill.id)
+            {
+                if !config_keys.is_empty() {
+                    return Err(RenderError::MissingConfig {
+                        skill_id: skill.id.0.clone(),
+                        config_keys: config_keys.clone(),
+                    });
+                }
+            }
+        }
         self.renderer
             .render(&skill, params)
             .await
@@ -108,6 +127,142 @@ impl SkillRegistryService {
             bytes_injected: rendered.content.len() as u64,
             consumed_config_keys: rendered.consumed_config_keys,
         })
+    }
+
+    pub async fn prepare_script(
+        &self,
+        agent: &AgentId,
+        name: &str,
+        script_id: &str,
+        arguments: Value,
+    ) -> Result<SkillScriptRunPreparation, ToolError> {
+        if !arguments.is_object() {
+            return Err(ToolError::Validation(
+                "skill script arguments must be an object".to_owned(),
+            ));
+        }
+        let argument_bytes = serde_json::to_vec(&arguments)
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        if argument_bytes.len() > MAX_SCRIPT_ARGUMENT_BYTES {
+            return Err(ToolError::Validation(format!(
+                "skill script arguments exceed {MAX_SCRIPT_ARGUMENT_BYTES} bytes"
+            )));
+        }
+
+        let skill = self
+            .visible_skill(agent, name)
+            .ok_or_else(|| ToolError::Validation(format!("skill not visible: {name}")))?;
+        if let Some(snapshot) = &self.snapshot {
+            if let Some(harness_contracts::SkillStatus::PrerequisiteMissing {
+                config_keys, ..
+            }) = snapshot.status.get(&skill.id)
+            {
+                if !config_keys.is_empty() {
+                    return Err(ToolError::Validation(format!(
+                        "skill `{}` is missing required config: {config_keys:?}",
+                        skill.id.0
+                    )));
+                }
+            }
+        }
+        let declaration = skill
+            .frontmatter
+            .scripts
+            .iter()
+            .find(|declaration| declaration.id == script_id)
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::Validation(format!(
+                    "undeclared script `{script_id}` for skill `{name}`"
+                ))
+            })?;
+        let package = collect_script_package(&skill, &declaration.path)?;
+        let network_access = match declaration.network {
+            SkillScriptNetworkPolicy::Deny => NetworkAccess::None,
+        };
+        Ok(SkillScriptRunPreparation {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            script_id: declaration.id.clone(),
+            package_hash: package.hash,
+            arguments,
+            declaration: SkillScriptRunDeclaration {
+                path: declaration.path,
+                timeout_seconds: declaration.timeout_seconds,
+                max_stdout_bytes: declaration.max_stdout_bytes,
+                max_stderr_bytes: declaration.max_stderr_bytes,
+                max_output_bytes: declaration.max_output_bytes,
+                max_artifact_count: declaration.max_artifact_count,
+                max_artifact_bytes: declaration.max_artifact_bytes,
+                network_access,
+                env_config_keys: declaration
+                    .env
+                    .iter()
+                    .map(|(env_name, mapping)| (env_name.clone(), mapping.config.clone()))
+                    .collect(),
+                secret_env_keys: declaration
+                    .env
+                    .iter()
+                    .filter(|(_, mapping)| mapping.secret)
+                    .map(|(env_name, _)| env_name.clone())
+                    .collect(),
+            },
+            files: package.files,
+            env: Default::default(),
+        })
+    }
+
+    pub async fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: &str,
+        script_id: &str,
+        arguments: Value,
+    ) -> Result<SkillScriptRunPreparation, ToolError> {
+        let mut prepared = self
+            .prepare_script(agent, name, script_id, arguments)
+            .await?;
+        let skill = self
+            .visible_skill(agent, name)
+            .ok_or_else(|| ToolError::Validation(format!("skill not visible: {name}")))?;
+        let declaration = skill
+            .frontmatter
+            .scripts
+            .iter()
+            .find(|declaration| declaration.id == script_id)
+            .ok_or_else(|| {
+                ToolError::Validation(format!(
+                    "undeclared script `{script_id}` for skill `{name}`"
+                ))
+            })?;
+        let (env, secret_env_keys) = self
+            .renderer
+            .resolve_script_environment(&skill, declaration)
+            .await
+            .map_err(|error| ToolError::Validation(error.to_string()))?;
+        if secret_env_keys != prepared.declaration.secret_env_keys
+            || env.keys().ne(prepared.declaration.env_config_keys.keys())
+        {
+            return Err(ToolError::Validation(
+                "resolved skill script environment does not match its declaration".to_owned(),
+            ));
+        }
+        prepared.env = env;
+        Ok(prepared)
+    }
+
+    fn visible_skill(&self, agent: &AgentId, name: &str) -> Option<Arc<Skill>> {
+        match &self.snapshot {
+            Some(snapshot) => {
+                self.registry
+                    .view_in_snapshot(agent, name, false, snapshot)?;
+                snapshot.entries.get(name).cloned()
+            }
+            None => {
+                self.registry.view(agent, name, false)?;
+                self.registry.get(name)
+            }
+        }
     }
 }
 
@@ -135,6 +290,79 @@ impl SkillRegistryCap for SkillRegistryService {
                 .map_err(|error| ToolError::Validation(error.to_string()))
         })
     }
+
+    fn prepare_script(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        let service = self.clone();
+        let agent = *agent;
+        Box::pin(async move {
+            service
+                .prepare_script(&agent, &name, &script_id, arguments)
+                .await
+        })
+    }
+
+    fn prepare_script_authorized(
+        &self,
+        agent: &AgentId,
+        name: String,
+        script_id: String,
+        arguments: Value,
+    ) -> BoxFuture<'static, Result<SkillScriptRunPreparation, ToolError>> {
+        let service = self.clone();
+        let agent = *agent;
+        Box::pin(async move {
+            service
+                .prepare_script_authorized(&agent, &name, &script_id, arguments)
+                .await
+        })
+    }
+}
+
+struct ScriptPackage {
+    hash: String,
+    files: Vec<SkillScriptRunFile>,
+}
+
+fn collect_script_package(skill: &Skill, declared_path: &Path) -> Result<ScriptPackage, ToolError> {
+    let snapshot = skill.package_snapshot.as_ref().ok_or_else(|| {
+        ToolError::Validation(format!(
+            "skill `{}` has no validated package snapshot for script execution",
+            skill.name
+        ))
+    })?;
+    let mut files = Vec::new();
+    for (relative, bytes) in snapshot.files() {
+        let relative = relative.to_str().ok_or_else(|| {
+            ToolError::Validation(
+                "skill package paths must be UTF-8 for script execution".to_owned(),
+            )
+        })?;
+        let content = std::str::from_utf8(bytes).map_err(|_| {
+            ToolError::Validation(format!("skill package file `{}` is not UTF-8", relative))
+        })?;
+        files.push(SkillScriptRunFile {
+            path: relative.replace('\\', "/"),
+            content: content.to_owned(),
+        });
+    }
+    if !files
+        .iter()
+        .any(|file| Path::new(&file.path) == declared_path)
+    {
+        return Err(ToolError::Validation(
+            "declared script is missing from the prepared package".to_owned(),
+        ));
+    }
+    Ok(ScriptPackage {
+        hash: snapshot.hash().to_owned(),
+        files,
+    })
 }
 
 impl From<crate::RenderedSkill> for ContractRenderedSkill {

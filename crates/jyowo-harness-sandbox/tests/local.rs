@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -26,6 +26,16 @@ struct RecordingSink {
 }
 
 struct NullSink;
+
+struct RejectStartedSink {
+    pid_file: PathBuf,
+}
+
+struct BlockingRejectStartedSink {
+    pid_file: PathBuf,
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
 
 #[derive(Default)]
 struct ReplacementRedactor;
@@ -91,6 +101,38 @@ impl BlobStore for RecordingBlobStore {
 
 impl EventSink for NullSink {
     fn emit(&self, _event: Event) -> Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+impl EventSink for RejectStartedSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        if matches!(event, Event::SandboxExecutionStarted(_)) {
+            let started = std::time::Instant::now();
+            while !self.pid_file.exists() && started.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            return Err(SandboxError::Message(
+                "sandbox execution started event rejected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl EventSink for BlockingRejectStartedSink {
+    fn emit(&self, event: Event) -> Result<(), SandboxError> {
+        if matches!(event, Event::SandboxExecutionStarted(_)) {
+            let started = std::time::Instant::now();
+            while !self.pid_file.exists() && started.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.entered.wait();
+            self.release.wait();
+            return Err(SandboxError::Message(
+                "sandbox execution started event rejected".to_owned(),
+            ));
+        }
         Ok(())
     }
 }
@@ -176,6 +218,44 @@ async fn local_sandbox_is_object_safe_and_streams_stdout() {
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::SandboxExecutionCompleted(_))));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires a live bubblewrap host with unprivileged user namespaces"]
+async fn bubblewrap_workspace_only_hides_a_host_sentinel() {
+    if !std::process::Command::new("bwrap")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return;
+    }
+
+    let host_root = temp_root("bubblewrap-host-sentinel");
+    let workspace = host_root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let sentinel = host_root.join("host-secret.txt");
+    std::fs::write(&sentinel, "must stay hidden").expect("sentinel should be written");
+    let sandbox = LocalSandbox::new(&workspace).with_isolation(LocalIsolation::Bubblewrap);
+    let mut spec = shell_spec(&format!(
+        "if test -e '{}'; then printf visible; else printf hidden; fi",
+        sentinel.display()
+    ));
+    spec.policy.network = NetworkAccess::None;
+    spec.workspace_access = WorkspaceAccess::ReadOnly;
+
+    let mut handle = sandbox
+        .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
+        .await
+        .expect("bubblewrap should execute with the minimal runtime root");
+    let stdout = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
+    let outcome = handle.activity.wait().await.expect("wait should succeed");
+
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+    assert_eq!(stdout, "hidden");
 }
 
 #[tokio::test]
@@ -819,7 +899,7 @@ async fn local_sandbox_emits_backpressure_when_consumer_pauses() {
 }
 
 #[tokio::test]
-async fn local_sandbox_filters_environment_with_passthrough_keys() {
+async fn local_sandbox_filters_environment_with_passthrough_and_per_exec_keys() {
     let root = temp_root("env");
     let sandbox = LocalSandbox::with_base(
         &root,
@@ -829,9 +909,14 @@ async fn local_sandbox_filters_environment_with_passthrough_keys() {
         },
     );
 
-    let mut spec = shell_spec("printf '%s:%s' \"${VISIBLE:-missing}\" \"${HIDDEN:-missing}\"");
+    let mut spec = shell_spec(
+        "printf '%s:%s:%s' \"${VISIBLE:-missing}\" \"${EXPLICIT:-missing}\" \"${HIDDEN:-missing}\"",
+    );
     spec.env.insert("VISIBLE".to_owned(), "yes".to_owned());
+    spec.env
+        .insert("EXPLICIT".to_owned(), "declared".to_owned());
     spec.env.insert("HIDDEN".to_owned(), "no".to_owned());
+    spec.authorized_env_keys.insert("EXPLICIT".to_owned());
 
     let mut handle = sandbox
         .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
@@ -840,7 +925,7 @@ async fn local_sandbox_filters_environment_with_passthrough_keys() {
     let output = collect_stdout(handle.stdout.take().expect("stdout should be piped")).await;
     let outcome = handle.activity.wait().await.expect("wait should succeed");
 
-    assert_eq!(output, "yes:missing");
+    assert_eq!(output, "yes:declared:missing");
     assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
 }
 
@@ -929,4 +1014,264 @@ async fn local_sandbox_supports_process_and_process_group_kill_scope() {
         .expect("process kill should be supported");
     let outcome = handle.activity.wait().await.expect("wait should succeed");
     assert_eq!(outcome.exit_status, SandboxExitStatus::Signal(15));
+}
+
+#[tokio::test]
+async fn local_wait_reaps_background_processes_after_the_root_exits() {
+    let root = temp_root("background-process-group");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec =
+        shell_spec("sleep 30 </dev/null >/dev/null 2>&1 & printf '%s' \"$!\" > background.pid");
+    spec.timeout = Some(Duration::from_secs(2));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let handle = execute_with_lifecycle(
+        Arc::new(sandbox),
+        spec,
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
+    .expect("execute should spawn a background process");
+
+    let outcome = handle
+        .activity
+        .wait()
+        .await
+        .expect("root wait should succeed");
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Code(0));
+
+    let background_pid = std::fs::read_to_string(root.join("background.pid"))
+        .expect("script should record the background pid")
+        .parse::<u32>()
+        .expect("background pid should be numeric");
+    let reaped = wait_for_process_exit(background_pid, Duration::from_millis(500)).await;
+    if !reaped {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(background_pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    assert!(reaped, "background process survived the root activity wait");
+}
+
+#[tokio::test]
+async fn local_execute_reaps_process_group_when_started_event_is_rejected() {
+    let root = temp_root("started-event-rejected");
+    let pid_file = root.join("processes.pid");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec = shell_spec(
+        "trap '' TERM; sleep 30 </dev/null >/dev/null 2>&1 & background=$!; printf '%s %s' \"$$\" \"$background\" > processes.pid; wait",
+    );
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+
+    let error = match sandbox
+        .execute(
+            spec,
+            ExecContext::for_test(Arc::new(RejectStartedSink {
+                pid_file: pid_file.clone(),
+            })),
+        )
+        .await
+    {
+        Ok(_) => panic!("started event rejection must fail execute"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, SandboxError::Message(ref message) if message.contains("started event"))
+    );
+    let pids = std::fs::read_to_string(&pid_file)
+        .expect("sink must wait until the script records its processes")
+        .split_whitespace()
+        .map(|pid| pid.parse::<u32>().expect("recorded pid must be numeric"))
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2);
+
+    for pid in pids {
+        let reaped = wait_for_process_exit(pid, Duration::from_millis(500)).await;
+        if !reaped {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        assert!(reaped, "process {pid} survived failed execute handoff");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborting_failed_execute_handoff_still_kills_the_process_group() {
+    let root = temp_root("started-event-cleanup-aborted");
+    let pid_file = root.join("processes.pid");
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let mut spec = shell_spec(
+        "trap '' TERM; sleep 30 </dev/null >/dev/null 2>&1 & background=$!; printf '%s %s' \"$$\" \"$background\" > processes.pid; wait",
+    );
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let task = tokio::spawn({
+        let pid_file = pid_file.clone();
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        async move {
+            LocalSandbox::new(&root)
+                .execute(
+                    spec,
+                    ExecContext::for_test(Arc::new(BlockingRejectStartedSink {
+                        pid_file,
+                        entered,
+                        release,
+                    })),
+                )
+                .await
+        }
+    });
+
+    entered.wait();
+    task.abort();
+    release.wait();
+    let error = match task.await {
+        Ok(_) => panic!("failed handoff task must be cancelled"),
+        Err(error) => error,
+    };
+    assert!(error.is_cancelled());
+
+    let pids = std::fs::read_to_string(&pid_file)
+        .expect("sink must wait until the script records its processes")
+        .split_whitespace()
+        .map(|pid| pid.parse::<u32>().expect("recorded pid must be numeric"))
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 2);
+    for pid in pids {
+        let terminated = wait_for_process_exit(pid, Duration::from_millis(500)).await;
+        if !terminated {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        assert!(
+            terminated,
+            "process {pid} survived cancellation during failed handoff cleanup"
+        );
+    }
+}
+
+#[tokio::test]
+async fn process_group_kill_can_escalate_after_descendants_ignore_term() {
+    let root = temp_root("process-group-signal-escalation");
+    let sandbox = LocalSandbox::new(&root);
+    let mut spec = shell_spec("trap '' TERM; sleep 30 & printf '%s' \"$!\" > background.pid; wait");
+    spec.timeout = Some(Duration::from_secs(5));
+    spec.required_kill_scope = Some(KillScope::ProcessGroup);
+    let handle = execute_with_lifecycle(
+        Arc::new(sandbox),
+        spec,
+        ExecContext::for_test(Arc::new(NullSink)),
+    )
+    .await
+    .expect("execute should spawn a TERM-resistant process group");
+    let root_pid = handle.pid.expect("root process should have a pid");
+    let process_group_id = process_group_id(root_pid);
+    let activity = Arc::clone(&handle.activity);
+
+    activity
+        .kill(15, KillScope::ProcessGroup)
+        .await
+        .expect("TERM should be delivered to the process group");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    activity
+        .kill(9, KillScope::ProcessGroup)
+        .await
+        .expect("KILL should escalate after TERM");
+    let waited = tokio::time::timeout(Duration::from_millis(500), activity.wait()).await;
+    if waited.is_err() {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{process_group_id}"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let outcome = waited
+        .expect("SIGKILL must terminate a TERM-resistant process group")
+        .expect("wait should succeed after escalation");
+
+    assert_eq!(outcome.exit_status, SandboxExitStatus::Signal(9));
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn authorized_path_cannot_replace_the_seatbelt_launcher() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root("seatbelt-launcher-path");
+    let fake_bin = root.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("fake bin must exist");
+    let marker = root.join("launcher-hijacked");
+    let fake_launcher = fake_bin.join("sandbox-exec");
+    std::fs::write(
+        &fake_launcher,
+        format!("#!/bin/sh\nprintf hijacked > '{}'\n", marker.display()),
+    )
+    .expect("fake launcher must be written");
+    std::fs::set_permissions(&fake_launcher, std::fs::Permissions::from_mode(0o700))
+        .expect("fake launcher must be executable");
+
+    let sandbox = LocalSandbox::new(&root).with_isolation(LocalIsolation::Seatbelt);
+    let mut spec = shell_spec("printf ok");
+    spec.env
+        .insert("PATH".to_owned(), fake_bin.display().to_string());
+    spec.authorized_env_keys.insert("PATH".to_owned());
+
+    if let Ok(handle) = sandbox
+        .execute(spec, ExecContext::for_test(Arc::new(NullSink)))
+        .await
+    {
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle.activity.wait()).await;
+    }
+
+    assert!(
+        !marker.exists(),
+        "authorized child PATH replaced the host seatbelt launcher"
+    );
+}
+
+fn process_group_id(pid: u32) -> u32 {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", &pid.to_string()])
+        .output()
+        .expect("process group query should run");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("process group should be utf8")
+        .trim()
+        .parse()
+        .expect("process group should be numeric")
+}
+
+async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !alive {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

@@ -26,7 +26,7 @@ pub use harness_hook::HookRegistry;
 pub use harness_journal::{EventStore, ReplayCursor};
 pub use harness_mcp::{
     McpConnection, McpConnectionState, McpError, McpRegistry, McpServerScope, McpServerSpec,
-    McpToolDescriptor, McpToolResult, SamplingRequest, TransportChoice,
+    McpToolDescriptor, McpToolResult, NoopMcpEventSink, SamplingRequest, TransportChoice,
 };
 #[cfg(feature = "memory-consolidation")]
 pub use harness_memory::{ConsolidationHook, ConsolidationOutcome};

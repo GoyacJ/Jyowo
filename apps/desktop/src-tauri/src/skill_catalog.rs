@@ -4,9 +4,11 @@ use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::time::{timeout, Duration};
 use zip::ZipArchive;
 
 use crate::commands::CommandErrorPayload;
@@ -23,6 +25,27 @@ const MAX_CATALOG_PACKAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_CATALOG_PACKAGE_FILE_BYTES: usize = 1024 * 1024;
 const MAX_CATALOG_PACKAGE_FILES: usize = 200;
 const MAX_CATALOG_PREVIEW_BYTES: usize = 256 * 1024;
+const CATALOG_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CATALOG_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct CatalogHttpTimeouts {
+    pub connect: Duration,
+    pub request: Duration,
+    pub response_body: Duration,
+}
+
+impl Default for CatalogHttpTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: CATALOG_CONNECT_TIMEOUT,
+            request: CATALOG_REQUEST_TIMEOUT,
+            response_body: CATALOG_RESPONSE_BODY_TIMEOUT,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -174,7 +197,8 @@ pub struct MaterializedCatalogSkill {
     pub origin: SkillInstallOriginRecord,
 }
 
-pub type CatalogInstallProgressSink<'a> = &'a (dyn Fn(&str, u8) + Send + Sync);
+pub type CatalogInstallProgressSink<'a> =
+    &'a (dyn Fn(&str, u8) -> Result<(), CommandErrorPayload> + Send + Sync);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GithubSkillRef {
@@ -720,17 +744,15 @@ async fn list_clawhub_entries(
     {
         url.query_pairs_mut().append_pair("cursor", cursor);
     }
-    let response =
-        client.get(url).send().await.map_err(|error| {
-            runtime_operation_failed(format!("ClawHub request failed: {error}"))
-        })?;
-    let response = ensure_success(response).await?;
-    let payload = response
-        .json::<ClawHubListResponse>()
+    let response = client
+        .get(url)
+        .send()
         .await
-        .map_err(|error| {
-            runtime_operation_failed(format!("ClawHub response parse failed: {error}"))
-        })?;
+        .map_err(|error| map_catalog_request_error(error, "ClawHub request failed"))?;
+    let response = ensure_success(response).await?;
+    let payload =
+        read_response_json::<ClawHubListResponse>(response, "ClawHub response parse failed")
+            .await?;
     let entries = payload
         .items
         .into_iter()
@@ -912,14 +934,17 @@ async fn get_clawhub_entry(
             |error| runtime_operation_failed(format!("ClawHub detail URL build failed: {error}")),
         )?;
     append_owner_handle(&mut detail_url, key.owner_handle.as_deref());
-    let detail = ensure_success(client.get(detail_url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("ClawHub detail request failed: {error}"))
-    })?)
-    .await?
-    .json::<ClawHubDetailResponse>()
-    .await
-    .map_err(|error| runtime_operation_failed(format!("ClawHub detail parse failed: {error}")))?
-    .skill;
+    let response =
+        ensure_success(
+            client.get(detail_url).send().await.map_err(|error| {
+                map_catalog_request_error(error, "ClawHub detail request failed")
+            })?,
+        )
+        .await?;
+    let detail =
+        read_response_json::<ClawHubDetailResponse>(response, "ClawHub detail parse failed")
+            .await?
+            .skill;
     let version = request.version.clone().or_else(|| {
         detail.version.clone().or_else(|| {
             detail
@@ -999,10 +1024,10 @@ async fn materialize_github_skill(
     homepage_url: Option<String>,
     progress: Option<CatalogInstallProgressSink<'_>>,
 ) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
-    emit_catalog_progress(progress, "resolving", 10);
+    emit_catalog_progress(progress, "resolving", 10)?;
     let commit =
         resolve_github_commit(&github_ref.owner, &github_ref.repo, &github_ref.reference).await?;
-    emit_catalog_progress(progress, "checking", 18);
+    emit_catalog_progress(progress, "checking", 18)?;
     let tree = fetch_github_tree(&github_ref.owner, &github_ref.repo, &commit).await?;
     let temp_dir = tempfile::tempdir()
         .map_err(|error| runtime_operation_failed(format!("catalog temp dir failed: {error}")))?;
@@ -1026,7 +1051,7 @@ async fn materialize_github_skill(
             "catalog skill must contain SKILL.md".to_owned(),
         ));
     }
-    emit_catalog_progress(progress, "downloading", 25);
+    emit_catalog_progress(progress, "downloading", 25)?;
     let total_files = files.len().max(1);
     let mut file_count = 0_usize;
     let mut total_bytes = 0_usize;
@@ -1068,7 +1093,7 @@ async fn materialize_github_skill(
             runtime_operation_failed(format!("catalog package file write failed: {error}"))
         })?;
         let percent = 25 + ((file_count * 35) / total_files).min(35);
-        emit_catalog_progress(progress, "downloading", percent as u8);
+        emit_catalog_progress(progress, "downloading", percent as u8)?;
     }
     Ok(MaterializedCatalogSkill {
         temp_dir,
@@ -1091,7 +1116,7 @@ async fn materialize_clawhub_skill(
 ) -> Result<MaterializedCatalogSkill, CommandErrorPayload> {
     let key = parse_clawhub_entry_id(&request.entry_id)?;
     let client = http_client()?;
-    emit_catalog_progress(progress, "checking", 15);
+    emit_catalog_progress(progress, "checking", 15)?;
     let scan_status = fetch_clawhub_scan_status(
         &client,
         &key.slug,
@@ -1115,11 +1140,14 @@ async fn materialize_clawhub_skill(
     if let Some(version) = request.version.as_deref() {
         url.query_pairs_mut().append_pair("version", version);
     }
-    let response =
-        ensure_success(client.get(url).send().await.map_err(|error| {
-            runtime_operation_failed(format!("ClawHub download failed: {error}"))
-        })?)
-        .await?;
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "ClawHub download failed"))?,
+    )
+    .await?;
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -1127,12 +1155,9 @@ async fn materialize_clawhub_skill(
         .unwrap_or_default()
         .to_owned();
     if content_type.contains("application/json") {
-        let handoff = response
-            .json::<ClawHubGithubHandoff>()
-            .await
-            .map_err(|error| {
-                runtime_operation_failed(format!("ClawHub handoff parse failed: {error}"))
-            })?;
+        let handoff =
+            read_response_json::<ClawHubGithubHandoff>(response, "ClawHub handoff parse failed")
+                .await?;
         if handoff.source_ref != "public-github" {
             return Err(invalid_payload(
                 "unsupported ClawHub handoff source".to_owned(),
@@ -1157,7 +1182,7 @@ async fn materialize_clawhub_skill(
         )
         .await;
     }
-    emit_catalog_progress(progress, "downloading", 25);
+    emit_catalog_progress(progress, "downloading", 25)?;
     let bytes = read_response_bytes_limited(
         response,
         MAX_CATALOG_DOWNLOAD_BYTES,
@@ -1293,15 +1318,15 @@ async fn fetch_github_tree(
     let client = http_client()?;
     let url =
         format!("https://api.github.com/repos/{owner}/{repo}/git/trees/{reference}?recursive=1");
-    ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("GitHub tree request failed: {error}"))
-    })?)
-    .await?
-    .json::<GithubTreeResponse>()
-    .await
-    .map_err(|error| {
-        runtime_operation_failed(format!("GitHub tree response parse failed: {error}"))
-    })
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "GitHub tree request failed"))?,
+    )
+    .await?;
+    read_response_json(response, "GitHub tree response parse failed").await
 }
 
 async fn resolve_github_commit(
@@ -1314,17 +1339,16 @@ async fn resolve_github_commit(
     }
     let client = http_client()?;
     let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{reference}");
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("GitHub commit request failed: {error}"))
-    })?)
-    .await?;
-    response
-        .json::<GithubCommitResponse>()
+    let response =
+        ensure_success(
+            client.get(url).send().await.map_err(|error| {
+                map_catalog_request_error(error, "GitHub commit request failed")
+            })?,
+        )
+        .await?;
+    read_response_json::<GithubCommitResponse>(response, "GitHub commit response parse failed")
         .await
         .map(|payload| payload.sha)
-        .map_err(|error| {
-            runtime_operation_failed(format!("GitHub commit response parse failed: {error}"))
-        })
 }
 
 async fn fetch_raw_github_file(
@@ -1358,9 +1382,13 @@ async fn fetch_raw_github_file_preview(
         "https://raw.githubusercontent.com/{owner}/{repo}/{reference}/{}",
         source_path.trim_start_matches('/')
     );
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("GitHub raw request failed: {error}"))
-    })?)
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "GitHub raw request failed"))?,
+    )
     .await?;
     let (content, truncated) =
         read_response_text_preview(response, "GitHub raw bytes failed").await?;
@@ -1380,9 +1408,13 @@ async fn fetch_raw_github_file_bytes(
         "https://raw.githubusercontent.com/{owner}/{repo}/{reference}/{}",
         path.trim_start_matches('/')
     );
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("GitHub raw request failed: {error}"))
-    })?)
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "GitHub raw request failed"))?,
+    )
     .await?;
     read_response_bytes_limited(
         response,
@@ -1410,9 +1442,13 @@ async fn fetch_clawhub_file(
     if let Some(version) = version {
         url.query_pairs_mut().append_pair("version", version);
     }
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("ClawHub file request failed: {error}"))
-    })?)
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "ClawHub file request failed"))?,
+    )
     .await?;
     let bytes = read_response_bytes_limited(
         response,
@@ -1442,9 +1478,13 @@ async fn fetch_clawhub_file_preview(
     if let Some(version) = version {
         url.query_pairs_mut().append_pair("version", version);
     }
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("ClawHub file request failed: {error}"))
-    })?)
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "ClawHub file request failed"))?,
+    )
     .await?;
     let (content, truncated) =
         read_response_text_preview(response, "ClawHub file read failed").await?;
@@ -1452,6 +1492,24 @@ async fn fetch_clawhub_file_preview(
 }
 
 async fn read_response_text_preview(
+    response: reqwest::Response,
+    read_context: &str,
+) -> Result<(String, bool), CommandErrorPayload> {
+    match timeout(
+        CATALOG_RESPONSE_BODY_TIMEOUT,
+        read_response_text_preview_inner(response, read_context),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(catalog_timeout_error(
+            "CATALOG_RESPONSE_BODY_TIMEOUT",
+            "catalog response body timed out",
+        )),
+    }
+}
+
+async fn read_response_text_preview_inner(
     mut response: reqwest::Response,
     read_context: &str,
 ) -> Result<(String, bool), CommandErrorPayload> {
@@ -1487,6 +1545,49 @@ async fn read_response_text_preview(
 }
 
 async fn read_response_bytes_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    too_large_message: &str,
+    read_context: &str,
+    progress: Option<CatalogInstallProgressSink<'_>>,
+) -> Result<Vec<u8>, CommandErrorPayload> {
+    match timeout(
+        CATALOG_RESPONSE_BODY_TIMEOUT,
+        read_response_bytes_limited_inner(
+            response,
+            max_bytes,
+            too_large_message,
+            read_context,
+            progress,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(catalog_timeout_error(
+            "CATALOG_RESPONSE_BODY_TIMEOUT",
+            "catalog response body timed out",
+        )),
+    }
+}
+
+async fn read_response_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<T, CommandErrorPayload> {
+    let bytes = read_response_bytes_limited(
+        response,
+        MAX_CATALOG_DOWNLOAD_BYTES,
+        "catalog JSON response is too large",
+        context,
+        None,
+    )
+    .await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| runtime_operation_failed(format!("{context}: {error}")))
+}
+
+async fn read_response_bytes_limited_inner(
     mut response: reqwest::Response,
     max_bytes: usize,
     too_large_message: &str,
@@ -1510,10 +1611,10 @@ async fn read_response_bytes_limited(
         if let Some(content_length) = content_length.filter(|length| *length > 0) {
             let ratio = (bytes.len() as f64 / content_length as f64).clamp(0.0, 1.0);
             let percent = 25 + (ratio * 35.0).round() as u8;
-            emit_catalog_progress(progress, "downloading", percent.min(60));
+            emit_catalog_progress(progress, "downloading", percent.min(60))?;
         }
     }
-    emit_catalog_progress(progress, "downloading", 60);
+    emit_catalog_progress(progress, "downloading", 60)?;
     Ok(bytes)
 }
 
@@ -1531,14 +1632,16 @@ async fn fetch_clawhub_scan_status(
     if let Some(version) = version {
         url.query_pairs_mut().append_pair("version", version);
     }
-    let response = ensure_success(client.get(url).send().await.map_err(|error| {
-        runtime_operation_failed(format!("ClawHub scan request failed: {error}"))
-    })?)
+    let response = ensure_success(
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| map_catalog_request_error(error, "ClawHub scan request failed"))?,
+    )
     .await?;
-    let payload = response
-        .json::<ClawHubScanResponse>()
-        .await
-        .map_err(|error| runtime_operation_failed(format!("ClawHub scan parse failed: {error}")))?;
+    let payload =
+        read_response_json::<ClawHubScanResponse>(response, "ClawHub scan parse failed").await?;
     Ok(payload.status.or_else(|| {
         payload.security.and_then(|value| {
             value
@@ -1561,7 +1664,15 @@ async fn ensure_success(
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let body = response.text().await.unwrap_or_default();
+    let body = read_response_bytes_limited(
+        response,
+        MAX_CATALOG_PREVIEW_BYTES,
+        "catalog error response is too large",
+        "catalog error response read failed",
+        None,
+    )
+    .await?;
+    let body = String::from_utf8(body).ok().unwrap_or_default();
     let mut message = format!("catalog HTTP request failed with status {status}");
     if let Some(retry_after) = retry_after {
         message.push_str(&format!("; retry after {retry_after}s"));
@@ -1574,7 +1685,15 @@ async fn ensure_success(
 }
 
 fn http_client() -> Result<reqwest::Client, CommandErrorPayload> {
+    http_client_with_timeouts(CatalogHttpTimeouts::default())
+}
+
+fn http_client_with_timeouts(
+    timeouts: CatalogHttpTimeouts,
+) -> Result<reqwest::Client, CommandErrorPayload> {
     reqwest::Client::builder()
+        .connect_timeout(timeouts.connect)
+        .timeout(timeouts.request)
         .user_agent(CATALOG_USER_AGENT)
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
@@ -1592,6 +1711,58 @@ fn http_client() -> Result<reqwest::Client, CommandErrorPayload> {
         })
         .build()
         .map_err(|error| runtime_operation_failed(format!("catalog HTTP client failed: {error}")))
+}
+
+fn catalog_timeout_error(code: &'static str, message: &str) -> CommandErrorPayload {
+    CommandErrorPayload {
+        code,
+        message: message.to_owned(),
+    }
+}
+
+fn map_catalog_request_error(error: reqwest::Error, context: &str) -> CommandErrorPayload {
+    if error.is_timeout() {
+        if error.is_connect() {
+            return catalog_timeout_error(
+                "CATALOG_CONNECT_TIMEOUT",
+                "catalog connection timed out",
+            );
+        }
+        return catalog_timeout_error("CATALOG_REQUEST_TIMEOUT", "catalog request timed out");
+    }
+    runtime_operation_failed(format!("{context}: {error}"))
+}
+
+#[doc(hidden)]
+pub async fn fetch_catalog_http_for_test(
+    url: &str,
+    timeouts: CatalogHttpTimeouts,
+) -> Result<Vec<u8>, CommandErrorPayload> {
+    let client = http_client_with_timeouts(timeouts)?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| map_catalog_request_error(error, "catalog test request failed"))?;
+    let response = ensure_success(response).await?;
+    match timeout(
+        timeouts.response_body,
+        read_response_bytes_limited_inner(
+            response,
+            MAX_CATALOG_DOWNLOAD_BYTES,
+            "catalog test response is too large",
+            "catalog test response read failed",
+            None,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(catalog_timeout_error(
+            "CATALOG_RESPONSE_BODY_TIMEOUT",
+            "catalog response body timed out",
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1944,10 +2115,11 @@ fn emit_catalog_progress(
     progress: Option<CatalogInstallProgressSink<'_>>,
     stage: &str,
     percent: u8,
-) {
+) -> Result<(), CommandErrorPayload> {
     if let Some(progress) = progress {
-        progress(stage, percent.min(100));
+        progress(stage, percent.min(100))?;
     }
+    Ok(())
 }
 
 fn invalid_payload(message: String) -> CommandErrorPayload {

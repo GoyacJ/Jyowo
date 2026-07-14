@@ -54,7 +54,8 @@ use jyowo_harness_sdk::ext::{
     ToolCapability, ToolError, ToolProfile, TransportChoice,
 };
 use jyowo_harness_sdk::{
-    DesktopSettingsRuntime, McpConfig, RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
+    DesktopSettingsRuntime, KeyringSkillSecretStore, McpConfig, RuntimeSkillConfig,
+    RuntimeSkillSummary, RuntimeSkillView, SessionOptions,
 };
 use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
 use serde::{Deserialize, Serialize};
@@ -123,28 +124,29 @@ pub use contracts::{
     AttachmentReferencePayload, BackgroundAgentActionResponse, BackgroundAgentDeleteResponse,
     BackgroundAgentIdRequest, BackgroundAgentPayload, BrowserMcpPresetId,
     BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
-    ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ContextDecisionPayload,
-    ContextFilePayload, ContextReferencePayload, ConversationMessagePayload,
-    ConversationMetadataFile, ConversationMetadataRecord, ConversationMetadataState,
-    ConversationMetadataStore, ConversationModelCapabilityRecord, ConversationPayload,
-    ConversationSummaryPayload, CreateAttachmentFromPathRequest, CreateAttachmentFromPathResponse,
-    CreateConversationResponse, DeleteAgentProfileRequest, DeleteAgentProfileResponse,
-    DeleteAutomationRequest, DeleteAutomationResponse, DeleteConversationRequest,
-    DeleteConversationResponse, DeleteMcpServerRequest, DeleteMcpServerResponse,
-    DeleteProviderCapabilityRouteRequest, DeleteProviderCapabilityRouteResponse,
-    DeleteSkillRequest, DeleteSkillResponse, EvalCasePayload, EvalLastRunPayload,
-    ExportConversationEvidenceRequest, ExportConversationEvidenceResponse,
-    ExportSupportBundleRequest, ExportSupportBundleResponse, GetArtifactMediaPreviewRequest,
-    GetArtifactMediaPreviewResponse, GetArtifactRevisionContentRequest,
-    GetArtifactRevisionContentResponse, GetAttachmentMediaPreviewRequest,
-    GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest, GetBackgroundAgentResponse,
-    GetContextSnapshotRequest, GetContextSnapshotResponse, GetConversationCommandOutputRequest,
-    GetConversationCommandOutputResponse, GetConversationDiffPatchRequest,
-    GetConversationDiffPatchResponse, GetConversationInspectorItemRequest, GetConversationRequest,
-    GetConversationResponse, GetExecutionSettingsRequest, GetExecutionSettingsResponse,
-    GetMcpServerConfigRequest, GetMcpServerConfigResponse, GetModelUsageSummaryResponse,
-    GetPluginDetailRequest, GetPluginDetailResponse, GetProviderConfigApiKeyRequest,
-    GetProviderConfigApiKeyResponse, GetSkillDetailRequest, GetSkillDetailResponse,
+    ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ClearSkillSecretRequest,
+    ContextDecisionPayload, ContextFilePayload, ContextReferencePayload,
+    ConversationMessagePayload, ConversationMetadataFile, ConversationMetadataRecord,
+    ConversationMetadataState, ConversationMetadataStore, ConversationModelCapabilityRecord,
+    ConversationPayload, ConversationSummaryPayload, CreateAttachmentFromPathRequest,
+    CreateAttachmentFromPathResponse, CreateConversationResponse, DeleteAgentProfileRequest,
+    DeleteAgentProfileResponse, DeleteAutomationRequest, DeleteAutomationResponse,
+    DeleteConversationRequest, DeleteConversationResponse, DeleteMcpServerRequest,
+    DeleteMcpServerResponse, DeleteProviderCapabilityRouteRequest,
+    DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
+    EvalCasePayload, EvalLastRunPayload, ExportConversationEvidenceRequest,
+    ExportConversationEvidenceResponse, ExportSupportBundleRequest, ExportSupportBundleResponse,
+    GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
+    GetArtifactRevisionContentRequest, GetArtifactRevisionContentResponse,
+    GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
+    GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
+    GetConversationCommandOutputRequest, GetConversationCommandOutputResponse,
+    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse,
+    GetConversationInspectorItemRequest, GetConversationRequest, GetConversationResponse,
+    GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
+    GetMcpServerConfigResponse, GetModelUsageSummaryResponse, GetPluginDetailRequest,
+    GetPluginDetailResponse, GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse,
+    GetSkillConfigRequest, GetSkillConfigResponse, GetSkillDetailRequest, GetSkillDetailResponse,
     GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
     ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
     InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
@@ -189,13 +191,16 @@ pub use contracts::{
     SendBackgroundAgentInputRequest, SetAutomationEnabledRequest, SetAutomationEnabledResponse,
     SetExecutionSettingsRequest, SetExecutionSettingsResponse, SetMcpServerEnabledRequest,
     SetMcpServerEnabledResponse, SetPluginEnabledRequest, SetProjectPluginsEnabledRequest,
-    SetProjectPluginsEnabledResponse, SetSkillEnabledRequest, SetSkillEnabledResponse,
-    SettingsScope, SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
-    SkillCatalogInstallTaskPayload, SkillDetailPayload, SkillFileContentPayload, SkillFilePayload,
-    SkillParameterPayload, SkillStore, SkillStoreRecord, SkillSummaryPayload, StartRunRequest,
-    StartRunResponse, SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse,
-    UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse,
-    UpdatePluginConfigRequest, ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
+    SetProjectPluginsEnabledResponse, SetSkillConfigValueRequest, SetSkillEnabledRequest,
+    SetSkillEnabledResponse, SetSkillSecretRequest, SettingsScope,
+    SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
+    SkillCatalogInstallTaskPayload, SkillConfigDeclarationPayload, SkillConfigMutationResponse,
+    SkillDetailPayload, SkillFileContentPayload, SkillFilePayload, SkillParameterPayload,
+    SkillPrerequisitePayload, SkillScriptEnvPayload, SkillScriptPayload, SkillStore,
+    SkillStoreRecord, SkillSummaryPayload, StartRunRequest, StartRunResponse,
+    SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse, UninstallPluginRequest,
+    UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest,
+    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
     ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
@@ -260,25 +265,31 @@ pub use providers::{
     NoWorkspaceProviderCapabilityRouteStore,
 };
 pub use runtime::{
-    managed_runtime_state, runtime_state, runtime_state_async, runtime_state_for_workspace,
-    runtime_state_with_provider_settings_store_for_test, ManagedDesktopRuntime,
+    managed_runtime_state, reload_desktop_settings_runtime_after_plugin_change_for_test,
+    runtime_state, runtime_state_async, runtime_state_for_workspace,
+    runtime_state_with_provider_settings_store_for_test,
+    runtime_state_with_skill_config_store_for_test, ManagedDesktopRuntime,
 };
 pub use runtime_tools::*;
 pub use skills::{
-    delete_skill_with_runtime_state, get_skill_catalog_entry_with_runtime_state,
-    get_skill_catalog_file_with_runtime_state, get_skill_detail_with_runtime_state,
-    get_skill_file_with_runtime_state, import_skill_with_runtime_state,
-    install_skill_from_catalog_package_with_runtime_state,
+    clear_skill_secret_with_runtime_state, delete_skill_with_runtime_state,
+    get_or_create_skill_catalog_install_task, get_skill_catalog_entry_with_runtime_state,
+    get_skill_catalog_file_with_runtime_state, get_skill_config_with_runtime_state,
+    get_skill_detail_with_runtime_state, get_skill_file_with_runtime_state,
+    import_skill_with_runtime_state, install_skill_from_catalog_package_with_runtime_state,
     install_skill_from_catalog_with_progress, install_skill_from_catalog_with_runtime_state,
     list_skill_catalog_entries_with_runtime_state,
     list_skill_catalog_install_tasks_with_runtime_state,
     list_skill_catalog_sources_with_runtime_state, list_skills_with_runtime_state,
-    set_skill_enabled_with_runtime_state, start_skill_catalog_install_task_with_runtime_state,
+    record_skill_catalog_install_task_progress, set_skill_config_value_with_runtime_state,
+    set_skill_enabled_with_runtime_state, set_skill_secret_with_runtime_state,
+    start_skill_catalog_install_task_with_runtime_state,
 };
 pub use stores::{
     DesktopMcpDiagnosticStore, DesktopModelUsageRollupStore, DesktopPluginStore,
     DesktopProviderCatalogSnapshotStore, DesktopProviderDiagnosticsStore,
-    DesktopProviderQuotaCacheStore, DesktopRuntimeState, DesktopSkillStore,
+    DesktopProviderQuotaCacheStore, DesktopRuntimeState, DesktopSkillConfigStore,
+    DesktopSkillStore,
 };
 
 #[tauri::command]
@@ -898,6 +909,64 @@ pub async fn list_skills(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn get_skill_config(
+    skill_id: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<GetSkillConfigResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    get_skill_config_with_runtime_state(GetSkillConfigRequest { skill_id }, &runtime_state).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_skill_config_value(
+    skill_id: String,
+    key: String,
+    value: Value,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    set_skill_config_value_with_runtime_state(
+        SetSkillConfigValueRequest {
+            skill_id,
+            key,
+            value,
+        },
+        &runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn set_skill_secret(
+    skill_id: String,
+    key: String,
+    value: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    set_skill_secret_with_runtime_state(
+        SetSkillSecretRequest {
+            skill_id,
+            key,
+            value,
+        },
+        &runtime_state,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn clear_skill_secret(
+    skill_id: String,
+    key: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<SkillConfigMutationResponse, CommandErrorPayload> {
+    let runtime_state = runtime_handle.read().await;
+    clear_skill_secret_with_runtime_state(ClearSkillSecretRequest { skill_id, key }, &runtime_state)
+        .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn get_skill_detail(
     id: String,
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
@@ -1007,6 +1076,7 @@ pub async fn install_skill_from_catalog(
         let window = window.clone();
         Arc::new(move |payload: SkillCatalogInstallProgressPayload| {
             let _ = window.emit("skill_catalog_install_progress", payload);
+            Ok(())
         }) as SkillCatalogInstallProgressEmitter
     });
     start_skill_catalog_install_task_with_runtime_state(
@@ -1028,7 +1098,6 @@ pub async fn import_skill(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<ImportSkillResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
     import_skill_with_runtime_state(ImportSkillRequest { source_path }, &*runtime_state).await
 }
 
@@ -1039,7 +1108,6 @@ pub async fn set_skill_enabled(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<SetSkillEnabledResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
     set_skill_enabled_with_runtime_state(SetSkillEnabledRequest { id, enabled }, &*runtime_state)
         .await
 }
@@ -1050,7 +1118,6 @@ pub async fn delete_skill(
     runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
 ) -> Result<DeleteSkillResponse, CommandErrorPayload> {
     let runtime_state = runtime_handle.read().await;
-    let _skill_store_guard = runtime_state.skill_store_lock.lock().await;
     delete_skill_with_runtime_state(DeleteSkillRequest { id }, &*runtime_state).await
 }
 

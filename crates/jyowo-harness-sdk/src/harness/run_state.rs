@@ -16,8 +16,12 @@ pub(super) struct EngineSessionTurnRunner {
         Arc<parking_lot::Mutex<HashMap<(TenantId, SessionId), RunId>>>,
     pub(super) process_registry: Option<Arc<dyn RunScopedProcessRegistryCap>>,
     pub(super) skill_registry: Option<SkillRegistry>,
+    pub(super) skill_registry_snapshot: Option<Arc<SkillRegistrySnapshot>>,
     pub(super) skill_metrics_sink: Option<Arc<dyn SkillMetricsSink>>,
+    pub(super) skill_render_policy: SkillRenderPolicy,
     pub(super) skill_config_snapshot: SkillConfigSnapshot,
+    pub(super) pending_skill_context_deliveries:
+        parking_lot::Mutex<HashMap<(TenantId, SessionId, RunId), Vec<String>>>,
 }
 
 pub(super) struct ActiveConversationRunGuard {

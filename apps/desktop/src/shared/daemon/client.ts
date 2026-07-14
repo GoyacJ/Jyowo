@@ -633,23 +633,30 @@ function parseReferenceCandidates(value: unknown): ListReferenceCandidatesRespon
   if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
     throw new Error('Invalid task reference candidate categories')
   }
-  const parsed = Object.fromEntries(keys.map((key) => [key, parseCandidateList(value[key])]))
+  const parsed = Object.fromEntries(
+    keys.map((key) => [key, parseCandidateList(value[key], key === 'skills')]),
+  )
   return parsed as unknown as ListReferenceCandidatesResponse
 }
 
-function parseCandidateList(value: unknown) {
+function parseCandidateList(value: unknown, skillCandidates: boolean) {
   if (!Array.isArray(value)) throw new Error('Invalid task reference candidate list')
   return value.map((candidate) => {
     if (!isRecord(candidate)) throw new Error('Invalid task reference candidate')
     const keys = Object.keys(candidate)
     if (
-      keys.some((key) => !['id', 'label', 'path'].includes(key)) ||
+      keys.some((key) => !['id', 'label', 'path', 'source'].includes(key)) ||
       typeof candidate.label !== 'string' ||
-      candidate.label.length === 0 ||
+      candidate.label.trim().length === 0 ||
       (candidate.id !== undefined &&
-        (typeof candidate.id !== 'string' || candidate.id.length === 0)) ||
+        (typeof candidate.id !== 'string' || candidate.id.trim().length === 0)) ||
       (candidate.path !== undefined &&
-        (typeof candidate.path !== 'string' || !isSafeRelativeReferencePath(candidate.path)))
+        (typeof candidate.path !== 'string' || !isSafeRelativeReferencePath(candidate.path))) ||
+      (skillCandidates &&
+        (candidate.id === undefined ||
+          candidate.path !== undefined ||
+          !isSkillReferenceSource(candidate.source))) ||
+      (!skillCandidates && candidate.source !== undefined)
     ) {
       throw new Error('Invalid task reference candidate')
     }
@@ -657,8 +664,17 @@ function parseCandidateList(value: unknown) {
       ...(candidate.id === undefined ? {} : { id: candidate.id }),
       label: candidate.label,
       ...(candidate.path === undefined ? {} : { path: candidate.path }),
+      ...(candidate.source === undefined ? {} : { source: candidate.source }),
     }
   })
+}
+
+function isSkillReferenceSource(value: unknown) {
+  if (value === 'bundled' || value === 'workspace' || value === 'user') return true
+  if (!isRecord(value) || Object.keys(value).length !== 1) return false
+  if ('plugin' in value) return typeof value.plugin === 'string' && value.plugin.trim().length > 0
+  if ('mcp' in value) return typeof value.mcp === 'string' && value.mcp.trim().length > 0
+  return false
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

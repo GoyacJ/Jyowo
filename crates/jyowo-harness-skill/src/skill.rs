@@ -1,10 +1,12 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use harness_contracts::{
     AgentId, HookEventKind, HookFailureMode, McpServerId, PluginId, SkillId, SkillSourceKind,
     TrustLevel,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +18,9 @@ pub struct Skill {
     pub frontmatter: SkillFrontmatter,
     pub body: String,
     pub raw_path: Option<PathBuf>,
+    /// Immutable package bytes captured and validated by the loader.
+    /// Script execution must use this snapshot instead of reopening `raw_path`.
+    pub package_snapshot: Option<Arc<crate::SkillPackageSnapshot>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,12 +30,63 @@ pub struct SkillFrontmatter {
     pub allowlist_agents: Option<Vec<String>>,
     pub parameters: Vec<SkillParameter>,
     pub config: Vec<SkillConfigDecl>,
+    pub scripts: Vec<SkillScriptDecl>,
     pub platforms: Vec<SkillPlatform>,
     pub prerequisites: SkillPrerequisites,
     pub hooks: Vec<SkillHookDecl>,
     pub tags: Vec<String>,
     pub category: Option<String>,
     pub metadata: HashMap<String, Value>,
+}
+
+pub const DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS: u64 = 30;
+pub const MAX_SKILL_SCRIPT_TIMEOUT_SECONDS: u64 = 300;
+pub const DEFAULT_SKILL_SCRIPT_STDOUT_BYTES: u64 = 64 * 1024;
+pub const DEFAULT_SKILL_SCRIPT_STDERR_BYTES: u64 = 64 * 1024;
+pub const DEFAULT_SKILL_SCRIPT_OUTPUT_BYTES: u64 = 128 * 1024;
+pub const DEFAULT_SKILL_SCRIPT_ARTIFACT_COUNT: u64 = 16;
+pub const DEFAULT_SKILL_SCRIPT_ARTIFACT_BYTES: u64 = 10 * 1024 * 1024;
+pub const MAX_SKILL_SCRIPT_STREAM_BYTES: u64 = 1024 * 1024;
+pub const MAX_SKILL_SCRIPT_OUTPUT_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_SKILL_SCRIPT_ARTIFACT_COUNT: u64 = 128;
+pub const MAX_SKILL_SCRIPT_ARTIFACT_BYTES: u64 = 100 * 1024 * 1024;
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillScriptDecl {
+    pub id: String,
+    pub path: PathBuf,
+    pub timeout_seconds: u64,
+    pub network: SkillScriptNetworkPolicy,
+    pub env: BTreeMap<String, SkillScriptEnvDecl>,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+    pub max_output_bytes: u64,
+    pub max_artifact_count: u64,
+    pub max_artifact_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillScriptNetworkPolicy {
+    Deny,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillScriptEnvDecl {
+    pub config: String,
+    pub secret: bool,
+}
+
+#[must_use]
+pub fn skill_script_path_has_reserved_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component,
+            Component::Normal(value) if value.to_string_lossy().starts_with(".jyowo-")
+        )
+    })
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

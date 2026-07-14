@@ -73,6 +73,7 @@ pub struct RuntimeSkillParameter {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSkillSummary {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
@@ -82,9 +83,43 @@ pub struct RuntimeSkillSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillConfig {
+    pub key: String,
+    pub value_type: String,
+    pub secret: bool,
+    pub required: bool,
+    pub default: Option<Value>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillScriptEnv {
+    pub name: String,
+    pub config_key: String,
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSkillScript {
+    pub id: String,
+    pub path: String,
+    pub timeout_seconds: u64,
+    pub network: String,
+    pub env: Vec<RuntimeSkillScriptEnv>,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+    pub max_output_bytes: u64,
+    pub max_artifact_count: u64,
+    pub max_artifact_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSkillView {
     pub summary: RuntimeSkillSummary,
     pub parameters: Vec<RuntimeSkillParameter>,
+    pub config: Vec<RuntimeSkillConfig>,
+    #[serde(default)]
+    pub scripts: Vec<RuntimeSkillScript>,
     pub config_keys: Vec<String>,
     pub body_preview: String,
     pub body_full: Option<String>,

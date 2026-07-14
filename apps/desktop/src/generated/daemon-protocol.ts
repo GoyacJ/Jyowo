@@ -46,7 +46,7 @@ export type ClientRequest =
   | {
       attachments: TypedUlid[]
       content: string
-      contextReferences: string[]
+      contextReferences: ConversationContextReference[]
       metadata: CommandMetadata
       modelConfigId?: string | null
       permissionMode?:
@@ -62,7 +62,7 @@ export type ClientRequest =
   | {
       attachments: TypedUlid[]
       content: string
-      contextReferences: string[]
+      contextReferences: ConversationContextReference[]
       expectedRevision: number
       metadata: CommandMetadata
       queueItemId: TypedUlid
@@ -109,6 +109,11 @@ export type ClientRequest =
       type: 'subscribe_events'
     }
   | {
+      afterGlobalOffset: number
+      limit: number
+      type: 'load_events'
+    }
+  | {
       taskId: TypedUlid
       type: 'load_task'
     }
@@ -124,6 +129,10 @@ export type ClientRequest =
   | {
       type: 'list_runtime_tools'
       workspaceRoot?: string | null
+    }
+  | {
+      taskId: TypedUlid
+      type: 'list_skill_reference_candidates'
     }
   | {
       type: 'list_memory_items'
@@ -257,6 +266,82 @@ export type TypedUlid = string
  * via the `definition` "WorkspaceMode".
  */
 export type WorkspaceMode = 'current' | 'managed_worktree'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "ConversationContextReference".
+ */
+export type ConversationContextReference =
+  | {
+      kind: 'workspace_file'
+      label: string
+      path: string
+    }
+  | {
+      id: string
+      kind: 'artifact'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'conversation'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'memory'
+      label: string
+      /**
+       * Hydrated content, if resolved. Mutually exclusive with `label`-only rendering.
+       */
+      resolved_content?: string | null
+    }
+  | {
+      kind: 'skill'
+      label: string
+      parameters?: {
+        [k: string]: unknown
+      }
+      skillId: SkillId
+      source?: SkillSourceKind | null
+      version?: 1
+    }
+  | {
+      id: string
+      kind: 'tool'
+      label: string
+    }
+  | {
+      id: string
+      kind: 'mcp_server'
+      label: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillId".
+ */
+export type SkillId = string
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillSourceKind".
+ */
+export type SkillSourceKind =
+  | ('bundled' | 'workspace' | 'user')
+  | {
+      plugin: PluginId
+    }
+  | {
+      mcp: McpServerId
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PluginId".
+ */
+export type PluginId = string
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "McpServerId".
+ */
+export type McpServerId = string
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "PromotionMode".
@@ -446,6 +531,14 @@ export type ServerMessage =
       type: 'task_event_page'
     }
   | {
+      afterGlobalOffset: number
+      events: TaskEventEnvelope[]
+      hasMore: boolean
+      latestGlobalOffset: number
+      nextAfterGlobalOffset: number
+      type: 'event_history_page'
+    }
+  | {
       tasks: TaskProjection[]
       type: 'task_list'
     }
@@ -453,6 +546,10 @@ export type ServerMessage =
       generation: number
       tools: RuntimeToolSummary[]
       type: 'runtime_tools'
+    }
+  | {
+      skills: SkillReferenceCandidate[]
+      type: 'skill_reference_candidates'
     }
   | {
       items: DaemonMemoryItemSummary[]
@@ -1200,7 +1297,7 @@ export interface QueueItemProjection {
   attachments: TypedUlid[]
   consumedBy?: TypedUlid | null
   content: string
-  contextReferences: string[]
+  contextReferences: ConversationContextReference[]
   createdAt: string
   createdGlobalOffset: number
   queueItemId: TypedUlid
@@ -1371,6 +1468,15 @@ export interface RuntimeToolServiceBindingSummary {
   operationId: string
   providerId: string
   routeKind: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "SkillReferenceCandidate".
+ */
+export interface SkillReferenceCandidate {
+  label: string
+  skillId: SkillId
+  source: SkillSourceKind
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

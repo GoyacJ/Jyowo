@@ -2294,6 +2294,7 @@ pub(crate) async fn save_provider_settings_with_runtime_state_unlocked(
                 Some(&prepared.response.config.id),
                 Arc::clone(&runtime_state.provider_capability_routes),
                 Some(Arc::clone(&candidate_store) as Arc<dyn ProviderSettingsStore>),
+                Some(Arc::clone(&runtime_state.skill_config_store)),
             )
             .await?;
             Some((candidate_runtime, candidate_store))

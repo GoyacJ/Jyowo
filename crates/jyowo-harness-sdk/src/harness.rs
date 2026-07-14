@@ -26,19 +26,20 @@ use harness_contracts::MemdirFileTag;
 #[cfg(not(feature = "observability-redactor"))]
 use harness_contracts::RedactPatternKind;
 use harness_contracts::{
-    now, BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
-    CapabilityRegistry, ContextPatchRequest, ContextPatchSinkCap, ConversationAttachmentReference,
-    ConversationContextReference, ConversationCursor, ConversationEventRef, ConversationTurnInput,
-    Decision, Event, EventId, EvidenceRedactionState, EvidenceRefId, EvidenceRefKind, HarnessError,
-    HookEventKind, InteractivityLevel, JournalOffset, ManifestOriginRef,
-    ManifestValidationFailedEvent, McpServerId, MemoryId, Message, MessageContent, MessageId,
-    MessagePart, MessageRole, ModelModality, ModelProtocol, PermissionError, PermissionMode,
-    PluginCapabilitiesSummary, PluginFailedEvent, PluginLifecycleStateDiscriminant,
-    PluginLoadedEvent, PluginRejectedEvent, ProviderCapabilityRouteSettings, RedactPatternSet,
-    RedactRules, RedactScope, Redactor, RejectionReason, RunId, RunModelSnapshot,
-    RunScopedProcessRegistryCap, RuntimeExecutionStatus, SessionError, SessionId, TenantId,
-    ToolCapability, ToolProfile, ToolRuntimeStatus, ToolSearchMode, TrustLevel, TurnInput,
-    WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    now, AgentId, BlobReaderCapAdapter, BlobRef, BlobRetention, BlobStore, BlobWriterCapAdapter,
+    CapabilityRegistry, ContentHash, ContextPatchRequest, ContextPatchSinkCap,
+    ConversationAttachmentReference, ConversationContextReference, ConversationCursor,
+    ConversationEventRef, ConversationTurnInput, Decision, Event, EventId, EvidenceRedactionState,
+    EvidenceRefId, EvidenceRefKind, HarnessError, HookEventKind, InteractivityLevel, JournalOffset,
+    ManifestOriginRef, ManifestValidationFailedEvent, McpServerId, MemoryId, Message,
+    MessageContent, MessageId, MessagePart, MessageRole, ModelModality, ModelProtocol,
+    PermissionError, PermissionMode, PluginCapabilitiesSummary, PluginFailedEvent,
+    PluginLifecycleStateDiscriminant, PluginLoadedEvent, PluginRejectedEvent,
+    ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
+    RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, RuntimeExecutionStatus,
+    SessionError, SessionId, SkillContextAssembledEvent, SkillContextError,
+    SkillContextPreparedEvent, SkillId, TenantId, ToolCapability, ToolProfile, ToolRuntimeStatus,
+    ToolSearchMode, TrustLevel, TurnInput, WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "stream-permission")]
 use harness_contracts::{PermissionOptionId, RequestId};
@@ -100,14 +101,15 @@ use harness_provider_state::ProviderContinuationStore;
 use harness_sandbox::{ExecSpec, SandboxBackend, StdioSpec};
 use harness_session::{
     run_effective_config_hash, session_options_hash, Session, SessionOptions, SessionProjection,
-    SessionTurnContext, SessionTurnRunner, SkillReloadCap, Workspace, WorkspaceRegistry,
-    WorkspaceSpec,
+    SessionTurnContext, SessionTurnRunner, SkillContextDeliveryStage, SkillReloadCap, Workspace,
+    WorkspaceRegistry, WorkspaceSpec,
 };
 use harness_skill::{
-    parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, Skill, SkillHookBinding,
-    SkillHookTransport, SkillLoader, SkillMetricsSink, SkillParamType, SkillPlatform,
-    SkillRegistration, SkillRegistry, SkillRegistryService, SkillRenderer, SkillSource,
-    SkillSourceConfig, SkillThreatEventScope, SkillValidator,
+    parse_skill_markdown, BuiltinHookKind, DirectorySourceKind, RenderError, Skill,
+    SkillHookBinding, SkillHookTransport, SkillLoader, SkillMetricsSink, SkillParamType,
+    SkillPlatform, SkillRegistration, SkillRegistry, SkillRegistryService, SkillRegistrySnapshot,
+    SkillRegistryUpdateError, SkillRenderPolicy, SkillRenderer, SkillSource, SkillSourceConfig,
+    SkillThreatEventScope, SkillValidator,
 };
 use harness_tool::{
     DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,
@@ -122,7 +124,8 @@ use serde_json::{json, Value};
 use crate::builder::BuiltinMemoryConfig;
 use crate::builder::{HarnessBuilder, Set, Unset};
 use crate::skill_config::{
-    validate_required_skill_config, SkillConfigSnapshot, SkillConfigSnapshotResolver,
+    apply_skill_config_statuses, SkillConfigSnapshot, SkillConfigSnapshotResolver,
+    SkillConfigStoreError,
 };
 use crate::skill_pack_loader::{
     LockedSkillVersionSnapshot, SkillPackLoaderAdapter, SkillPackLoaderError,
@@ -186,14 +189,15 @@ use self::run_state::{
 };
 pub use self::sampling::HarnessSamplingProvider;
 use self::session_runtime::{sdk_session_not_found, snapshot_for_supported_model};
-use self::skills::SdkSkillReloadCap;
+use self::skills::{SdkSkillHookReconciler, SdkSkillReloadCap, SkillTurnSnapshot};
 pub use self::tool_pool::filter_unrouted_service_tools;
 use self::tool_pool::{apply_tenant_tool_filter, filter_unavailable_tools};
 pub use self::types::{
     ConversationEventsPage, ConversationEventsPageRequest, ConversationRunOptions,
     ConversationSession, ConversationSessionSummary, ConversationTurnReceipt,
     ConversationTurnRequest, HarnessOptions, McpConfig, McpToolInjectionOutcome,
-    RuntimeSkillParameter, RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
+    RuntimeSkillConfig, RuntimeSkillParameter, RuntimeSkillScript, RuntimeSkillScriptEnv,
+    RuntimeSkillSummary, RuntimeSkillView, TenantPolicy,
 };
 pub use self::workspace::WorkspaceCreateRequest;
 #[derive(Clone)]
@@ -219,7 +223,7 @@ struct HarnessInner {
     blob_store: Option<Arc<dyn BlobStore>>,
     evidence_ref_store: Option<Arc<harness_journal::EvidenceRefStore>>,
     skill_loader: Option<SkillLoader>,
-    skill_config_snapshot: SkillConfigSnapshot,
+    skill_config_snapshot: Arc<parking_lot::RwLock<SkillConfigSnapshot>>,
     skill_registry: SkillRegistry,
     mcp_config: Option<McpConfig>,
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
@@ -1304,7 +1308,11 @@ impl Harness {
             let mut capability_registries = PluginCapabilityRegistries::default()
                 .with_tool_registry(tool_registry.clone())
                 .with_hook_registry(hook_registry.clone())
-                .with_skill_registry(skill_registry.clone());
+                .with_skill_registry(skill_registry.clone())
+                .with_skill_reconciler(Arc::new(SdkSkillHookReconciler::new(
+                    skill_registry.clone(),
+                    hook_registry.clone(),
+                )));
             if let Some(config) = &mcp_config {
                 capability_registries =
                     capability_registries.with_mcp_registry(config.registry.clone());
@@ -1446,7 +1454,9 @@ impl Harness {
                 blob_store: extras.blob_store.take(),
                 evidence_ref_store: extras.evidence_ref_store.take(),
                 skill_loader: extras.skill_loader.take(),
-                skill_config_snapshot: extras.skill_config_snapshot.take().unwrap_or_default(),
+                skill_config_snapshot: Arc::new(parking_lot::RwLock::new(
+                    extras.skill_config_snapshot.take().unwrap_or_default(),
+                )),
                 skill_registry,
                 mcp_config,
                 elicitation_handler,

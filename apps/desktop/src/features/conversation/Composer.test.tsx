@@ -44,7 +44,7 @@ const referenceCandidates = {
   ],
   memories: [],
   mcpServers: [{ id: 'mcp-filesystem', label: 'Filesystem MCP' }],
-  skills: [{ id: 'skill-review', label: 'Code review skill' }],
+  skills: [{ id: 'skill-review', label: 'Code review skill', source: 'workspace' }],
   tools: [{ id: 'builtin.grep', label: 'Search files' }],
 }
 
@@ -528,7 +528,14 @@ describe('Composer', () => {
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({
           contextReferences: [
-            { id: 'skill-review', kind: 'skill', label: 'Code review skill' },
+            {
+              kind: 'skill',
+              label: 'Code review skill',
+              parameters: {},
+              skillId: 'skill-review',
+              source: 'workspace',
+              version: 1,
+            },
             { id: 'builtin.grep', kind: 'tool', label: 'Search files' },
             {
               id: 'mcp-filesystem',

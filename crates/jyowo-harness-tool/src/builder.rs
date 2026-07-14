@@ -97,6 +97,7 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::SkillsListTool>::default())?;
                     registry.register(Box::<crate::builtin::SkillsViewTool>::default())?;
                     registry.register(Box::<crate::builtin::SkillsInvokeTool>::default())?;
+                    registry.register(Box::<crate::builtin::SkillsRunScriptTool>::default())?;
                     #[cfg(feature = "programmatic-tool-calling")]
                     registry.register_with_journal_authority(
                         Box::<crate::builtin::ExecuteCodeTool>::default(),
@@ -319,6 +320,7 @@ fn register_skill_tools(registry: &ToolRegistry) -> Result<(), RegistrationError
         registry.register(Box::<crate::builtin::SkillsListTool>::default())?;
         registry.register(Box::<crate::builtin::SkillsViewTool>::default())?;
         registry.register(Box::<crate::builtin::SkillsInvokeTool>::default())?;
+        registry.register(Box::<crate::builtin::SkillsRunScriptTool>::default())?;
         Ok(())
     }
     #[cfg(not(any(feature = "builtin-toolset", feature = "skill-tools")))]

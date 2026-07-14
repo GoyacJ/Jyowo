@@ -1,21 +1,25 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
 use harness_contracts::{
     ActionPlanHash, AssistantMessageCompletedEvent, CacheImpact, CompactOutcome, CompactTrigger,
-    CompactionAppliedEvent, DecidedBy, Decision, DecisionId, DecisionLifetime, DecisionMatcherKind,
-    DecisionMatcherSummary, DecisionScope, DeferPolicy, DeferredToolHint, DenyReason, EndReason,
-    Event, EventId, MessageContent, MessageId, MessageMetadata, MessagePart, MessageRole,
-    NoopRedactor, PermissionActorSource, PermissionDecisionOption, PermissionMode,
-    PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, PermissionReview,
-    PermissionSubject, RequestId, RunEndedEvent, RunId, SandboxPolicySummary, SessionCreatedEvent,
-    SessionEndedEvent, SessionId, Severity, StopReason, TenantId, ToolDeferredPoolChangedEvent,
-    ToolErrorPayload, ToolPoolChangeSource, ToolProperties, ToolResult,
-    ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent, ToolUseFailedEvent,
-    ToolUseId, ToolUseRequestedEvent, ToolUseSummary, UsageSnapshot,
+    CompactionAppliedEvent, ContentHash, ConversationContextReference, DecidedBy, Decision,
+    DecisionId, DecisionLifetime, DecisionMatcherKind, DecisionMatcherSummary, DecisionScope,
+    DeferPolicy, DeferredToolHint, DenyReason, EndReason, Event, EventId, MessageContent,
+    MessageId, MessageMetadata, MessagePart, MessageRole, NoopRedactor, PermissionActorSource,
+    PermissionDecisionOption, PermissionMode, PermissionOptionId, PermissionRequestedEvent,
+    PermissionResolvedEvent, PermissionReview, PermissionSubject, RequestId, RunEndedEvent, RunId,
+    SandboxPolicySummary, SessionCreatedEvent, SessionEndedEvent, SessionId, Severity,
+    SkillContextAssembledEvent, SkillContextConsumedEvent, SkillContextPreparedEvent,
+    SkillContextProviderAcceptedEvent, SkillId, SkillSourceKind, StopReason, TenantId,
+    ToolDeferredPoolChangedEvent, ToolErrorPayload, ToolPoolChangeSource, ToolProperties,
+    ToolResult, ToolSchemaMaterializedEvent, ToolUseCompletedEvent, ToolUseDeniedEvent,
+    ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseSummary, UsageSnapshot,
+    CURRENT_CONTEXT_REFERENCE_VERSION,
 };
 use harness_journal::{EventStore, InMemoryEventStore, ReplayCursor};
-use harness_session::SessionProjection;
+use harness_session::{SessionProjection, SkillContextDeliveryStage};
 use serde_json::json;
 
 #[tokio::test]
@@ -309,6 +313,94 @@ async fn session_ended_sets_projection_end_reason() {
 }
 
 #[tokio::test]
+async fn skill_context_projection_tracks_unconsumed_and_consumed_deliveries() {
+    let tenant = TenantId::SINGLE;
+    let session = SessionId::new();
+    let first_run = RunId::new();
+    let recovery_run = RunId::new();
+    let at = harness_contracts::now();
+    let prepared = Event::SkillContextPrepared(SkillContextPreparedEvent {
+        session_id: session,
+        run_id: first_run,
+        delivery_key: "delivery-1".into(),
+        reference: skill_reference(),
+        body_hash: ContentHash([4; 32]),
+        at,
+    });
+    let assembled = Event::SkillContextAssembled(SkillContextAssembledEvent {
+        session_id: session,
+        run_id: first_run,
+        delivery_key: "delivery-1".into(),
+        at,
+    });
+    let accepted = Event::SkillContextProviderAccepted(SkillContextProviderAcceptedEvent {
+        session_id: session,
+        run_id: recovery_run,
+        delivery_key: "delivery-1".into(),
+        at,
+    });
+
+    let pending = SessionProjection::replay(
+        envelopes(
+            tenant,
+            session,
+            vec![prepared.clone(), assembled.clone(), accepted.clone()],
+        )
+        .await,
+    )
+    .unwrap();
+    let delivery = pending.skill_context_delivery("delivery-1").unwrap();
+    assert_eq!(delivery.stage, SkillContextDeliveryStage::ProviderAccepted);
+    assert_eq!(delivery.run_id, recovery_run);
+    assert_eq!(
+        pending
+            .unconsumed_skill_context_deliveries()
+            .map(|delivery| delivery.delivery_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["delivery-1"]
+    );
+
+    let consumed = Event::SkillContextConsumed(SkillContextConsumedEvent {
+        session_id: session,
+        run_id: recovery_run,
+        delivery_key: "delivery-1".into(),
+        at,
+    });
+    let completed = SessionProjection::replay(
+        envelopes(
+            tenant,
+            session,
+            vec![prepared, assembled, accepted, consumed],
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(
+        completed
+            .skill_context_delivery("delivery-1")
+            .unwrap()
+            .stage,
+        SkillContextDeliveryStage::Consumed
+    );
+    assert_eq!(completed.unconsumed_skill_context_deliveries().count(), 0);
+}
+
+#[tokio::test]
+async fn skill_context_projection_rejects_an_illegal_transition() {
+    let session = SessionId::new();
+    let event = Event::SkillContextProviderAccepted(SkillContextProviderAcceptedEvent {
+        session_id: session,
+        run_id: RunId::new(),
+        delivery_key: "not-prepared".into(),
+        at: harness_contracts::now(),
+    });
+
+    let result = SessionProjection::replay(envelopes(TenantId::SINGLE, session, vec![event]).await);
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn discovered_tools_are_materialized_removed_and_cleared_by_compaction() {
     let tenant = TenantId::SINGLE;
     let session = SessionId::new();
@@ -503,6 +595,16 @@ async fn snapshot_id_is_stable_across_tool_map_insertion_order() {
 
 fn event_store() -> Arc<InMemoryEventStore> {
     Arc::new(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+}
+
+fn skill_reference() -> ConversationContextReference {
+    ConversationContextReference::Skill {
+        version: CURRENT_CONTEXT_REFERENCE_VERSION,
+        skill_id: SkillId("user/review".into()),
+        label: "Review".into(),
+        parameters: BTreeMap::from([("language".into(), json!("rust"))]),
+        source: Some(SkillSourceKind::User),
+    }
 }
 
 async fn envelopes(

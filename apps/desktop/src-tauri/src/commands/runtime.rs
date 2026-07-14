@@ -65,6 +65,60 @@ pub(crate) struct McpDiagnosticSubscriptionHandle {
     pub(crate) window_label: String,
 }
 
+fn shared_skill_store_lock(path: PathBuf) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .expect("skill store lock registry should not be poisoned");
+    if let Some(lock) = locks.get(&path).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path, Arc::downgrade(&lock));
+    lock
+}
+
+type SharedSkillRuntimeRegistry = HashMap<PathBuf, Vec<std::sync::Weak<DesktopSettingsRuntime>>>;
+static SHARED_SKILL_RUNTIMES: std::sync::OnceLock<std::sync::Mutex<SharedSkillRuntimeRegistry>> =
+    std::sync::OnceLock::new();
+
+fn shared_skill_runtime_registry() -> &'static std::sync::Mutex<SharedSkillRuntimeRegistry> {
+    SHARED_SKILL_RUNTIMES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn register_shared_skill_runtime(path: PathBuf, runtime: &Arc<DesktopSettingsRuntime>) {
+    let mut runtimes = shared_skill_runtime_registry()
+        .lock()
+        .expect("skill runtime registry should not be poisoned");
+    let entries = runtimes.entry(path).or_default();
+    entries.retain(|entry| entry.strong_count() > 0);
+    if !entries.iter().any(|entry| {
+        entry
+            .upgrade()
+            .is_some_and(|registered| Arc::ptr_eq(&registered, runtime))
+    }) {
+        entries.push(Arc::downgrade(runtime));
+    }
+}
+
+pub(crate) fn shared_skill_runtimes(path: &Path) -> Vec<Arc<DesktopSettingsRuntime>> {
+    let mut runtimes = shared_skill_runtime_registry()
+        .lock()
+        .expect("skill runtime registry should not be poisoned");
+    let Some(entries) = runtimes.get_mut(path) else {
+        return Vec::new();
+    };
+    let active = entries
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect::<Vec<_>>();
+    entries.retain(|entry| entry.strong_count() > 0);
+    active
+}
+
 fn active_runtime_provider_binding(
     project_workspace_root: Option<&Path>,
     default_model_id: &str,
@@ -97,6 +151,9 @@ impl DesktopRuntimeState {
         let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
         let storage_layout = test_storage_layout_for_workspace(&workspace_root);
         let runtime_layout = storage_layout.runtime_layout_for_project(&workspace_root);
+        let skill_catalog_install_task_store = Arc::new(DesktopSkillCatalogTaskStore::new(
+            storage_layout.global_runtime_root(),
+        ));
 
         Ok(Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
@@ -156,9 +213,15 @@ impl DesktopRuntimeState {
             execution_settings_store: Arc::new(
                 DesktopExecutionSettingsStore::global_only_with_layout(storage_layout.clone()),
             ),
-            skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
+            skill_catalog_install_task_store,
+            catalog_download_hook: None,
+            catalog_materialize_hook: None,
             skill_store: Arc::new(DesktopSkillStore::global(storage_layout.clone())),
-            skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
+            skill_config_store: Arc::new(DesktopSkillConfigStore::new(
+                storage_layout.clone(),
+                Arc::new(KeyringSkillSecretStore),
+            )),
+            skill_store_lock: shared_skill_store_lock(storage_layout.global_skills_root()),
             settings_reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             global_config_store: Some(GlobalConfigStore::new(storage_layout.clone())),
             project_config_store: Some(ProjectConfigStore::new(
@@ -292,6 +355,10 @@ impl DesktopRuntimeState {
         default_protocol: ModelProtocol,
         default_model_options: harness_contracts::ModelRequestOptions,
     ) -> Result<Self, CommandErrorPayload> {
+        register_shared_skill_runtime(
+            storage_layout_for_home().global_skills_root(),
+            &settings_runtime,
+        );
         let provider_capability_routes = settings_runtime.provider_capability_routes();
         let active_runtime_binding = active_runtime_provider_binding(
             runtime_layout.workspace_root.as_deref(),
@@ -301,6 +368,9 @@ impl DesktopRuntimeState {
         .ok()
         .flatten();
         let state_workspace_root = runtime_layout.conversation_cwd.clone();
+        let skill_catalog_install_task_store = Arc::new(DesktopSkillCatalogTaskStore::new(
+            storage_layout_for_home().global_runtime_root(),
+        ));
         let state = Self {
             active_runtime: Arc::new(RwLock::new(DesktopActiveRuntime {
                 default_model_config_id: active_runtime_binding
@@ -364,9 +434,17 @@ impl DesktopRuntimeState {
             execution_settings_store: Arc::new(DesktopExecutionSettingsStore::from_runtime_layout(
                 &runtime_layout,
             )),
-            skill_catalog_install_tasks: Arc::new(RwLock::new(HashMap::new())),
+            skill_catalog_install_task_store,
+            catalog_download_hook: None,
+            catalog_materialize_hook: None,
             skill_store: Arc::new(DesktopSkillStore::global(storage_layout_for_home())),
-            skill_store_lock: Arc::new(tokio::sync::Mutex::new(())),
+            skill_config_store: Arc::new(DesktopSkillConfigStore::new(
+                storage_layout_for_home(),
+                Arc::new(KeyringSkillSecretStore),
+            )),
+            skill_store_lock: shared_skill_store_lock(
+                storage_layout_for_home().global_skills_root(),
+            ),
             settings_reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             global_config_store: Some(global_config_store_for_home()),
             project_config_store: runtime_layout
@@ -406,11 +484,50 @@ impl DesktopRuntimeState {
     }
 
     #[doc(hidden)]
+    pub fn set_catalog_download_hook_for_test(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.catalog_download_hook = Some(hook);
+    }
+
+    #[doc(hidden)]
+    pub fn set_catalog_materialize_hook_for_test(&mut self, hook: SkillCatalogMaterializeHook) {
+        self.catalog_materialize_hook = Some(hook);
+    }
+
+    #[doc(hidden)]
+    pub fn set_catalog_task_runtime_root_for_test(&mut self, runtime_root: PathBuf) {
+        self.skill_catalog_install_task_store =
+            Arc::new(DesktopSkillCatalogTaskStore::new(runtime_root));
+    }
+
+    #[doc(hidden)]
+    pub fn recover_skill_catalog_install_tasks_for_test(&self) -> Result<(), CommandErrorPayload> {
+        self.skill_catalog_install_task_store
+            .interrupt_running()
+            .map(|_| ())
+    }
+
+    #[doc(hidden)]
+    pub fn set_skill_config_store_for_test(
+        &mut self,
+        skill_config_store: Arc<DesktopSkillConfigStore>,
+    ) {
+        self.skill_config_store = skill_config_store;
+    }
+
+    #[doc(hidden)]
     pub fn set_config_stores_for_test(
         &mut self,
         global_config_store: GlobalConfigStore,
         project_config_store: Option<ProjectConfigStore>,
     ) {
+        if let Some(settings_runtime) = self.settings_runtime() {
+            register_shared_skill_runtime(
+                global_config_store.layout().global_skills_root(),
+                &settings_runtime,
+            );
+        }
+        self.skill_store_lock =
+            shared_skill_store_lock(global_config_store.layout().global_skills_root());
         self.global_config_store = Some(global_config_store);
         self.project_config_store = project_config_store;
     }
@@ -456,22 +573,34 @@ impl DesktopRuntimeState {
         )
         .ok()
         .flatten();
-        *self
-            .active_runtime
-            .write()
-            .expect("desktop active runtime lock should not be poisoned") = DesktopActiveRuntime {
-            default_model_config_id: active_runtime_binding
-                .as_ref()
-                .map(|binding| binding.0.clone()),
-            default_model_id,
-            default_protocol,
-            default_model_options: active_runtime_binding
-                .as_ref()
-                .map(|binding| binding.2.clone())
-                .unwrap_or(default_model_options),
-            provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
-            settings_runtime: Some(settings_runtime),
+        let skill_root = self
+            .global_config_store
+            .as_ref()
+            .map(|store| store.layout().global_skills_root())
+            .unwrap_or_else(|| storage_layout_for_home().global_skills_root());
+        let previous_runtime = {
+            let mut active_runtime = self
+                .active_runtime
+                .write()
+                .expect("desktop active runtime lock should not be poisoned");
+            let previous_runtime = active_runtime.settings_runtime.as_ref().map(Arc::clone);
+            *active_runtime = DesktopActiveRuntime {
+                default_model_config_id: active_runtime_binding
+                    .as_ref()
+                    .map(|binding| binding.0.clone()),
+                default_model_id,
+                default_protocol,
+                default_model_options: active_runtime_binding
+                    .as_ref()
+                    .map(|binding| binding.2.clone())
+                    .unwrap_or(default_model_options),
+                provider_config_fingerprint: active_runtime_binding.map(|binding| binding.1),
+                settings_runtime: Some(Arc::clone(&settings_runtime)),
+            };
+            previous_runtime
         };
+        drop(previous_runtime);
+        register_shared_skill_runtime(skill_root, &settings_runtime);
     }
 
     pub fn effective_execution_settings(
@@ -578,7 +707,15 @@ pub type ManagedDesktopRuntime = Arc<AsyncRwLock<DesktopRuntimeState>>;
 
 #[must_use]
 pub fn managed_runtime_state() -> ManagedDesktopRuntime {
-    Arc::new(AsyncRwLock::new(initial_managed_runtime_state()))
+    let state = initial_managed_runtime_state();
+    state
+        .skill_catalog_install_task_store
+        .interrupt_running()
+        .expect("skill catalog install task recovery should succeed");
+    DesktopSkillStore::global(storage_layout_for_home())
+        .cleanup_staging()
+        .expect("skill staging recovery should succeed");
+    Arc::new(AsyncRwLock::new(state))
 }
 
 pub(crate) fn initial_managed_runtime_state() -> DesktopRuntimeState {
@@ -618,7 +755,7 @@ pub(crate) async fn runtime_state_for_no_workspace(
 pub async fn runtime_state_for_workspace(
     workspace_root: PathBuf,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    runtime_state_from_settings_store(workspace_root, None).await
+    runtime_state_from_settings_stores(workspace_root, None, None).await
 }
 
 pub(crate) async fn runtime_state_for_global_conversation(
@@ -631,6 +768,8 @@ pub(crate) async fn runtime_state_for_global_conversation(
 async fn runtime_state_for_global_conversation_layout(
     layout: RuntimeLayout,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    let skill_store_lock = shared_skill_store_lock(storage_layout_for_home().global_skills_root());
+    let _skill_store_guard = skill_store_lock.lock().await;
     let provider_capability_routes = Arc::new(ParkingRwLock::new(
         empty_provider_capability_route_settings(),
     ));
@@ -638,6 +777,7 @@ async fn runtime_state_for_global_conversation_layout(
         &layout,
         None,
         Arc::clone(&provider_capability_routes),
+        None,
         None,
     )
     .await?;
@@ -656,14 +796,25 @@ pub async fn runtime_state_with_provider_settings_store_for_test(
     workspace_root: PathBuf,
     provider_settings_store: Arc<dyn ProviderSettingsStore>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
-    runtime_state_from_settings_store(workspace_root, Some(provider_settings_store)).await
+    runtime_state_from_settings_stores(workspace_root, Some(provider_settings_store), None).await
 }
 
-async fn runtime_state_from_settings_store(
+#[doc(hidden)]
+pub async fn runtime_state_with_skill_config_store_for_test(
+    workspace_root: PathBuf,
+    skill_config_store: Arc<DesktopSkillConfigStore>,
+) -> Result<DesktopRuntimeState, CommandErrorPayload> {
+    runtime_state_from_settings_stores(workspace_root, None, Some(skill_config_store)).await
+}
+
+async fn runtime_state_from_settings_stores(
     workspace_root: PathBuf,
     provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
+    skill_config_store_override: Option<Arc<DesktopSkillConfigStore>>,
 ) -> Result<DesktopRuntimeState, CommandErrorPayload> {
     let workspace_root = canonical_workspace_root(workspace_root, "workspace root".to_owned())?;
+    let skill_store_lock = shared_skill_store_lock(storage_layout_for_home().global_skills_root());
+    let _skill_store_guard = skill_store_lock.lock().await;
     let route_store = DesktopProviderCapabilityRouteStore::new(workspace_root.clone());
     let provider_capability_routes = shared_provider_capability_routes_from_store(&route_store)?;
     let layout = project_runtime_layout(&workspace_root);
@@ -672,6 +823,7 @@ async fn runtime_state_from_settings_store(
         None,
         Arc::clone(&provider_capability_routes),
         provider_settings_store_override.clone(),
+        skill_config_store_override.clone(),
     )
     .await?;
 
@@ -684,6 +836,9 @@ async fn runtime_state_from_settings_store(
     )?;
     if let Some(provider_settings_store) = provider_settings_store_override {
         state.set_provider_settings_store_for_test(provider_settings_store);
+    }
+    if let Some(skill_config_store) = skill_config_store_override {
+        state.set_skill_config_store_for_test(skill_config_store);
     }
     Ok(state)
 }
@@ -928,6 +1083,7 @@ pub(crate) async fn build_desktop_settings_runtime(
     model_config_id: Option<&str>,
     provider_capability_routes: Arc<ParkingRwLock<ProviderCapabilityRouteSettings>>,
     provider_settings_store_override: Option<Arc<dyn ProviderSettingsStore>>,
+    skill_config_store_override: Option<Arc<DesktopSkillConfigStore>>,
 ) -> Result<
     (
         DesktopSettingsRuntime,
@@ -986,15 +1142,25 @@ pub(crate) async fn build_desktop_settings_runtime(
                 )
             });
     let storage_layout = storage_layout_for_home();
+    let skill_config_store = skill_config_store_override.unwrap_or_else(|| {
+        Arc::new(DesktopSkillConfigStore::new(
+            storage_layout.clone(),
+            Arc::new(KeyringSkillSecretStore),
+        ))
+    });
+    let skill_config_snapshot = skill_config_store.load_snapshot()?;
     let global_config_store = global_config_store_for_home();
     let global_skill_selection = global_config_store
         .load_global_skill_selection_if_present()?
-        .map(|selection| selection.enabled.into_iter().collect());
+        .map(|selection| selection.enabled.into_iter().collect::<BTreeSet<_>>());
     let global_skill_store = DesktopSkillStore::global(storage_layout);
+    let records = global_skill_store.load_records()?;
+    let expected_package_hashes =
+        expected_package_hashes(&records, global_skill_selection.as_ref());
     let skill_loader = SkillLoader::default().with_source(SkillSourceConfig::DirectoryPackages {
         path: global_skill_store.enabled_dir(),
         source_kind: DirectorySourceKind::User,
-        allowed_package_ids: global_skill_selection,
+        expected_package_hashes,
     });
     let provider_credential_resolver: Arc<dyn ProviderCredentialResolverCap> =
         Arc::new(DesktopProviderCredentialResolver::new(
@@ -1124,6 +1290,7 @@ pub(crate) async fn build_desktop_settings_runtime(
         .with_mcp_config(mcp_config)
         .with_plugin_registry(plugin_registry)
         .with_skill_loader(skill_loader)
+        .with_skill_config_snapshot(skill_config_snapshot)
         .with_permission_authority_arc(authorization_service.permission_authority())
         .with_authorization_service_arc(authorization_service);
     let settings_harness =
@@ -1533,6 +1700,7 @@ pub(crate) async fn reload_desktop_settings_runtime_after_plugin_change_locked(
         None,
         Arc::clone(&state.provider_capability_routes),
         Some(Arc::clone(&state.provider_settings_store)),
+        Some(Arc::clone(&state.skill_config_store)),
     )
     .await?;
     if let Some(old_settings_runtime) = state.settings_runtime() {
@@ -1549,6 +1717,14 @@ pub(crate) async fn reload_desktop_settings_runtime_after_plugin_change_locked(
         model_options,
     );
     Ok(())
+}
+
+#[doc(hidden)]
+pub async fn reload_desktop_settings_runtime_after_plugin_change_for_test(
+    state: &DesktopRuntimeState,
+) -> Result<(), CommandErrorPayload> {
+    let _settings_reload_guard = state.settings_reload_lock.lock().await;
+    reload_desktop_settings_runtime_after_plugin_change_locked(state).await
 }
 
 pub(crate) fn current_workspace_root() -> Result<PathBuf, CommandErrorPayload> {
