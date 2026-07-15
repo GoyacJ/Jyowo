@@ -6,7 +6,7 @@ import type {
 
 export type CatalogInstallTasksState = { tasks: SkillCatalogInstallTask[] }
 
-export function catalogInstallTaskKey(input: {
+function catalogInstallTaskKey(input: {
   entryId: string
   sourceId: string
   version?: string | null
@@ -132,7 +132,7 @@ function progressStageRank(stage: SkillCatalogInstallProgressPayload['stage']) {
   return rank === -1 ? progressStageOrder.length : rank
 }
 
-export function assertCatalogInstallProgressPayload(
+function assertCatalogInstallProgressPayload(
   value: unknown,
 ): asserts value is SkillCatalogInstallProgressPayload {
   if (typeof value !== 'object' || value === null) {

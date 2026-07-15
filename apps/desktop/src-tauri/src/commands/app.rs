@@ -1,6 +1,4 @@
 #[allow(unused_imports)]
-use super::artifacts::*;
-#[allow(unused_imports)]
 #[allow(unused_imports)]
 use super::constants::*;
 #[allow(unused_imports)]

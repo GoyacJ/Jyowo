@@ -12,11 +12,6 @@
   "ignore": [
     "src/generated/**"
   ],
-  "ignoreIssues": {
-    "src/shared/tauri/commands.ts": [
-      "types"
-    ]
-  },
   "ignoreDependencies": [
     "json-schema-to-typescript",
     "tailwindcss"

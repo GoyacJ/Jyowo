@@ -1,6 +1,12 @@
-import type { ConversationEventRef } from '@/shared/tauri/commands'
-
 type EvidenceRefId = string
+
+type ConversationEventRef = {
+  cursor: {
+    conversationSequence: number
+    eventId: string
+  }
+  eventId: string
+}
 
 export type TaskWorkbenchTargetKind =
   | 'artifact'
@@ -36,8 +42,8 @@ export type TaskWorkbenchSession = {
 }
 
 export const DEFAULT_TASK_WORKBENCH_WIDTH = 400
-export const MIN_TASK_WORKBENCH_WIDTH = 360
-export const MAX_TASK_WORKBENCH_WIDTH = 640
+const MIN_TASK_WORKBENCH_WIDTH = 360
+const MAX_TASK_WORKBENCH_WIDTH = 640
 
 export function createTaskWorkbenchSession(): TaskWorkbenchSession {
   return {

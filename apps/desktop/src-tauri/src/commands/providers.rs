@@ -1,18 +1,12 @@
 #[allow(unused_imports)]
 use super::app::*;
 #[allow(unused_imports)]
-use super::artifacts::*;
-#[allow(unused_imports)]
-use super::automations::*;
-#[allow(unused_imports)]
 use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 use super::error::*;
-#[allow(unused_imports)]
-use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
@@ -1025,44 +1019,6 @@ pub(crate) fn ensure_provider_capability_route_settings_record(
     }
 
     Ok(())
-}
-
-#[derive(Clone)]
-pub struct DesktopConversationMetadataStore {
-    runtime_root: PathBuf,
-}
-
-impl DesktopConversationMetadataStore {
-    pub fn new(workspace_root: PathBuf) -> Self {
-        Self {
-            runtime_root: workspace_root.join(".jyowo").join("runtime"),
-        }
-    }
-
-    pub fn new_runtime_root(runtime_root: PathBuf) -> Self {
-        Self { runtime_root }
-    }
-
-    fn metadata_path(&self) -> PathBuf {
-        self.runtime_root.join("conversation-metadata.json")
-    }
-}
-
-impl ConversationMetadataStore for DesktopConversationMetadataStore {
-    fn load_record(&self) -> Result<ConversationMetadataFile, CommandErrorPayload> {
-        let metadata_path = self.metadata_path();
-        Ok(read_json_file(&metadata_path, "conversation metadata")?.unwrap_or_default())
-    }
-
-    fn save_record(&self, record: &ConversationMetadataFile) -> Result<(), CommandErrorPayload> {
-        if record.version != 1 {
-            return Err(runtime_operation_failed(
-                "conversation metadata version must be 1".to_owned(),
-            ));
-        }
-        let metadata_path = self.metadata_path();
-        write_json_file_atomic(&metadata_path, "conversation metadata", record)
-    }
 }
 
 #[must_use]

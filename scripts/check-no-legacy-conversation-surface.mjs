@@ -44,6 +44,9 @@ export const legacyInvokeNames = [
 ]
 
 const removedPaths = [
+  'apps/desktop/src-tauri/src/commands/artifacts.rs',
+  'apps/desktop/src-tauri/src/commands/automations.rs',
+  'apps/desktop/src-tauri/src/commands/evals.rs',
   'apps/desktop/src/routes/evals.tsx',
   'apps/desktop/src/routes/evals.lazy.tsx',
   'apps/desktop/src/features/evals',
@@ -59,12 +62,42 @@ const removedPaths = [
   'apps/desktop/src/features/workbench/WorkbenchInspector.artifacts.test.tsx',
   'apps/desktop/src/features/workbench/WorkbenchInspector.stories.tsx',
   'apps/desktop/src/features/workbench/artifacts',
+  'apps/desktop/src/features/activity/ActivityItem.tsx',
+  'apps/desktop/src/features/activity/CommandPreview.tsx',
+  'apps/desktop/src/features/activity/PermissionDialog.tsx',
+  'apps/desktop/src/features/activity/ReplayTimeline.tsx',
+  'apps/desktop/src/features/activity/RunEventDetails.tsx',
+  'apps/desktop/src/features/activity/SupportBundleExport.tsx',
+  'apps/desktop/src/features/activity/ToolCallCard.tsx',
+  'apps/desktop/src/features/activity/UsageSummary.tsx',
+  'apps/desktop/src/features/activity/run-event-view-model.ts',
+  'apps/desktop/src/features/settings/RuntimeExecutionStatusPanel.tsx',
+  'apps/desktop/src/shared/events/run-event-schema.ts',
+]
+
+export const legacyContractIdentifiers = [
+  'ConversationMetadataStore',
+  'DesktopConversationMetadataStore',
+  'BackgroundAgentPayload',
+  'ReplayTimelineResponse',
+  'ListArtifactsResponse',
+  'AutomationSpec',
+  'EvalCasePayload',
+  'listActivityResponseSchema',
+  'conversationInspectorItemSchema',
+  'listArtifactsResponseSchema',
+  'listAutomationsResponseSchema',
+  'listEvalCasesResponseSchema',
 ]
 
 export function findLegacyInvokeViolations(source) {
   return legacyInvokeNames.filter(name =>
     new RegExp(`(?:invoke|command\\s*=)[^\\n]*['\"]${name}['\"]`).test(source),
   )
+}
+
+export function findLegacyContractViolations(source) {
+  return legacyContractIdentifiers.filter(name => new RegExp(`\\b${name}\\b`).test(source))
 }
 
 export function checkLegacyConversationSurface(repoRoot) {
@@ -83,6 +116,19 @@ export function checkLegacyConversationSurface(repoRoot) {
   const source = readFileSync(commandsPath, 'utf8')
   for (const name of findLegacyInvokeViolations(source)) {
     violations.push(`legacy Tauri invoke remains: ${name}`)
+  }
+  for (const name of findLegacyContractViolations(source)) {
+    violations.push(`legacy TypeScript contract remains: ${name}`)
+  }
+
+  const rustCommandsRoot = join(repoRoot, 'apps/desktop/src-tauri/src/commands')
+  for (const file of collectFiles(rustCommandsRoot, new Set(['.rs']))) {
+    const content = readFileSync(file, 'utf8')
+    for (const name of findLegacyContractViolations(content)) {
+      violations.push(
+        `legacy Rust contract remains: ${relative(repoRoot, file).replaceAll('\\', '/')} (${name})`,
+      )
+    }
   }
 
   const productionRoot = join(repoRoot, 'apps/desktop/src')
@@ -109,13 +155,17 @@ export function checkLegacyConversationSurface(repoRoot) {
 }
 
 function collectSourceFiles(path) {
+  return collectFiles(path, new Set(['.ts', '.tsx']), new Set(['testing']))
+}
+
+function collectFiles(path, extensions, ignoredDirectories = new Set()) {
   const files = []
   for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.isDirectory() && entry.name === 'testing') continue
+    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue
     const child = join(path, entry.name)
-    if (entry.isDirectory()) files.push(...collectSourceFiles(child))
+    if (entry.isDirectory()) files.push(...collectFiles(child, extensions, ignoredDirectories))
     else if (
-      new Set(['.ts', '.tsx']).has(extname(entry.name)) &&
+      extensions.has(extname(entry.name)) &&
       !/\.(?:test|stories)\.[^.]+$/.test(entry.name)
     ) {
       files.push(child)

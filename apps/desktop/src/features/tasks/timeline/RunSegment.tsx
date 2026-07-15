@@ -90,7 +90,7 @@ function renderItems(
   return rendered
 }
 
-export function LifecycleSummary({
+function LifecycleSummary({
   items,
   onSelectItem,
 }: {

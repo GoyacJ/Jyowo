@@ -1,8 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Info, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
 
-import { highlightCode } from '@/shared/code/highlight'
 import {
   loadUiPreferencesStore,
   readUiPreferences,
@@ -48,9 +46,6 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/ui/dropdown-menu'
 import { IconButton } from '@/shared/ui/icon-button'
-import { Popover, PopoverContent, PopoverTrigger } from '@/shared/ui/popover'
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/shared/ui/resizable-panels'
-import { ScrollArea } from '@/shared/ui/scroll-area'
 import { Section, SectionDescription, SectionHeader, SectionTitle } from '@/shared/ui/section'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { Switch } from '@/shared/ui/switch'
@@ -186,15 +181,6 @@ export const Primitives: Story = {
             <DropdownMenuItem>Settings</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="outline">Popover</Button>
-          </PopoverTrigger>
-          <PopoverContent className="text-sm leading-6">
-            Natural chat is the product surface. Tasks remain internal structure.
-          </PopoverContent>
-        </Popover>
       </div>
 
       <Tabs defaultValue="chat">
@@ -210,7 +196,7 @@ export const Primitives: Story = {
           </MarkdownMessage>
         </TabsContent>
         <TabsContent value="context">
-          <ScrollArea className="h-28 rounded-md border border-border p-3">
+          <div className="h-28 overflow-auto rounded-md border border-border p-3">
             <p className="text-muted-foreground text-sm leading-6">
               Context, memories, and files should stay readable without turning the product into an
               admin console.
@@ -218,7 +204,7 @@ export const Primitives: Story = {
             <p className="mt-3 text-muted-foreground text-xs">
               Store API: {uiStoreApiNames.join(', ')}. Theme: {uiThemeSmoke}.
             </p>
-          </ScrollArea>
+          </div>
         </TabsContent>
       </Tabs>
 
@@ -236,46 +222,10 @@ export const Primitives: Story = {
           </CommandList>
         </Command>
 
-        <ResizablePanelGroup
-          className="h-48 rounded-md border border-border"
-          orientation="horizontal"
-        >
-          <ResizablePanel defaultSize="58%">
-            <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-              Conversation
-            </div>
-          </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel defaultSize="42%">
-            <HighlightedCodeSmoke />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        <div className="flex h-48 items-center justify-center rounded-md border border-border text-muted-foreground text-sm">
+          Conversation
+        </div>
       </div>
     </div>
   ),
-}
-
-function HighlightedCodeSmoke() {
-  const [html, setHtml] = useState('')
-
-  useEffect(() => {
-    let disposed = false
-
-    highlightCode('const surface = "chat"', { lang: 'ts' }).then((highlighted) => {
-      if (!disposed) {
-        setHtml(highlighted)
-      }
-    })
-
-    return () => {
-      disposed = true
-    }
-  }, [])
-
-  return (
-    <div
-      className="h-full overflow-auto p-3 text-xs [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-0"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  )
 }

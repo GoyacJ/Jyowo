@@ -1356,7 +1356,7 @@ impl TaskStore {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn append(
         &self,
         task_id: TaskId,

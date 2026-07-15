@@ -1,63 +1,35 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 use async_trait::async_trait;
-use base64::{engine::general_purpose, Engine as _};
-use futures::stream;
-use futures::StreamExt;
 use harness_contracts::{
-    ActionPlanHash, AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope,
-    AgentProfileSandboxInheritance, AgentProfileScope, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    ArtifactRevisionId, AssistantClarificationRequestedEvent, AssistantDeltaProducedEvent,
-    AssistantMessageCompletedEvent, AssistantNoticeEvent, AssistantReviewRequestedEvent,
-    CapabilityRouteKind, ConfigHash, ConversationAttachmentReference, ConversationCursor,
-    ConversationModelCapability, CorrelationId, DecidedBy, DecisionLifetime, DecisionMatcherKind,
-    DecisionMatcherSummary, EngineError, EngineFailedEvent, EventId, McpConnectionLostEvent,
-    McpConnectionLostReason, MessageContent, MessageId, MessageMetadata, ModelModality,
-    ModelProtocol, NoopRedactor, PermissionActorSource, PermissionDecisionOption,
-    PermissionOptionId, PermissionRequestedEvent, PermissionResolvedEvent, ProviderCapabilityRoute,
-    ProviderCapabilityRouteSettings, ProviderServiceAdapterAvailability, ReasoningSummaryChunk,
-    RedactPatternSet, RedactRules, RedactScope, Redactor, RunModelSnapshot, RunStartedEvent,
-    SandboxMode, SnapshotId, StopReason, ToolErrorPayload, ToolServiceBinding,
-    ToolUseCompletedEvent, ToolUseFailedEvent, ToolUseRequestedEvent, ToolUseSummary, TurnInput,
-    UiSafeText, UserMessageAppendedEvent, WorkspaceAccess,
+    AgentProfile, AgentProfileContextMode, AgentProfileMemoryScope, AgentProfileSandboxInheritance,
+    AgentProfileScope, AgentWorkspaceIsolationMode, CapabilityRouteKind, McpConnectionLostEvent,
+    McpConnectionLostReason, ModelModality, ModelProtocol, NoopRedactor, PermissionOptionId,
+    ProviderCapabilityRoute, ProviderCapabilityRouteSettings, ProviderServiceAdapterAvailability,
+    ToolServiceBinding, WorkspaceAccess,
 };
-use harness_journal::ReplayCursor;
 use harness_skill::{parse_skill_markdown, SkillPlatform, SkillSource};
-use harness_tool::BuiltinToolset;
-use image::codecs::{gif::GifEncoder, jpeg::JpegEncoder, webp::WebPEncoder};
-use image::{ExtendedColorType, ImageEncoder};
 use jyowo_desktop_shell::commands::*;
 use jyowo_desktop_shell::project_registry::ProjectRegistry;
 use jyowo_harness_sdk::ext::{
-    now, ArtifactCreatedEvent, ArtifactSource, ArtifactStatus, ArtifactUpdatedEvent, BlobMeta,
-    BlobRetention, BlobStore, BudgetMetric, Decision, DecisionScope, DeferPolicy, DeltaChunk,
-    Event, EventStore, FallbackPolicy, InteractivityLevel, McpConnection, McpError, McpEventSink,
+    now, BudgetMetric, Decision, DeferPolicy, Event, McpConnection, McpError, McpEventSink,
     McpRegistry, McpServerId, McpServerScope, McpServerSource, McpServerSpec, McpToolDescriptor,
-    McpToolResult, Message, MessagePart, MessageRole, ModelError, OverflowAction, PermissionCheck,
-    PermissionContext, PermissionMode, PermissionRequest, PermissionSubject,
-    ProviderCredentialResolveContext, ProviderRestriction, RequestId, ResultBudget, RuleSnapshot,
-    RunId, SessionId, Severity, StreamBrokerConfig, TenantId, ThinkingDelta, Tool, ToolCapability,
-    ToolContext, ToolDescriptor, ToolError, ToolEvent, ToolGroup, ToolProfile, ToolProperties,
-    ToolRegistry, ToolResult, ToolStream, ToolUseId, TransportChoice, TrustLevel, UsageSnapshot,
-    ValidationError,
+    McpToolResult, OverflowAction, PermissionMode, PermissionSubject,
+    ProviderCredentialResolveContext, ProviderRestriction, ResultBudget, RunId, SessionId,
+    StreamBrokerConfig, TenantId, Tool, ToolContext, ToolDescriptor, ToolError, ToolEvent,
+    ToolGroup, ToolProfile, ToolProperties, ToolRegistry, ToolResult, ToolStream, TransportChoice,
+    TrustLevel, ValidationError,
 };
-use jyowo_harness_sdk::ext::{ContentDelta, ModelStreamEvent};
 use jyowo_harness_sdk::testing::{InMemoryEventStore, NoopSandbox, TestModelProvider};
 use jyowo_harness_sdk::{
-    ConversationEventsPageRequest, DesktopSettingsRuntime, HarnessOptions, McpConfig,
-    StreamPermissionRuntime,
+    DesktopSettingsRuntime, HarnessOptions, McpConfig, StreamPermissionRuntime,
 };
 use parking_lot::RwLock as ParkingRwLock;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 static WORKSPACE_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-const WORKSPACE_ROOT_ENV: &str = "JYOWO_WORKSPACE_ROOT";
 const HOME_ENV: &str = "HOME";
 const TEST_MODEL_CONFIG_ID: &str = "test-model-config";
 
@@ -101,6 +73,5 @@ mod runtime_tools;
 #[path = "commands/support.rs"]
 mod support;
 
-pub(crate) use provider_route_support::*;
 pub(crate) use provider_support::*;
 pub(crate) use support::*;

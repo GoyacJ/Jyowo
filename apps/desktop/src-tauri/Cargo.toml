@@ -25,7 +25,6 @@ chrono = { workspace = true }
 futures = { workspace = true }
 fs2 = { workspace = true }
 iana-time-zone = { workspace = true }
-image = { workspace = true }
 async-trait = { workspace = true }
 jyowo-harness-contracts = { path = "../../../crates/jyowo-harness-contracts" }
 jyowo-harness-execution = { path = "../../../crates/jyowo-harness-execution" }

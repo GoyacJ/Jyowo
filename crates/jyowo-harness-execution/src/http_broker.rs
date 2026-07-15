@@ -162,21 +162,13 @@ impl ReqwestToolNetworkBroker {
             )));
         }
 
-        Ok(ValidatedUrl {
-            url: parsed,
-            host,
-            port,
-        })
+        Ok(ValidatedUrl { url: parsed })
     }
 }
 
 #[derive(Debug, Clone)]
 struct ValidatedUrl {
     url: Url,
-    #[allow(dead_code)]
-    host: String,
-    #[allow(dead_code)]
-    port: u16,
 }
 
 /// Checks whether a hostname matches a `HostRule` pattern.

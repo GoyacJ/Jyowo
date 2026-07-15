@@ -8,10 +8,10 @@ use harness_contracts::{ConversationModelCapability, ModelError, ModelProtocol};
 use harness_model::{ErrorClass, ErrorHints, ModelStreamEvent};
 use jyowo_desktop_shell::commands::{
     list_provider_probe_snapshots_with_runtime_state, probe_provider_config_with_provider,
-    probe_provider_config_with_runtime_state, DesktopProviderDiagnosticsStore,
-    DesktopProviderSettingsStore, DesktopRuntimeState, ProbeProviderConfigRequest,
-    ProviderConfigRecord, ProviderDiagnosticsStore, ProviderProbeErrorKindPayload,
-    ProviderProbeStatusPayload, ProviderSettingsRecord, ProviderSettingsStore,
+    probe_provider_config_with_runtime_state, DesktopProviderDiagnosticsStore, DesktopRuntimeState,
+    ProbeProviderConfigRequest, ProviderConfigRecord, ProviderDiagnosticsStore,
+    ProviderProbeErrorKindPayload, ProviderProbeStatusPayload, ProviderSettingsRecord,
+    ProviderSettingsStore,
 };
 use jyowo_harness_sdk::ext::{
     HealthStatus, InferContext, ModelDescriptor, ModelLifecycle, ModelProvider, ModelRequest,

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  findLegacyContractViolations,
   findLegacyInvokeViolations,
+  legacyContractIdentifiers,
   legacyInvokeNames,
 } from './check-no-legacy-conversation-surface.mjs'
 
@@ -15,6 +17,13 @@ test('rejects a legacy Tauri invoke fixture', () => {
     findLegacyInvokeViolations("const command = 'get_conversation'\nreturn invoke(command)"),
     ['get_conversation'],
   )
+})
+
+test('recognizes deleted desktop contract identifiers', () => {
+  assert.equal(legacyContractIdentifiers.length, 12)
+  assert.deepEqual(findLegacyContractViolations('struct ConversationMetadataStore;'), [
+    'ConversationMetadataStore',
+  ])
 })
 
 test('allows daemon-only requests and retained Tauri settings commands', () => {

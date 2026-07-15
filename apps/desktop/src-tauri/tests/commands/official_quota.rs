@@ -15,8 +15,8 @@ use harness_model::{
 };
 use jyowo_desktop_shell::commands::{
     list_official_quota_snapshots_with_runtime_state, refresh_official_quota_with_runtime_state,
-    DesktopProviderQuotaCacheStore, DesktopProviderSettingsStore, DesktopRuntimeState,
-    ProviderConfigRecord, ProviderQuotaCacheStore, ProviderSettingsRecord, ProviderSettingsStore,
+    DesktopProviderQuotaCacheStore, DesktopRuntimeState, ProviderConfigRecord,
+    ProviderQuotaCacheStore, ProviderSettingsRecord, ProviderSettingsStore,
 };
 
 struct FakeAccountUsageClient {

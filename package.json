@@ -40,8 +40,5 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"
-  },
-  "dependencies": {
-    "framer-motion": "^12.42.2"
   }
 }

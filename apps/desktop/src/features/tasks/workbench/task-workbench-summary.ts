@@ -6,7 +6,7 @@ import type {
 import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
 import { taskWorkbenchTargetFromTimelineItem } from './task-workbench-target'
 
-export type TaskWorkbenchSummaryGroup = 'environment' | 'sources' | 'subagents'
+type TaskWorkbenchSummaryGroup = 'environment' | 'sources' | 'subagents'
 
 export type TaskWorkbenchSummaryItem = {
   count?: number

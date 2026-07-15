@@ -26,17 +26,6 @@ export function nextScrollFollowState(input: {
   return input.current === 'paused' ? 'paused' : input.current
 }
 
-export function shouldAutoFollowOnAnchorChange(input: {
-  anchorChanged: boolean
-  mode: ScrollFollowState
-}) {
-  return input.anchorChanged && input.mode === 'following'
-}
-
-export function shouldShowJumpToLatest(mode: ScrollFollowState) {
-  return mode === 'paused'
-}
-
 export function preservedScrollTop(input: {
   nextScrollHeight: number
   previousScrollHeight: number

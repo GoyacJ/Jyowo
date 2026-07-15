@@ -23,8 +23,6 @@ pub struct Observer {
     pub replay: Option<Arc<ReplayEngine>>,
     #[cfg(feature = "prometheus")]
     pub prometheus: Option<Arc<PrometheusExporter>>,
-    #[allow(dead_code)]
-    prometheus_bind: Option<SocketAddr>,
 }
 
 impl Observer {
@@ -150,7 +148,6 @@ impl ObserverBuilder {
             replay: self.replay,
             #[cfg(feature = "prometheus")]
             prometheus,
-            prometheus_bind: self.prometheus_bind,
         })
     }
 }

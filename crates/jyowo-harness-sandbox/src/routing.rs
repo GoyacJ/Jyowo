@@ -20,7 +20,6 @@ use crate::{
 /// A leased child backend binding for one execution id.
 struct RoutingSelectionLease {
     selected_backend: Arc<dyn SandboxBackend>,
-    selected_backend_id: String,
 }
 
 /// A routing sandbox backend that delegates each execution to one selected child backend.
@@ -172,12 +171,10 @@ impl SandboxBackend for RoutingSandboxBackend {
             // Try to bind this backend.
             match backend.before_execute(spec, ctx).await {
                 Ok(()) => {
-                    let backend_id = backend.backend_id().to_owned();
                     self.leases.lock().await.insert(
                         ctx.execution_id,
                         RoutingSelectionLease {
                             selected_backend: Arc::clone(backend),
-                            selected_backend_id: backend_id,
                         },
                     );
                     return Ok(());
@@ -225,7 +222,6 @@ impl SandboxBackend for RoutingSandboxBackend {
             Ok(mut handle) => {
                 handle.activity = Arc::new(RoutingActivityHandle {
                     selected_backend: lease.selected_backend,
-                    selected_backend_id: lease.selected_backend_id,
                     inner: handle.activity,
                     ctx,
                     after_execute_started: AtomicBool::new(false),
@@ -300,8 +296,6 @@ impl SandboxBackend for RoutingSandboxBackend {
 /// is called exactly once after the inner `wait` completes.
 struct RoutingActivityHandle {
     selected_backend: Arc<dyn SandboxBackend>,
-    #[allow(dead_code)]
-    selected_backend_id: String,
     inner: Arc<dyn ActivityHandle>,
     ctx: ExecContext,
     after_execute_started: AtomicBool,

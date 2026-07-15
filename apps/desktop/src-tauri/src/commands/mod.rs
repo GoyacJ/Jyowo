@@ -1,19 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
-use std::io::Cursor;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use harness_contracts::{
     validate_agent_profile, validate_provider_capability_route, AgentCapabilityUnavailableReason,
-    AgentProfile, AgentProfileScope, AutomationRunRecord, AutomationSpec, BackgroundAgentState,
-    CapabilityRouteKind, ConversationInspectorSelection, DiagnosticsRawOutput,
+    AgentProfile, AgentProfileScope, CapabilityRouteKind, DiagnosticsRawOutput,
     DiagnosticsRunRequest, DiagnosticsRunnerCap, DiagnosticsRunnerKind,
     ListProviderCapabilityRouteOptionsResponse, LocalIsolationTag, PluginConfigUpdate,
     PluginDetail, PluginId, PluginInstallReport, PluginOperationResult, PluginOperationStatus,
@@ -33,25 +30,22 @@ use harness_sandbox::{
 use harness_tool::{
     provider_service_adapter_availability_from_snapshot, BuiltinToolset, ToolRegistryBuilder,
 };
-use image::{ImageFormat, ImageReader, Limits};
-use jyowo_harness_sdk::builtin::{
-    DefaultRedactor, FileBlobStore, LocalLlamaProvider, LocalSandbox,
-};
+use jyowo_harness_sdk::builtin::{DefaultRedactor, LocalLlamaProvider, LocalSandbox};
 use jyowo_harness_sdk::ext::inventory_from_models_api_json;
 use jyowo_harness_sdk::ext::{
     build_provider, now, provider_catalog_entries, resolve_model_descriptor,
-    runnable_inventory_models, AgentId, BlobRef, BlobRetention, BlobStore,
-    ConversationModelCapability, DirectorySourceKind, Event, EventId, EventStore, FallbackPolicy,
-    HttpTransport, InteractivityLevel, McpAuthorizationContext, McpConnectContext,
-    McpConnectionState, McpEventSink, McpRegistry, McpServerId, McpServerScope, McpServerSource,
-    McpServerSpec, ModelDescriptor, ModelInventoryEntry, ModelLifecycle, ModelModality,
-    ModelProtocol, ModelProvider, ModelRuntimeStatus, PermissionMode, ProviderBaseUrlRegion,
-    ProviderBuildConfig, ProviderCredential, ProviderCredentialResolveContext,
-    ProviderCredentialResolverCap, ProviderProbeInput, ProviderProbeRunner, ProviderRegistryError,
-    ProviderRequestDefaults, ProviderRuntimeCapability, ProviderServiceCapability,
-    ProviderServiceCategory, ProviderServiceCostRisk, ProviderServiceExecution, RunId, SessionId,
-    SkillLoader, SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId,
-    ToolCapability, ToolError, ToolProfile, TransportChoice,
+    runnable_inventory_models, AgentId, ConversationModelCapability, DirectorySourceKind, Event,
+    EventId, EventStore, FallbackPolicy, HttpTransport, InteractivityLevel,
+    McpAuthorizationContext, McpConnectContext, McpConnectionState, McpEventSink, McpRegistry,
+    McpServerId, McpServerScope, McpServerSource, McpServerSpec, ModelDescriptor,
+    ModelInventoryEntry, ModelLifecycle, ModelModality, ModelProtocol, ModelProvider,
+    ModelRuntimeStatus, PermissionMode, ProviderBaseUrlRegion, ProviderBuildConfig,
+    ProviderCredential, ProviderCredentialResolveContext, ProviderCredentialResolverCap,
+    ProviderProbeInput, ProviderProbeRunner, ProviderRegistryError, ProviderRequestDefaults,
+    ProviderRuntimeCapability, ProviderServiceCapability, ProviderServiceCategory,
+    ProviderServiceCostRisk, ProviderServiceExecution, RunId, SessionId, SkillLoader,
+    SkillSourceConfig, StdioEnv, StdioPolicy, StdioTransport, TenantId, ToolCapability, ToolError,
+    ToolProfile, TransportChoice,
 };
 use jyowo_harness_sdk::{
     DesktopSettingsRuntime, KeyringSkillSecretStore, McpConfig, RuntimeSkillConfig,
@@ -59,7 +53,7 @@ use jyowo_harness_sdk::{
 };
 use parking_lot::{Mutex as ParkingMutex, RwLock as ParkingRwLock};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::Emitter;
 use tokio::sync::RwLock as AsyncRwLock;
 use tokio::task::JoinHandle;
@@ -79,15 +73,10 @@ use crate::skill_catalog::{
 
 mod agents;
 mod app;
-#[allow(dead_code)]
-mod artifacts;
-mod automations;
-#[allow(dead_code)]
 mod constants;
 mod contracts;
 mod daemon;
 mod error;
-mod evals;
 mod mcp;
 mod model_settings;
 mod plugins;
@@ -98,7 +87,6 @@ mod runtime;
 mod runtime_tools;
 mod skills;
 pub mod stores;
-#[allow(dead_code)]
 mod support;
 #[cfg(test)]
 mod tests;
@@ -120,88 +108,59 @@ pub use agents::{
 };
 pub use app::get_app_info_payload;
 pub use contracts::{
-    AppInfoPayload, ArtifactRevisionPayload, ArtifactSummaryPayload, AttachmentBlobRefPayload,
-    AttachmentReferencePayload, BackgroundAgentActionResponse, BackgroundAgentDeleteResponse,
-    BackgroundAgentIdRequest, BackgroundAgentPayload, BrowserMcpPresetId,
-    BrowserMcpPresetSummaryPayload, CancelRunRequest, CancelRunResponse,
-    ClearMcpDiagnosticsRequest, ClearMcpDiagnosticsResponse, ClearSkillSecretRequest,
-    ContextDecisionPayload, ContextFilePayload, ContextReferencePayload,
-    ConversationMessagePayload, ConversationMetadataFile, ConversationMetadataRecord,
-    ConversationMetadataState, ConversationMetadataStore, ConversationModelCapabilityRecord,
-    ConversationPayload, ConversationSummaryPayload, CreateAttachmentFromPathRequest,
-    CreateAttachmentFromPathResponse, CreateConversationResponse, DeleteAgentProfileRequest,
-    DeleteAgentProfileResponse, DeleteAutomationRequest, DeleteAutomationResponse,
-    DeleteConversationRequest, DeleteConversationResponse, DeleteMcpServerRequest,
+    AppInfoPayload, BrowserMcpPresetId, BrowserMcpPresetSummaryPayload, ClearMcpDiagnosticsRequest,
+    ClearMcpDiagnosticsResponse, ClearSkillSecretRequest, ConversationModelCapabilityRecord,
+    DeleteAgentProfileRequest, DeleteAgentProfileResponse, DeleteMcpServerRequest,
     DeleteMcpServerResponse, DeleteProviderCapabilityRouteRequest,
     DeleteProviderCapabilityRouteResponse, DeleteSkillRequest, DeleteSkillResponse,
-    EvalCasePayload, EvalLastRunPayload, ExportConversationEvidenceRequest,
-    ExportConversationEvidenceResponse, ExportSupportBundleRequest, ExportSupportBundleResponse,
-    GetArtifactMediaPreviewRequest, GetArtifactMediaPreviewResponse,
-    GetArtifactRevisionContentRequest, GetArtifactRevisionContentResponse,
-    GetAttachmentMediaPreviewRequest, GetAttachmentMediaPreviewResponse, GetBackgroundAgentRequest,
-    GetBackgroundAgentResponse, GetContextSnapshotRequest, GetContextSnapshotResponse,
-    GetConversationCommandOutputRequest, GetConversationCommandOutputResponse,
-    GetConversationDiffPatchRequest, GetConversationDiffPatchResponse,
-    GetConversationInspectorItemRequest, GetConversationRequest, GetConversationResponse,
     GetExecutionSettingsRequest, GetExecutionSettingsResponse, GetMcpServerConfigRequest,
     GetMcpServerConfigResponse, GetModelUsageSummaryResponse, GetPluginDetailRequest,
     GetPluginDetailResponse, GetProviderConfigApiKeyRequest, GetProviderConfigApiKeyResponse,
     GetSkillConfigRequest, GetSkillConfigResponse, GetSkillDetailRequest, GetSkillDetailResponse,
     GetSkillFileRequest, GetSkillFileResponse, HarnessHealthcheckPayload, HarnessInfoPayload,
     ImportSkillRequest, ImportSkillResponse, InstallPluginFromPathRequest,
-    InstallSkillFromCatalogResponse, ListActivityRequest, ListActivityResponse,
-    ListAgentProfilesResponse, ListArtifactsRequest, ListArtifactsResponse,
-    ListAutomationRunsRequest, ListAutomationRunsResponse, ListAutomationsResponse,
-    ListBackgroundAgentsRequest, ListBackgroundAgentsResponse, ListBrowserMcpPresetsResponse,
-    ListConversationsResponse, ListEvalCasesResponse, ListMcpDiagnosticsRequest,
-    ListMcpDiagnosticsResponse, ListMcpServersResponse, ListOfficialQuotaSnapshotsResponse,
-    ListPluginsResponse, ListProjectConversationGroupsResponse,
-    ListProviderCapabilityRoutesResponse, ListProviderProbeSnapshotsResponse,
-    ListProviderSettingsResponse, ListReferenceCandidatesRequest, ListReferenceCandidatesResponse,
-    ListRuntimeToolsResponse, ListSkillCatalogInstallTasksResponse, ListSkillsResponse,
-    McpConfigLayer, McpDiagnosticBatchEmitter, McpDiagnosticBatchPayload, McpDiagnosticPlane,
-    McpDiagnosticRecord, McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord,
-    McpNameValueRecord, McpNameValueSaveRecord, McpServerConfigRecord,
-    McpServerConfigTransportPayload, McpServerStore, McpServerSummaryPayload,
-    McpServerTransportConfig, McpTaskDiagnosticClearWatermarks, ModelCatalogEntry,
-    ModelLifecyclePayload, ModelProviderCatalogEntry, ModelProviderCatalogResponse,
-    ModelRuntimeStatusPayload, ModelSettingsPageResponse, ModelSettingsPageSlice,
-    ModelUsageDayModelRecord, ModelUsageDayRecord, ModelUsageRollupRecord, ModelUsageRollupStore,
-    OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload, OfficialQuotaStatusPayload,
-    PermissionDecision, PermissionRequestedRunEventPayload, PluginSettingsRecord, PluginStore,
-    PluginStoreRecord, ProbeProviderConfigRequest, ProbeProviderConfigResponse,
-    ProviderBaseUrlRegionPayload, ProviderCapabilityRouteStore,
-    ProviderCapabilityRouteValidationToken, ProviderConfigPayload, ProviderConfigRecord,
-    ProviderDefaultsRecord, ProviderDiagnosticsStore, ProviderModelDescriptorRecord,
-    ProviderModelLifecycleRecord, ProviderModelModalityRecord, ProviderProbeErrorKindPayload,
-    ProviderProbeSnapshotPayload, ProviderProbeStatusPayload, ProviderQuotaCacheRecord,
-    ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload, ProviderServiceCapabilityPayload,
-    ProviderSettingsRecord, ProviderSettingsRequest, ProviderSettingsStore,
-    ReferenceCandidatePayload, RefreshModelProviderCatalogResponse, RefreshOfficialQuotaRequest,
-    RefreshOfficialQuotaResponse, ReloadPluginRequest, ReplayTimelineRequest,
-    ReplayTimelineResponse, RequestProviderConfigApiKeyRevealRequest,
-    RequestProviderConfigApiKeyRevealResponse, ResolvePermissionRequest, ResolvePermissionResponse,
-    RestartMcpServerRequest, RestartMcpServerResponse, RunAutomationNowRequest,
-    RunAutomationNowResponse, RunEvalCaseRequest, RunEvalCaseResponse, RunEventBodyPayload,
-    RunEventPayload, RuntimeToolServiceBindingSummary, RuntimeToolSummary,
-    SaveAgentProfileResponse, SaveAutomationRequest, SaveAutomationResponse,
-    SaveBrowserMcpPresetRequest, SaveBrowserMcpPresetResponse, SaveMcpServerRequest,
-    SaveMcpServerResponse, SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
-    SaveProviderCapabilityRouteResponse, SaveProviderSettingsResponse,
-    SendBackgroundAgentInputRequest, SetAutomationEnabledRequest, SetAutomationEnabledResponse,
-    SetExecutionSettingsRequest, SetExecutionSettingsResponse, SetMcpServerEnabledRequest,
-    SetMcpServerEnabledResponse, SetPluginEnabledRequest, SetProjectPluginsEnabledRequest,
-    SetProjectPluginsEnabledResponse, SetRuntimeToolEnabledRequest, SetSkillConfigValueRequest,
-    SetSkillEnabledRequest, SetSkillEnabledResponse, SetSkillSecretRequest, SettingsScope,
+    InstallSkillFromCatalogResponse, ListAgentProfilesResponse, ListBrowserMcpPresetsResponse,
+    ListMcpDiagnosticsRequest, ListMcpDiagnosticsResponse, ListMcpServersResponse,
+    ListOfficialQuotaSnapshotsResponse, ListPluginsResponse, ListProviderCapabilityRoutesResponse,
+    ListProviderProbeSnapshotsResponse, ListProviderSettingsResponse,
+    ListReferenceCandidatesResponse, ListRuntimeToolsResponse,
+    ListSkillCatalogInstallTasksResponse, ListSkillsResponse, McpConfigLayer,
+    McpDiagnosticBatchEmitter, McpDiagnosticBatchPayload, McpDiagnosticPlane, McpDiagnosticRecord,
+    McpDiagnosticSeverity, McpDiagnosticStore, McpHeaderEnvRecord, McpNameValueRecord,
+    McpNameValueSaveRecord, McpServerConfigRecord, McpServerConfigTransportPayload, McpServerStore,
+    McpServerSummaryPayload, McpServerTransportConfig, McpTaskDiagnosticClearWatermarks,
+    ModelCatalogEntry, ModelLifecyclePayload, ModelProviderCatalogEntry,
+    ModelProviderCatalogResponse, ModelRuntimeStatusPayload, ModelSettingsPageResponse,
+    ModelSettingsPageSlice, ModelUsageDayModelRecord, ModelUsageDayRecord, ModelUsageRollupRecord,
+    ModelUsageRollupStore, OfficialQuotaScopePayload, OfficialQuotaSnapshotPayload,
+    OfficialQuotaStatusPayload, PluginSettingsRecord, PluginStore, PluginStoreRecord,
+    ProbeProviderConfigRequest, ProbeProviderConfigResponse, ProviderBaseUrlRegionPayload,
+    ProviderCapabilityRouteStore, ProviderCapabilityRouteValidationToken, ProviderConfigPayload,
+    ProviderConfigRecord, ProviderDefaultsRecord, ProviderDiagnosticsStore,
+    ProviderModelDescriptorRecord, ProviderModelLifecycleRecord, ProviderModelModalityRecord,
+    ProviderProbeErrorKindPayload, ProviderProbeSnapshotPayload, ProviderProbeStatusPayload,
+    ProviderQuotaCacheRecord, ProviderQuotaCacheStore, ProviderRuntimeCapabilityPayload,
+    ProviderServiceCapabilityPayload, ProviderSettingsRecord, ProviderSettingsRequest,
+    ProviderSettingsStore, ReferenceCandidatePayload, RefreshModelProviderCatalogResponse,
+    RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
+    RequestProviderConfigApiKeyRevealRequest, RequestProviderConfigApiKeyRevealResponse,
+    RestartMcpServerRequest, RestartMcpServerResponse, RuntimeToolServiceBindingSummary,
+    RuntimeToolSummary, SaveAgentProfileResponse, SaveBrowserMcpPresetRequest,
+    SaveBrowserMcpPresetResponse, SaveMcpServerRequest, SaveMcpServerResponse,
+    SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
+    SaveProviderCapabilityRouteResponse, SaveProviderSettingsResponse, SetExecutionSettingsRequest,
+    SetExecutionSettingsResponse, SetMcpServerEnabledRequest, SetMcpServerEnabledResponse,
+    SetPluginEnabledRequest, SetProjectPluginsEnabledRequest, SetProjectPluginsEnabledResponse,
+    SetRuntimeToolEnabledRequest, SetSkillConfigValueRequest, SetSkillEnabledRequest,
+    SetSkillEnabledResponse, SetSkillSecretRequest, SettingsScope,
     SkillCatalogInstallProgressEmitter, SkillCatalogInstallProgressPayload,
     SkillCatalogInstallTaskPayload, SkillConfigDeclarationPayload, SkillConfigMutationResponse,
     SkillDetailPayload, SkillFileContentPayload, SkillFilePayload, SkillParameterPayload,
     SkillPrerequisitePayload, SkillScriptEnvPayload, SkillScriptPayload, SkillStore,
-    SkillStoreRecord, SkillSummaryPayload, StartRunRequest, StartRunResponse,
-    SubscribeMcpDiagnosticsRequest, SubscribeMcpDiagnosticsResponse, UninstallPluginRequest,
-    UnsubscribeMcpDiagnosticsRequest, UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest,
-    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
-    ValidateProviderSettingsResponse,
+    SkillStoreRecord, SkillSummaryPayload, SubscribeMcpDiagnosticsRequest,
+    SubscribeMcpDiagnosticsResponse, UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest,
+    UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest, ValidatePluginFromPathRequest,
+    ValidateProviderSettingsRequest, ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
 pub use mcp::{
@@ -260,9 +219,8 @@ pub use providers::{
     save_provider_capability_route_settings_with_store, save_provider_capability_route_with_store,
     save_provider_settings_with_runtime_state, save_provider_settings_with_store,
     set_execution_settings_with_store, validate_provider_settings_payload,
-    AgentCapabilitiesPayload, DesktopConversationMetadataStore, DesktopExecutionSettingsStore,
-    DesktopProviderCapabilityRouteStore, DesktopProviderSettingsStore,
-    NoWorkspaceProviderCapabilityRouteStore,
+    AgentCapabilitiesPayload, DesktopExecutionSettingsStore, DesktopProviderCapabilityRouteStore,
+    DesktopProviderSettingsStore, NoWorkspaceProviderCapabilityRouteStore,
 };
 pub use runtime::{
     managed_runtime_state, reload_desktop_settings_runtime_after_plugin_change_for_test,

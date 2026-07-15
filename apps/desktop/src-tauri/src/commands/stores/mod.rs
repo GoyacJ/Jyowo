@@ -1,18 +1,12 @@
 #[allow(unused_imports)]
 use super::app::*;
 #[allow(unused_imports)]
-use super::artifacts::*;
-#[allow(unused_imports)]
-use super::automations::*;
-#[allow(unused_imports)]
 use super::constants::*;
 #[allow(unused_imports)]
 use super::contracts::*;
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 use super::error::*;
-#[allow(unused_imports)]
-use super::evals::*;
 #[allow(unused_imports)]
 use super::mcp::*;
 #[allow(unused_imports)]
@@ -299,52 +293,6 @@ pub(crate) fn write_secret_json_file_atomic<T: Serialize + ?Sized>(
         runtime_operation_failed(format!("{label} serialization failed: {error}"))
     })?;
     write_bytes_file_atomic(target_path, "store.json", label, &bytes, true)
-}
-
-#[allow(dead_code)]
-pub(crate) fn quarantine_invalid_json_file(
-    path: &Path,
-    label: &str,
-) -> Result<PathBuf, CommandErrorPayload> {
-    #[cfg(unix)]
-    {
-        let quarantine_path = path.with_extension("json.invalid");
-        let Some(parent) = open_parent_dir_no_symlink_for_read(path, &format!("{label} file"))?
-        else {
-            return Ok(quarantine_path);
-        };
-        let Some(file) = parent.try_open_existing_file(parent.file_name(), label)? else {
-            return Ok(quarantine_path);
-        };
-        let metadata = file.metadata().map_err(|error| {
-            runtime_operation_failed(format!("{label} metadata failed: {error}"))
-        })?;
-        if !metadata.is_file() {
-            return Err(runtime_operation_failed(format!(
-                "{label} target path is not a file"
-            )));
-        }
-        drop(file);
-        let quarantine_name = quarantine_path.file_name().ok_or_else(|| {
-            runtime_operation_failed(format!("{label} quarantine path has no file name"))
-        })?;
-        parent.rename_file(parent.file_name(), quarantine_name, label)?;
-        parent.sync_all(label)?;
-        return Ok(quarantine_path);
-    }
-
-    #[cfg(not(unix))]
-    {
-        ensure_no_symlink_components(path, &format!("{label} file"))?;
-        let quarantine_path = path.with_extension("json.invalid");
-        ensure_no_symlink_components(&quarantine_path, &format!("{label} quarantine file"))?;
-        if path.exists() {
-            std::fs::rename(path, &quarantine_path).map_err(|error| {
-                runtime_operation_failed(format!("{label} quarantine failed: {error}"))
-            })?;
-        }
-        Ok(quarantine_path)
-    }
 }
 
 pub(crate) fn ensure_app_dir_no_symlink(
@@ -2480,43 +2428,6 @@ mod tests {
         assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
         assert!(error.message.contains("test settings parse failed"));
         assert!(path.exists(), "read should not quarantine unless asked");
-    }
-
-    #[test]
-    fn quarantine_invalid_json_file_moves_file_when_requested() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let temp_root = canonical_temp_root(&temp);
-        let path = temp_root.join("settings.json");
-        std::fs::write(&path, b"{not-json").expect("invalid json");
-
-        let quarantine_path =
-            quarantine_invalid_json_file(&path, "test settings").expect("quarantine");
-
-        assert!(!path.exists());
-        assert!(quarantine_path.exists());
-        assert_eq!(quarantine_path.extension().unwrap(), "invalid");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn quarantine_invalid_json_file_rejects_symlink_file_without_moving_target() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let temp_root = canonical_temp_root(&temp);
-        let target = temp_root.join("target.json");
-        let path = temp_root.join("settings.json");
-        std::fs::write(&target, b"{not-json").expect("invalid json target");
-        std::os::unix::fs::symlink(&target, &path).expect("symlink");
-
-        let error = quarantine_invalid_json_file(&path, "test settings")
-            .expect_err("symlink file must not be quarantined");
-
-        assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-        assert!(error.message.contains("symlink"));
-        assert!(target.exists());
-        assert!(std::fs::symlink_metadata(&path)
-            .expect("link metadata")
-            .file_type()
-            .is_symlink());
     }
 
     #[cfg(unix)]

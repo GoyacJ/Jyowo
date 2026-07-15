@@ -23,7 +23,7 @@ import {
 } from '@/shared/tauri/commands'
 import { useCommandClient } from '@/shared/tauri/react'
 
-export const CATALOG_PAGE_SIZE = 12
+const CATALOG_PAGE_SIZE = 12
 
 export const skillQueryKeys = {
   all: ['skills'] as const,
