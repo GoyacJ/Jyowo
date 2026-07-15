@@ -19,6 +19,7 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const repoRoot = dirname(dirname(packageRoot))
 const resourceRoot = join(repoRoot, 'apps', 'desktop', 'src-tauri', 'browser-runtime')
 const stagingRoot = join(repoRoot, 'target', 'jyowo-browser-runtime')
+const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 
 if (process.versions.node !== expectedNodeVersion) {
   throw new Error(
@@ -29,7 +30,7 @@ if (process.versions.node !== expectedNodeVersion) {
 rmSync(stagingRoot, { force: true, recursive: true })
 mkdirSync(dirname(stagingRoot), { recursive: true })
 run(
-  'pnpm',
+  pnpmCommand,
   [
     '--offline',
     '--config.node-linker=hoisted',
@@ -59,7 +60,7 @@ copyNodeLicense(stagingRoot)
 
 const chromeRoot = join(stagingRoot, 'chrome')
 const browser = run(
-  'pnpm',
+  pnpmCommand,
   [
     'exec',
     'browsers',

@@ -8,6 +8,10 @@ import test from 'node:test'
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const workflow = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
 const ciWorkflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+const browserRuntimePrepare = readFileSync(
+  join(repoRoot, 'apps', 'browser-runtime', 'scripts', 'prepare-runtime.mjs'),
+  'utf8',
+)
 
 function ciJob(jobName) {
   return ciWorkflow.match(new RegExp(`\\n  ${jobName}:[\\s\\S]*?(?=\\n  [a-zA-Z0-9_-]+:\\n|\\n*$)`))?.[0] ?? ''
@@ -31,6 +35,14 @@ test('release workflow pins the browser runtime Node.js version', () => {
   )
 
   assert.deepEqual(setupNodeVersions, ['24.12.0', '24.12.0', '24.12.0'])
+})
+
+test('browser runtime packaging resolves the pnpm Windows command shim', () => {
+  assert.match(
+    browserRuntimePrepare,
+    /process\.platform === 'win32' \? 'pnpm\.cmd' : 'pnpm'/,
+  )
+  assert.match(browserRuntimePrepare, /run\(\s*pnpmCommand,/)
 })
 
 test('release workflow verifies the published updater manifest after all builds', () => {
