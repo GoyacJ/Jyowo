@@ -46,8 +46,10 @@ export function evaluateDaemonSidecarPolicy({
   ) {
     errors.push('package.json must expose build:daemon-sidecar')
   }
-  if (!desktopPackageJson.scripts?.tauri?.includes('build:daemon-sidecar')) {
-    errors.push('desktop tauri script must build the daemon sidecar')
+  for (const script of ['tauri:build', 'tauri:dev', 'tauri:release']) {
+    if (!desktopPackageJson.scripts?.[script]?.includes('build:daemon-sidecar')) {
+      errors.push(`desktop ${script} script must build the daemon sidecar`)
+    }
   }
   if (!files.includes('scripts/build-daemon-sidecar.mjs')) {
     errors.push('scripts/build-daemon-sidecar.mjs is missing')

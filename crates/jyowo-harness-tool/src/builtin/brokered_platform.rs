@@ -16,10 +16,16 @@ use crate::{
 };
 
 pub const BROKERED_PLATFORM_RUNTIME_CAPABILITY: &str = "jyowo.builtin.brokered_platform_runtime";
+pub const BROWSER_RUNTIME_CAPABILITY: &str = "jyowo.builtin.browser_runtime";
 
 #[must_use]
 pub fn brokered_platform_runtime_capability() -> ToolCapability {
     ToolCapability::Custom(BROKERED_PLATFORM_RUNTIME_CAPABILITY.to_owned())
+}
+
+#[must_use]
+pub fn browser_runtime_capability() -> ToolCapability {
+    ToolCapability::Custom(BROWSER_RUNTIME_CAPABILITY.to_owned())
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +52,7 @@ pub trait BrokeredPlatformRuntimeCap: Send + Sync + 'static {
 struct BrokeredPlatformTool {
     descriptor: ToolDescriptor,
     network_access: NetworkAccess,
+    runtime_capability: ToolCapability,
 }
 
 macro_rules! brokered_platform_tool {
@@ -61,6 +68,7 @@ macro_rules! brokered_platform_tool {
         [$($alias:literal),+ $(,)?],
         [$($family:literal),+ $(,)?],
         $network:expr,
+        $runtime_capability:expr,
         $schema:expr
     ) => {
         #[derive(Clone)]
@@ -82,6 +90,7 @@ macro_rules! brokered_platform_tool {
                         &[$($alias),+],
                         &[$($family),+],
                         $network,
+                        $runtime_capability,
                         $schema,
                     ),
                 }
@@ -125,6 +134,7 @@ brokered_platform_tool!(
     ["worktree", "git worktree"],
     ["worktree"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
@@ -148,6 +158,7 @@ brokered_platform_tool!(
     ["session", "thread", "codex thread"],
     ["session", "thread"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
@@ -171,6 +182,7 @@ brokered_platform_tool!(
     ["artifact"],
     ["artifact"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
@@ -194,13 +206,70 @@ brokered_platform_tool!(
     ["browser", "browser use", "web browser"],
     ["browser"],
     NetworkAccess::Unrestricted,
+    browser_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
-            "action": { "type": "string" },
+            "action": {
+                "type": "string",
+                "enum": [
+                    "open", "goto", "snapshot", "find", "click", "dblclick", "fill",
+                    "type", "press", "hover", "select", "upload", "screenshot", "pdf",
+                    "back", "forward", "reload", "tab_list", "tab_new", "tab_close",
+                    "tab_select", "mousemove", "mousedown", "mouseup", "mousewheel",
+                    "console", "requests", "request", "run_code"
+                ]
+            },
             "url": { "type": "string" },
+            "target": { "type": "string" },
             "selector": { "type": "string" },
-            "text": { "type": "string" }
+            "text": { "type": "string" },
+            "key": { "type": "string" },
+            "value": { "type": "string" },
+            "button": { "type": "string" },
+            "path": { "type": "string" },
+            "expression": { "type": "string" },
+            "index": { "type": "integer", "minimum": 0 },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "delta_x": { "type": "number" },
+            "delta_y": { "type": "number" },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 }
+        })
+    )
+);
+
+brokered_platform_tool!(
+    BrowserDevToolsTool,
+    "BrowserDevTools",
+    "Browser DevTools",
+    "Inspect browser pages, console output, network traffic, screenshots, and performance through the host runtime.",
+    ToolGroup::Browser,
+    false,
+    ToolRiskLevel::Medium,
+    "external_interaction",
+    ["browser devtools", "chrome devtools", "devtools"],
+    ["browser", "devtools"],
+    NetworkAccess::Unrestricted,
+    browser_runtime_capability(),
+    brokered_schema(
+        &["action"],
+        json!({
+            "action": {
+                "type": "string",
+                "enum": [
+                    "list_pages", "select_page", "new_page", "close_page", "navigate_page",
+                    "take_snapshot", "take_screenshot", "evaluate_script",
+                    "list_console_messages", "get_console_message", "list_network_requests",
+                    "get_network_request", "performance_start_trace", "performance_stop_trace",
+                    "performance_analyze_insight", "lighthouse_audit"
+                ]
+            },
+            "args": {
+                "type": "object",
+                "additionalProperties": true
+            }
         })
     )
 );
@@ -217,6 +286,7 @@ brokered_platform_tool!(
     ["computer", "computer use", "desktop"],
     ["computer"],
     NetworkAccess::Unrestricted,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
@@ -241,6 +311,7 @@ brokered_platform_tool!(
     ["image generation", "imagegen", "image edit"],
     ["image", "generation"],
     NetworkAccess::Unrestricted,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["prompt"],
         json!({
@@ -263,6 +334,7 @@ brokered_platform_tool!(
     ["notebook", "notebook edit"],
     ["notebook"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["path"],
         json!({
@@ -286,6 +358,7 @@ brokered_platform_tool!(
     ["lsp", "language server"],
     ["lsp", "code_intelligence"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["action"],
         json!({
@@ -310,6 +383,7 @@ brokered_platform_tool!(
     ["automation", "cron", "schedule wakeup", "monitor"],
     ["automation", "schedule"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(&["action"], json!({
         "action": { "type": "string" },
         "automation_id": { "type": "string" },
@@ -330,6 +404,7 @@ brokered_platform_tool!(
     ["workflow"],
     ["workflow"],
     NetworkAccess::None,
+    brokered_platform_runtime_capability(),
     brokered_schema(
         &["name"],
         json!({
@@ -351,6 +426,7 @@ impl BrokeredPlatformTool {
         aliases: &[&str],
         families: &[&str],
         network_access: NetworkAccess,
+        runtime_capability: ToolCapability,
         input_schema: Value,
     ) -> Self {
         let mut descriptor = super::with_output_schema(
@@ -363,7 +439,7 @@ impl BrokeredPlatformTool {
                 is_read_only,
                 !is_read_only,
                 256_000,
-                vec![brokered_platform_runtime_capability()],
+                vec![runtime_capability.clone()],
                 input_schema,
             ),
             json!({ "type": "object" }),
@@ -381,6 +457,7 @@ impl BrokeredPlatformTool {
         Self {
             descriptor,
             network_access,
+            runtime_capability,
         }
     }
 
@@ -418,7 +495,7 @@ impl BrokeredPlatformTool {
             WorkspaceAccess::None,
             self.network_access.clone(),
             ToolExecutionChannel::ExternalCapability {
-                capability: brokered_platform_runtime_capability(),
+                capability: self.runtime_capability.clone(),
             },
         )
     }
@@ -428,8 +505,8 @@ impl BrokeredPlatformTool {
         authorized: AuthorizedToolInput,
         ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
-        let runtime = ctx
-            .capability::<dyn BrokeredPlatformRuntimeCap>(brokered_platform_runtime_capability())?;
+        let runtime =
+            ctx.capability::<dyn BrokeredPlatformRuntimeCap>(self.runtime_capability.clone())?;
         let input = authorized_brokered_input(&authorized, &self.descriptor)?;
         let value = runtime
             .execute(BrokeredPlatformRuntimeRequest {

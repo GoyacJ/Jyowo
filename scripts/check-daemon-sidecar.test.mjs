@@ -10,7 +10,11 @@ test('accepts complete daemon sidecar wiring', () => {
         scripts: { 'build:daemon-sidecar': 'node scripts/build-daemon-sidecar.mjs' },
       },
       desktopPackageJson: {
-        scripts: { tauri: 'pnpm --dir ../.. build:daemon-sidecar && tauri' },
+        scripts: {
+          'tauri:build': 'pnpm --dir ../.. build:daemon-sidecar && tauri build',
+          'tauri:dev': 'pnpm --dir ../.. build:daemon-sidecar && tauri dev',
+          'tauri:release': 'pnpm --dir ../.. build:daemon-sidecar && tauri',
+        },
       },
       tauriConfig: { bundle: { externalBin: ['binaries/jyowo-harness-daemon'] } },
       files: [

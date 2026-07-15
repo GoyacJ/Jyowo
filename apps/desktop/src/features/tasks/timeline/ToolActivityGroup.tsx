@@ -17,26 +17,33 @@ import { useTranslation } from 'react-i18next'
 import type { TimelineToolOperation, TimelineToolStatus } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
 
-import { TimelineItem } from './TimelineEvent'
+import { isBrowserToolItem, TimelineItem } from './TimelineEvent'
 import {
   type ToolTimelineItem,
   toolActivityGroupSummary,
   toolActivitySummary,
 } from './tool-activity-summary'
 
-export function ToolActivityGroup({ items }: { items: ToolTimelineItem[] }) {
+export function ToolActivityGroup({
+  items,
+  onSelectItem,
+}: {
+  items: ToolTimelineItem[]
+  onSelectItem?: (item: ToolTimelineItem, trigger?: HTMLElement) => void
+}) {
   const { t } = useTranslation('tasks')
   const hasFailure = items.some((item) => ['denied', 'failed'].includes(item.tool.status))
   const hasActive = items.some((item) => ['requested', 'running'].includes(item.tool.status))
   const hasCommand = items.some(
     (item) => item.tool.operation === 'command' && (item.tool.command || item.tool.output),
   )
+  const hasBrowser = items.some(isBrowserToolItem)
   const label = toolActivityGroupSummary(items, t)
 
   return (
     <details
       className="group/tool text-sm"
-      open={hasFailure || hasActive || hasCommand || undefined}
+      open={hasFailure || hasActive || hasCommand || hasBrowser || undefined}
     >
       <summary
         className={cn(
@@ -57,7 +64,20 @@ export function ToolActivityGroup({ items }: { items: ToolTimelineItem[] }) {
       <div className="mt-1.5 ml-[6px] space-y-1 border-border/70 border-l pl-5">
         {items.map((item) => (
           <TimelineItem item={item} key={item.id}>
-            <ToolDetail item={item} />
+            {onSelectItem && isBrowserToolItem(item) ? (
+              <button
+                aria-label={t('timeline.openPanel', {
+                  panel: t('workbench.targetKind.browser'),
+                })}
+                className="w-full rounded-md px-1 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={(event) => onSelectItem(item, event.currentTarget)}
+                type="button"
+              >
+                <ToolDetail item={item} />
+              </button>
+            ) : (
+              <ToolDetail item={item} />
+            )}
           </TimelineItem>
         ))}
       </div>

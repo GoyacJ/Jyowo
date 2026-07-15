@@ -3,6 +3,7 @@ import {
   Bot,
   FileDiff,
   FileText,
+  Globe2,
   ImageIcon,
   KeyRound,
   Search,
@@ -86,7 +87,7 @@ export function TimelineEvent({
 
   const row = (
     <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
-      <RowIcon kind={item.kind} />
+      <RowIcon item={item} />
       <span>{displaySummary}</span>
       {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
     </div>
@@ -179,23 +180,26 @@ function ArtifactIcon({ kind }: { kind: TimelineItemProjection['kind'] }) {
   return <AlertTriangle aria-hidden="true" className="mt-1 size-4 shrink-0 text-destructive" />
 }
 
-function RowIcon({ kind }: { kind: TimelineItemProjection['kind'] }) {
+function RowIcon({ item }: { item: TimelineItemProjection }) {
   const className = 'mt-0.5 size-4 shrink-0'
-  if (kind === 'tool_activity') return <Search aria-hidden="true" className={className} />
-  if (kind === 'subagent') return <Bot aria-hidden="true" className={className} />
+  if (isBrowserToolItem(item)) return <Globe2 aria-hidden="true" className={className} />
+  if (item.kind === 'tool_activity') return <Search aria-hidden="true" className={className} />
+  if (item.kind === 'subagent') return <Bot aria-hidden="true" className={className} />
   return <Sparkles aria-hidden="true" className={className} />
 }
 
 function isWorkbenchRow(item: TimelineItemProjection) {
-  return item.kind === 'subagent'
+  return item.kind === 'subagent' || isBrowserToolItem(item)
 }
 
 function supportsWorkbenchTarget(item: TimelineItemProjection) {
+  if (isBrowserToolItem(item)) return true
   if (item.kind === 'subagent') return true
   return Boolean(item.blobId && ['diff', 'file', 'artifact', 'image'].includes(item.kind))
 }
 
 function workbenchLabelKey(item: TimelineItemProjection) {
+  if (isBrowserToolItem(item)) return 'workbench.targetKind.browser'
   if (item.kind === 'diff') return 'workbench.tabs.changes'
   if (item.kind === 'command') return 'workbench.tabs.commands'
   if (item.kind === 'file') return 'workbench.targetKind.file'
@@ -206,4 +210,11 @@ function workbenchLabelKey(item: TimelineItemProjection) {
     return 'workbench.tabs.environment'
   }
   return 'workbench.tabs.audit'
+}
+
+export function isBrowserToolItem(item: TimelineItemProjection) {
+  return (
+    item.kind === 'tool_activity' &&
+    ['BrowserUse', 'BrowserDevTools'].includes(item.tool?.toolName ?? '')
+  )
 }

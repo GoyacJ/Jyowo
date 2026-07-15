@@ -39,7 +39,11 @@ function renderItems(
         index += 1
       }
       rendered.push(
-        <ToolActivityGroup items={toolItems} key={`tools:${toolItems[0]?.tool.toolUseId}`} />,
+        <ToolActivityGroup
+          items={toolItems}
+          key={`tools:${toolItems[0]?.tool.toolUseId}`}
+          onSelectItem={onSelectItem}
+        />,
       )
       continue
     }

@@ -46,7 +46,7 @@ function daemonClient(tasks: TaskProjection[] = []) {
         taskId: id(1),
         type: 'command_accepted' as const,
       },
-      protocolVersion: 3,
+      protocolVersion: 4,
     })),
     setTaskArchived: vi.fn(),
   } as unknown as DaemonClient

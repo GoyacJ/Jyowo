@@ -57,6 +57,61 @@ function renderDialog({
 }
 
 describe('ModelConfigDialog', () => {
+  it('saves a new configuration with only an API key and provider defaults', async () => {
+    const saveProviderSettings = vi.fn().mockResolvedValue({
+      config: existingProfile,
+      status: 'saved',
+    })
+    renderDialog({
+      client: {
+        ...createTestCommandClient(),
+        saveProviderSettings,
+      },
+      profile: null,
+    })
+
+    const dialog = screen.getByRole('dialog', { name: 'Create model configuration' })
+    fireEvent.change(within(dialog).getByLabelText('API key'), {
+      target: { value: 'sk-new-config' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
+    expect(saveProviderSettings.mock.calls[0][0]).toMatchObject({
+      apiKey: 'sk-new-config',
+      baseUrl: 'https://api.openai.com/v1',
+      modelId: 'gpt-4.1',
+      providerId: 'openai',
+    })
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('modelOptions')
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('providerDefaults')
+  })
+
+  it('keeps optional connection and advanced settings collapsed by default', () => {
+    renderDialog({ profile: null })
+
+    const dialog = screen.getByRole('dialog', { name: 'Create model configuration' })
+    const details = dialog.querySelectorAll('details')
+
+    expect(details).toHaveLength(2)
+    expect([...details].every((section) => !section.open)).toBe(true)
+    expect(within(dialog).getByText('Optional connection settings')).toBeInTheDocument()
+    expect(within(dialog).getByText('Advanced settings')).toBeInTheDocument()
+  })
+
+  it('shows a missing API key error at the field and focuses it', async () => {
+    renderDialog({ profile: null })
+
+    const dialog = screen.getByRole('dialog', { name: 'Create model configuration' })
+    const apiKey = within(dialog).getByLabelText('API key')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent('API key'))
+    expect(apiKey).toHaveFocus()
+    expect(apiKey).toHaveAttribute('aria-invalid', 'true')
+    expect(apiKey).toHaveAccessibleDescription(/API key/i)
+  })
+
   it('saves a new Local Llama config without an API key when catalog auth is none', async () => {
     const saveProviderSettings = vi.fn().mockResolvedValue({
       config: authFreeProfile('local-llama', 'llama3.2'),
@@ -596,12 +651,7 @@ describe('ModelConfigDialog', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(saveProviderSettings).toHaveBeenCalledTimes(1))
-    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
-      'search_options',
-    )
-    expect(saveProviderSettings.mock.calls[0][0].providerDefaults.body).not.toHaveProperty(
-      'enable_search',
-    )
+    expect(saveProviderSettings.mock.calls[0][0]).not.toHaveProperty('providerDefaults')
   })
 
   it('saves Qwen Responses reasoning effort values from the official enum', async () => {

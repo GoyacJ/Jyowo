@@ -22,3 +22,4 @@ minimumReleaseAgeExclude:
   - '@tanstack/react-router@1.170.16'
   - lucide-react@1.20.0
   - storybook@10.4.6
+  - chrome-devtools-mcp@1.6.0

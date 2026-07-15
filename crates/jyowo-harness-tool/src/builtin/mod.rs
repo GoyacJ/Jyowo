@@ -54,9 +54,10 @@ mod zhipu;
 pub use bash::BashTool;
 #[cfg(feature = "builtin-toolset")]
 pub use brokered_platform::{
-    brokered_platform_runtime_capability, ArtifactTool, AutomationTool, BrokeredPlatformRuntimeCap,
-    BrokeredPlatformRuntimeRequest, BrowserUseTool, ComputerUseTool, ImageGenerationTool, LspTool,
-    NotebookEditTool, SessionTool, WorkflowTool, WorktreeTool,
+    brokered_platform_runtime_capability, browser_runtime_capability, ArtifactTool, AutomationTool,
+    BrokeredPlatformRuntimeCap, BrokeredPlatformRuntimeRequest, BrowserDevToolsTool,
+    BrowserUseTool, ComputerUseTool, ImageGenerationTool, LspTool, NotebookEditTool, SessionTool,
+    WorkflowTool, WorktreeTool,
 };
 #[cfg(feature = "builtin-toolset")]
 pub use clarify::ClarifyTool;

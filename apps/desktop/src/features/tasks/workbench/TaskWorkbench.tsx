@@ -4,6 +4,7 @@ import {
   FileDiff,
   FileText,
   FolderGit2,
+  Globe2,
   GripVertical,
   ImageIcon,
   ListTree,
@@ -31,6 +32,7 @@ import type {
 import { Button } from '@/shared/ui/button'
 
 import { AuditPanel } from './AuditPanel'
+import { BrowserPanel } from './BrowserPanel'
 import { CommandPanel } from './CommandPanel'
 import { ArtifactText, DiffPanel } from './DiffPanel'
 import { EnvironmentPanel } from './EnvironmentPanel'
@@ -47,7 +49,7 @@ export function TaskWorkbench({
   snapshotOffset = projection.lastGlobalOffset,
   timeline = [],
 }: {
-  client: Pick<DaemonClient, 'loadTaskEvents' | 'readBlob'>
+  client: Pick<DaemonClient, 'loadTaskEvents' | 'readBlob' | 'request'>
   events: TaskEventEnvelope[]
   onClosed?: () => void
   onLocateInTimeline?: (eventId: string) => void
@@ -195,6 +197,7 @@ export function TaskWorkbench({
       aria-label={t('workbench.label')}
       className="task-workbench-panel z-30 flex min-h-0 shrink-0 flex-col border-border bg-background shadow-xl"
       data-layout={layoutMode}
+      data-target-kind={activeTarget.kind}
       data-testid="task-workbench"
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -321,7 +324,7 @@ export function TaskWorkbench({
       <div
         aria-label={activeTarget.title}
         aria-labelledby={taskWorkbenchTabDomId(projection.taskId, activeTab.id)}
-        className="min-h-0 flex-1 overflow-auto"
+        className={`min-h-0 flex-1 ${activeTarget.kind === 'browser' ? 'overflow-hidden' : 'overflow-auto'}`}
         id={`${taskWorkbenchTabDomId(projection.taskId, activeTab.id)}-panel`}
         role="tabpanel"
       >
@@ -423,7 +426,7 @@ function WorkbenchContent({
     size: number | null
     text: string | null
   }
-  client: Pick<DaemonClient, 'loadTaskEvents'>
+  client: Pick<DaemonClient, 'loadTaskEvents' | 'request'>
   events: TaskEventEnvelope[]
   onRetryArtifact: () => void
   projection: TaskProjection
@@ -474,6 +477,9 @@ function WorkbenchContent({
   }
   if (target.kind === 'subagent') {
     return <SubagentsPanel events={events} subagents={projection.subagents ?? []} target={target} />
+  }
+  if (target.kind === 'browser') {
+    return <BrowserPanel client={client} taskId={projection.taskId} />
   }
   if (target.kind === 'environment') {
     return (
@@ -538,6 +544,7 @@ function UnsupportedArtifact({
 }
 
 function TargetIcon({ className, kind }: { className?: string; kind: TaskWorkbenchTargetKind }) {
+  if (kind === 'browser') return <Globe2 aria-hidden="true" className={className} />
   if (kind === 'diff') return <FileDiff aria-hidden="true" className={className} />
   if (kind === 'command') return <SquareTerminal aria-hidden="true" className={className} />
   if (kind === 'source') return <ImageIcon aria-hidden="true" className={className} />

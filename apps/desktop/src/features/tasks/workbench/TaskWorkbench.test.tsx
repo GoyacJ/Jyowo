@@ -283,6 +283,7 @@ function workbenchClient(readBlob = vi.fn().mockResolvedValue(blob('')), auditEv
       taskId,
     }),
     readBlob,
+    request: vi.fn(),
   }
 }
 

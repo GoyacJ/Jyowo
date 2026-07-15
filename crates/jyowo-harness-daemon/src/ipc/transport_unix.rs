@@ -20,7 +20,17 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        Self::bind_unix_inner(endpoint.as_ref(), store, config, None, None, None, None).await
+        Self::bind_unix_inner(
+            endpoint.as_ref(),
+            store,
+            config,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn bind_unix_with_supervisor(
@@ -37,6 +47,7 @@ impl LocalIpcServer {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -49,6 +60,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Arc<crate::SkillReferenceCandidateService>,
         memory_service: Arc<crate::MemoryService>,
         automation_scheduler: Arc<crate::AutomationScheduler>,
+        browser_service: Arc<crate::BrowserService>,
     ) -> Result<Self, IpcError> {
         Self::bind_unix_inner(
             endpoint.as_ref(),
@@ -58,6 +70,7 @@ impl LocalIpcServer {
             Some(skill_reference_candidates),
             Some(memory_service),
             Some(automation_scheduler),
+            Some(browser_service),
         )
         .await
     }
@@ -70,6 +83,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Option<Arc<crate::SkillReferenceCandidateService>>,
         memory_service: Option<Arc<crate::MemoryService>>,
         automation_scheduler: Option<Arc<crate::AutomationScheduler>>,
+        browser_service: Option<Arc<crate::BrowserService>>,
     ) -> Result<Self, IpcError> {
         let endpoint = endpoint.to_path_buf();
         let listener = UnixListener::bind(&endpoint)?;
@@ -102,6 +116,9 @@ impl LocalIpcServer {
                         }
                         if let Some(automation_scheduler) = automation_scheduler.as_ref() {
                             connection = connection.with_automation_scheduler(Arc::clone(automation_scheduler));
+                        }
+                        if let Some(browser_service) = browser_service.as_ref() {
+                            connection = connection.with_browser_service(Arc::clone(browser_service));
                         }
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {

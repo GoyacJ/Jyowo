@@ -334,6 +334,27 @@ describe('TaskTimeline', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Task update: Ran command')
   })
 
+  it.each([
+    'BrowserUse',
+    'BrowserDevTools',
+  ])('opens %s activity in the browser panel', (toolName) => {
+    const onSelectItem = vi.fn()
+    const browser = {
+      ...item(1_902, 'tool_activity', toolName, 'segment-browser'),
+      tool: {
+        operation: 'browse' as const,
+        status: 'completed' as const,
+        toolName,
+        toolUseId: `tool-${toolName}`,
+      },
+    }
+
+    render(<TaskTimeline items={[browser]} onSelectItem={onSelectItem} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Browser' }))
+
+    expect(onSelectItem).toHaveBeenCalledWith(browser, expect.any(HTMLButtonElement))
+  })
+
   it('virtualizes a long single-run history instead of mounting every event', () => {
     const longRun = Array.from({ length: 500 }, (_, index) =>
       item(100 + index, 'tool_activity', `Read file ${index}`, 'segment-long'),

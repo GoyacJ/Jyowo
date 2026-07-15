@@ -1,13 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
-import { Activity, ExternalLink, Plus, Power, Save, Server, Telescope, Trash2 } from 'lucide-react'
+import { Activity, ExternalLink, Plus, Save, Server, Trash2 } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useFieldArray, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { z } from 'zod'
 import { formatTime } from '@/shared/formatters'
 import type {
-  BrowserMcpPreset,
   McpConfigLayer,
   McpDiagnosticRecord,
   McpServerConfig,
@@ -17,10 +16,8 @@ import type {
 import {
   clearMcpDiagnostics,
   getMcpServerConfig,
-  listBrowserMcpPresets,
   listMcpDiagnostics,
   listMcpServers,
-  saveBrowserMcpPreset,
   saveMcpServer,
 } from '@/shared/tauri/commands'
 import { getCommandErrorMessage } from '@/shared/tauri/errors'
@@ -51,11 +48,6 @@ const mcpServerQueryKeys = {
 const mcpDiagnosticQueryKeys = {
   all: ['mcp-diagnostics'] as const,
   list: (serverId: string | null) => [...mcpDiagnosticQueryKeys.all, 'list', serverId] as const,
-}
-
-const browserMcpPresetQueryKeys = {
-  all: ['browser-mcp-presets'] as const,
-  list: () => [...browserMcpPresetQueryKeys.all, 'list'] as const,
 }
 
 type MCPServerFormValues = {
@@ -151,10 +143,6 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
     refetchOnWindowFocus: false,
     staleTime: Number.POSITIVE_INFINITY,
   })
-  const browserPresetsQuery = useQuery({
-    queryKey: browserMcpPresetQueryKeys.list(),
-    queryFn: () => listBrowserMcpPresets(commandClient),
-  })
   const saveMutation = useMutation({
     mutationFn: ({ request }: McpSaveMutationVariables) => saveMcpServer(request, commandClient),
     onSuccess: async (_, { dialogGeneration, dialogIdentity, request }) => {
@@ -173,16 +161,6 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
         return
       }
       setSaveErrorMessage(safeMcpSaveErrorMessage(error, t('mcp.saveError')))
-    },
-  })
-  const saveBrowserPresetMutation = useMutation({
-    mutationFn: (preset: BrowserMcpPreset) =>
-      saveBrowserMcpPreset({ enabled: !preset.enabled, presetId: preset.id }, commandClient),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: browserMcpPresetQueryKeys.all }),
-        queryClient.invalidateQueries({ queryKey: mcpServerQueryKeys.all }),
-      ])
     },
   })
   const deleteMutation = useMutation({
@@ -221,7 +199,6 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
   const visibleDiagnostics = diagnostics.filter(
     (event) => diagnosticPlane === 'all' || event.plane === diagnosticPlane,
   )
-  const browserPresets = browserPresetsQuery.data?.presets ?? []
   const pluginServers = servers.filter((server) => server.origin === 'plugin')
   const workspaceServers = servers.filter((server) => server.origin !== 'plugin')
 
@@ -868,67 +845,6 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
       </div>
 
       {serversQuery.isError ? <ErrorMessage>{t('mcp.loadError')}</ErrorMessage> : null}
-
-      <section className="space-y-3 border-border border-t pt-5">
-        <div className="flex items-center gap-2">
-          <Telescope className="size-4 text-muted-foreground" />
-          <h3 className="font-semibold text-sm">{t('mcp.browserPresets.title')}</h3>
-        </div>
-
-        {browserPresetsQuery.isError ? (
-          <ErrorMessage>{t('mcp.browserPresets.loadError')}</ErrorMessage>
-        ) : null}
-
-        {browserPresetsQuery.isLoading ? (
-          <div className="text-muted-foreground text-sm">{t('mcp.browserPresets.loading')}</div>
-        ) : null}
-
-        {!browserPresetsQuery.isLoading && browserPresets.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border bg-background px-4 py-5 text-center text-muted-foreground text-sm">
-            {t('mcp.browserPresets.empty')}
-          </div>
-        ) : null}
-
-        {browserPresets.length > 0 ? (
-          <div className="divide-y divide-border rounded-md border border-border bg-background">
-            {browserPresets.map((preset) => (
-              <div
-                className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
-                key={preset.id}
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="font-medium text-sm">{preset.displayName}</h4>
-                    {preset.version ? <Badge variant="outline">{preset.version}</Badge> : null}
-                    <Badge variant={preset.enabled ? 'secondary' : 'outline'}>
-                      {preset.enabled
-                        ? t('mcp.browserPresets.enabled')
-                        : t('mcp.browserPresets.disabled')}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-muted-foreground text-sm">{preset.description}</p>
-                </div>
-                <Button
-                  disabled={saveBrowserPresetMutation.isPending}
-                  onClick={() => saveBrowserPresetMutation.mutate(preset)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  {preset.enabled ? <Power className="size-4" /> : <Plus className="size-4" />}
-                  {preset.enabled
-                    ? t('mcp.browserPresets.disable', { name: preset.displayName })
-                    : t('mcp.browserPresets.add', { name: preset.displayName })}
-                </Button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {saveBrowserPresetMutation.isError ? (
-          <ErrorMessage>{t('mcp.browserPresets.saveError')}</ErrorMessage>
-        ) : null}
-      </section>
 
       {serversQuery.isLoading ? (
         <div className="text-muted-foreground text-sm">{t('mcp.loading')}</div>

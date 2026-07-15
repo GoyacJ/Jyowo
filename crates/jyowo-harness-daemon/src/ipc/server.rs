@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use harness_contracts::{
-    AgentCapabilities, BlobPayload, ClientFrame, ClientId, ClientRequest, CommandAccepted,
-    CommandRejected, CommandRejectionReason, HandshakeResponse, ProtocolError, ProtocolErrorCode,
-    QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch, TaskEventEnvelope,
-    TaskEventHistoryPage, TaskEventPage, TaskId, TaskSnapshot, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
-    PROTOCOL_VERSION,
+    AgentCapabilities, BlobPayload, BrowserSessionStatus, ClientFrame, ClientId, ClientRequest,
+    CommandAccepted, CommandRejected, CommandRejectionReason, HandshakeResponse, ProtocolError,
+    ProtocolErrorCode, QueueItemId, RunSegmentId, ServerFrame, ServerMessage, TaskEventBatch,
+    TaskEventEnvelope, TaskEventHistoryPage, TaskEventPage, TaskId, TaskSnapshot,
+    MAX_DAEMON_TASK_EVENT_PAGE_BYTES, PROTOCOL_VERSION,
 };
 use harness_journal::{
     AcceptedCommand, BlobRead, CommandOutcome, CommandRejection, NewTaskEvent, TaskBlobStore,
@@ -19,9 +19,9 @@ use tokio::task::JoinHandle;
 
 use super::IpcError;
 use crate::{
-    AutomationScheduler, AutomationSchedulerError, MemoryService, MemoryServiceError,
-    PermissionDecisionInput, QueueCommand, SkillReferenceCandidateService, Supervisor,
-    TaskMetadataMutation, ValidatedTaskCommand,
+    AutomationScheduler, AutomationSchedulerError, BrowserService, MemoryService,
+    MemoryServiceError, PermissionDecisionInput, QueueCommand, SkillReferenceCandidateService,
+    Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
 };
 
 #[derive(Debug, Clone)]
@@ -40,6 +40,7 @@ pub struct IpcConnection {
     skill_reference_candidates: Option<Arc<SkillReferenceCandidateService>>,
     memory_service: Option<Arc<MemoryService>>,
     automation_scheduler: Option<Arc<AutomationScheduler>>,
+    browser_service: Option<Arc<BrowserService>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
 }
@@ -54,6 +55,7 @@ impl IpcConnection {
             skill_reference_candidates: None,
             memory_service: None,
             automation_scheduler: None,
+            browser_service: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -72,6 +74,7 @@ impl IpcConnection {
             skill_reference_candidates: None,
             memory_service: None,
             automation_scheduler: None,
+            browser_service: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -98,6 +101,12 @@ impl IpcConnection {
         automation_scheduler: Arc<AutomationScheduler>,
     ) -> Self {
         self.automation_scheduler = Some(automation_scheduler);
+        self
+    }
+
+    #[must_use]
+    pub fn with_browser_service(mut self, browser_service: Arc<BrowserService>) -> Self {
+        self.browser_service = Some(browser_service);
         self
     }
 
@@ -150,6 +159,36 @@ impl IpcConnection {
                     Err(error) => automation_scheduler_error(error),
                 };
                 return Ok(vec![server_frame(Some(request_id), message)]);
+            }
+        }
+        if let ClientRequest::Browser { task_id, command } = &request {
+            if valid_runtime_frame && self.client_id.is_some() {
+                if let Some(browser_service) = self.browser_service.as_ref() {
+                    let message = match self.store.task_projection(*task_id)? {
+                        Some(task) if !task.removed => {
+                            match browser_service.handle(*task_id, command.clone()).await {
+                                Ok(state) => ServerMessage::BrowserSession(state),
+                                Err(error) => {
+                                    tracing::warn!(%task_id, error = %error, "browser service request failed");
+                                    ServerMessage::BrowserSession(
+                                        harness_contracts::BrowserSessionState {
+                                            task_id: *task_id,
+                                            status: BrowserSessionStatus::Failed,
+                                            dashboard_url: None,
+                                            current_url: None,
+                                            title: None,
+                                            unavailable_reason: Some(error.to_string()),
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        None | Some(_) => {
+                            protocol_error(ProtocolErrorCode::NotFound, "task not found")
+                        }
+                    };
+                    return Ok(vec![server_frame(Some(request_id), message)]);
+                }
             }
         }
         if !requires_task_supervisor(&request) || !is_supervisor_required_response(&response) {
@@ -470,6 +509,10 @@ impl IpcConnection {
             | ClientRequest::ListAutomationRuns { .. } => protocol_error(
                 ProtocolErrorCode::InvalidFrame,
                 "runtime request is not implemented",
+            ),
+            ClientRequest::Browser { .. } => protocol_error(
+                ProtocolErrorCode::InvalidFrame,
+                "browser service is not configured",
             ),
             ClientRequest::Handshake(_) => unreachable!("handshake handled above"),
         };

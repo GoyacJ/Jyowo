@@ -193,138 +193,19 @@ describe('MCPManager', () => {
     ).toBeInTheDocument()
   })
 
-  it('shows exact browser preset versions when provided', async () => {
-    renderMCPManager(
-      createTestCommandClient({
-        browserMcpPresets: {
-          presets: [
-            {
-              description: 'Browser automation through Playwright MCP.',
-              displayName: 'Playwright Browser',
-              enabled: false,
-              id: 'playwright',
-              serverId: 'browser-playwright',
-              version: '0.0.78',
-            },
-            {
-              description: 'Browser inspection through Chrome DevTools MCP.',
-              displayName: 'Chrome DevTools Browser',
-              enabled: false,
-              id: 'chrome-devtools',
-              serverId: 'browser-chrome-devtools',
-              version: '1.5.0',
-            },
-          ],
-        },
-        mcpDiagnostics: { events: [] },
-        mcpServers: { configLayer: 'global', servers: [] },
-      }),
-    )
-
-    expect(await screen.findByText('0.0.78')).toBeInTheDocument()
-    expect(screen.getByText('1.5.0')).toBeInTheDocument()
-  })
-
-  it('enables disabled browser MCP presets', async () => {
-    const saveBrowserMcpPreset = vi.fn().mockResolvedValue({
-      preset: {
-        description: 'Browser automation through Playwright MCP.',
-        displayName: 'Playwright Browser',
-        enabled: true,
-        id: 'playwright',
-        serverId: 'browser-playwright',
-        version: '0.0.78',
-      },
-      server: mcpServer({
-        displayName: 'Playwright Browser',
-        enabled: true,
-        id: 'browser-playwright',
-        status: 'ready',
-      }),
-    })
-    const client = {
+  it('does not expose retired browser MCP presets', async () => {
+    const listBrowserMcpPresets = vi.fn()
+    renderMCPManager({
       ...createTestCommandClient({
-        browserMcpPresets: {
-          presets: [
-            {
-              description: 'Browser automation through Playwright MCP.',
-              displayName: 'Playwright Browser',
-              enabled: false,
-              id: 'playwright',
-              serverId: 'browser-playwright',
-              version: '0.0.78',
-            },
-          ],
-        },
         mcpDiagnostics: { events: [] },
         mcpServers: { configLayer: 'global', servers: [] },
       }),
-      saveBrowserMcpPreset,
-    }
-
-    renderMCPManager(client)
-
-    expect(await screen.findByText('Browser presets')).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Playwright Browser preset' }))
-
-    await waitFor(() =>
-      expect(saveBrowserMcpPreset).toHaveBeenCalledWith({
-        enabled: true,
-        presetId: 'playwright',
-      }),
-    )
-    expect(JSON.stringify(saveBrowserMcpPreset.mock.calls)).not.toContain('token')
-  })
-
-  it('disables enabled browser MCP presets', async () => {
-    const saveBrowserMcpPreset = vi.fn().mockResolvedValue({
-      preset: {
-        description: 'Browser automation through Playwright MCP.',
-        displayName: 'Playwright Browser',
-        enabled: false,
-        id: 'playwright',
-        serverId: 'browser-playwright',
-        version: '0.0.78',
-      },
-      server: mcpServer({
-        displayName: 'Playwright Browser',
-        enabled: false,
-        id: 'browser-playwright',
-        status: 'disabled',
-      }),
+      listBrowserMcpPresets,
     })
-    const client = {
-      ...createTestCommandClient({
-        browserMcpPresets: {
-          presets: [
-            {
-              description: 'Browser automation through Playwright MCP.',
-              displayName: 'Playwright Browser',
-              enabled: true,
-              id: 'playwright',
-              serverId: 'browser-playwright',
-              version: '0.0.78',
-            },
-          ],
-        },
-        mcpDiagnostics: { events: [] },
-        mcpServers: { configLayer: 'global', servers: [] },
-      }),
-      saveBrowserMcpPreset,
-    }
 
-    renderMCPManager(client)
-
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Disable Playwright Browser preset' }),
-    )
-
-    await waitFor(() =>
-      expect(saveBrowserMcpPreset).toHaveBeenCalledWith({
-        enabled: false,
-        presetId: 'playwright',
-      }),
-    )
+    expect(await screen.findByText('No MCP servers configured.')).toBeInTheDocument()
+    expect(screen.queryByText('Browser presets')).not.toBeInTheDocument()
+    expect(listBrowserMcpPresets).not.toHaveBeenCalled()
   })
 
   it('opens the source plugin for read-only MCP servers', async () => {

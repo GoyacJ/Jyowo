@@ -20,11 +20,19 @@ export function taskWorkbenchTargetFromTimelineItem(
   if (item.kind === 'artifact' && item.blobId) return { ...shared, kind: 'artifact' }
   if (item.kind === 'subagent') return { ...shared, kind: 'subagent' }
   if (item.kind === 'image' && item.blobId) return { ...shared, kind: 'source' }
+  if (
+    item.kind === 'tool_activity' &&
+    ['BrowserUse', 'BrowserDevTools'].includes(item.tool?.toolName ?? '')
+  ) {
+    return { ...shared, kind: 'browser', resourceId: taskId }
+  }
   return null
 }
 
 export function isTaskWorkbenchSidebarTarget(
   target: TaskWorkbenchTarget | null | undefined,
 ): target is TaskWorkbenchTarget {
-  return Boolean(target && ['artifact', 'diff', 'file', 'source', 'subagent'].includes(target.kind))
+  return Boolean(
+    target && ['artifact', 'browser', 'diff', 'file', 'source', 'subagent'].includes(target.kind),
+  )
 }

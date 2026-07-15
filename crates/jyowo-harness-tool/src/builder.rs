@@ -64,6 +64,7 @@ impl ToolRegistryBuilder {
                     registry.register(Box::<crate::builtin::SessionTool>::default())?;
                     registry.register(Box::<crate::builtin::ArtifactTool>::default())?;
                     registry.register(Box::<crate::builtin::BrowserUseTool>::default())?;
+                    registry.register(Box::<crate::builtin::BrowserDevToolsTool>::default())?;
                     registry.register(Box::<crate::builtin::ComputerUseTool>::default())?;
                     registry.register(Box::<crate::builtin::ImageGenerationTool>::default())?;
                     registry.register(Box::<crate::builtin::NotebookEditTool>::default())?;

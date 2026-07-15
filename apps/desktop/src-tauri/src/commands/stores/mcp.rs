@@ -1,6 +1,8 @@
 use super::*;
 use crate::storage_layout::StorageLayout;
 
+const RETIRED_BROWSER_MCP_SERVER_IDS: [&str; 2] = ["browser-playwright", "browser-chrome-devtools"];
+
 /// Scope-aware MCP server store.
 ///
 /// Global settings live under `~/.jyowo/config/mcp-servers.json`.
@@ -41,8 +43,14 @@ impl DesktopMcpServerStore {
 impl McpServerStore for DesktopMcpServerStore {
     fn load_records(&self) -> Result<Vec<McpServerConfigRecord>, CommandErrorPayload> {
         let settings_path = self.settings_path();
-        read_secret_json_file(&settings_path, "mcp server settings")
-            .map(|records| records.unwrap_or_default())
+        let mut records: Vec<McpServerConfigRecord> =
+            read_secret_json_file(&settings_path, "mcp server settings")?.unwrap_or_default();
+        let stored_count = records.len();
+        records.retain(|record| !RETIRED_BROWSER_MCP_SERVER_IDS.contains(&record.id.as_str()));
+        if records.len() != stored_count {
+            write_mcp_server_records(&settings_path, &records)?;
+        }
+        Ok(records)
     }
 
     fn save_record(&self, record: &McpServerConfigRecord) -> Result<(), CommandErrorPayload> {
@@ -57,6 +65,39 @@ impl McpServerStore for DesktopMcpServerStore {
         let mut records = self.load_records()?;
         records.retain(|existing| existing.id != id);
         write_mcp_server_records(&self.settings_path(), &records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage_layout::JyowoHome;
+
+    #[test]
+    fn load_migrates_retired_browser_mcp_records() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let home_root = home.path().canonicalize().expect("canonical tempdir");
+        let layout = StorageLayout::new(JyowoHome::new(home_root.join(".jyowo")));
+        let store = DesktopMcpServerStore::global(layout);
+        let mut retained = browser_mcp_preset_record(BrowserMcpPresetId::Playwright, false);
+        retained.id = "custom-browser-server".to_owned();
+        retained.display_name = "Custom browser server".to_owned();
+        store.save_record(&retained).expect("save retained server");
+        store
+            .save_record(&browser_mcp_preset_record(
+                BrowserMcpPresetId::ChromeDevtools,
+                true,
+            ))
+            .expect("save retired browser preset");
+
+        let loaded = store.load_records().expect("load migrated records");
+        assert_eq!(loaded, vec![retained.clone()]);
+
+        let persisted: Vec<McpServerConfigRecord> =
+            read_secret_json_file(&store.settings_path(), "mcp server settings")
+                .expect("read migrated settings")
+                .expect("settings exist");
+        assert_eq!(persisted, vec![retained]);
     }
 }
 

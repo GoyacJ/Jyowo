@@ -66,6 +66,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
+          tauriScript: pnpm tauri:release
           tagName: ${{ github.ref_name }}
           releaseName: Jyowo ${{ github.ref_name }}
           releaseDraft: false

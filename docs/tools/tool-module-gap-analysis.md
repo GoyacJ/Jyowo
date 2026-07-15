@@ -249,6 +249,7 @@ Git：
 - `SkillsList` (`skills_list`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
 - `SkillsView` (`skills_view`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
 - `SkillsInvoke` (`skills_invoke`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
+- `SkillsRunScript` (`skills_run_script`) -> `crates/jyowo-harness-tool/src/builtin/skills.rs`
 
 宿主平台代理工具：
 
@@ -256,6 +257,7 @@ Git：
 - `Session` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
 - `Artifact` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
 - `BrowserUse` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
+- `BrowserDevTools` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
 - `ComputerUse` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
 - `ImageGeneration` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
 - `NotebookEdit` -> `crates/jyowo-harness-tool/src/builtin/brokered_platform.rs`
@@ -424,7 +426,8 @@ Git：
 
 | Capability | 影响工具 | 需要补齐的开发工作 |
 |---|---|---|
-| `BrokeredPlatformRuntimeCap` | `Worktree`、`Session`、`Artifact`、`BrowserUse`、`ComputerUse`、`ImageGeneration`、`NotebookEdit`、`LSP`、`Automation`、`Workflow` | 宿主 runtime 必须实现并注册。工具列表展示前应能提示 capability 是否可用。 |
+| `BrokeredPlatformRuntimeCap` | `Worktree`、`Session`、`Artifact`、`ComputerUse`、`ImageGeneration`、`NotebookEdit`、`LSP`、`Automation`、`Workflow` | 宿主 runtime 必须实现并注册。工具列表展示前应能提示 capability 是否可用。 |
+| `browser_runtime_capability()` | `BrowserUse`、`BrowserDevTools` | daemon 的 task-scoped browser runtime 实现并注册；与其他尚未实现的平台代理工具隔离。 |
 | `ToolNetworkBrokerCap` | `WebFetch`、MiniMax、Seedance | 所有外部网络访问必须通过 broker。MiniMax / Seedance 的 descriptor 不把它列入 `required_capabilities`，但执行时会从 `ToolContext` 获取 broker。需要持续用边界测试防回归。 |
 | `WebSearchBackend` | `WebSearch` | 需要确认 backend 是否执行等价的网络权限、redaction、审计。 |
 | `DiagnosticsRunnerCap` | `Diagnostics` | 需要确认 runner 的工作目录、命令来源、输出清洗、超时策略。 |

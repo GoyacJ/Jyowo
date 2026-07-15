@@ -33,6 +33,7 @@ test('release workflow builds all supported desktop platforms', () => {
 test('release workflow uploads Tauri artifacts with updater signing secrets', () => {
   assert.match(workflow, /tauri-apps\/tauri-action@v0/)
   assert.match(workflow, /projectPath:\s*apps\/desktop/)
+  assert.match(workflow, /tauriScript:\s*pnpm tauri:release/)
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY:/)
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD:/)
   assert.match(workflow, /includeUpdaterJson:\s*true/)

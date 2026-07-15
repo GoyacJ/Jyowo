@@ -4,6 +4,7 @@
 
 mod agent_starters;
 mod automation;
+mod browser_service;
 mod checkpoint;
 mod ipc;
 mod lifecycle;
@@ -23,6 +24,7 @@ mod workspace;
 
 pub use agent_starters::*;
 pub use automation::*;
+pub use browser_service::*;
 pub use checkpoint::*;
 pub use ipc::*;
 pub use lifecycle::*;

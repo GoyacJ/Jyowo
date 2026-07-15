@@ -10,10 +10,10 @@ use harness_contracts::{
 };
 use harness_tool::{
     builtin::{
-        brokered_platform_runtime_capability, ArtifactTool, BrokeredPlatformRuntimeCap,
-        BrokeredPlatformRuntimeRequest, BrowserUseTool, FileEditTool, GitPullTool, GitPushTool,
-        GitStageTool, GitStatusTool, GlobTool, GrepTool, ImageGenerationTool, ListDirTool,
-        TaskStopTool, TodoTool, WebFetchTool,
+        brokered_platform_runtime_capability, browser_runtime_capability, ArtifactTool,
+        BrokeredPlatformRuntimeCap, BrokeredPlatformRuntimeRequest, BrowserDevToolsTool,
+        BrowserUseTool, FileEditTool, GitPullTool, GitPushTool, GitStageTool, GitStatusTool,
+        GlobTool, GrepTool, ImageGenerationTool, ListDirTool, TaskStopTool, TodoTool, WebFetchTool,
     },
     AuthorizedTicketSummary, AuthorizedToolInput, BuiltinToolset, InterruptToken, Tool,
     ToolContext, ToolRegistry,
@@ -58,6 +58,7 @@ fn default_builtin_toolset_registers_architecture_m0_tools() {
         "Session",
         "Artifact",
         "BrowserUse",
+        "BrowserDevTools",
         "ComputerUse",
         "ImageGeneration",
         "NotebookEdit",
@@ -117,6 +118,24 @@ fn brokered_platform_descriptors_expose_searchable_metadata() {
         .effects
         .iter()
         .any(|effect| effect == "external_interaction"));
+
+    let devtools = BrowserDevToolsTool::default();
+    assert_eq!(devtools.descriptor().group, ToolGroup::Browser);
+    assert_eq!(
+        devtools.descriptor().required_capabilities,
+        vec![browser_runtime_capability()]
+    );
+    assert!(devtools
+        .descriptor()
+        .metadata
+        .aliases
+        .iter()
+        .any(|alias| alias == "chrome devtools"));
+
+    assert_eq!(
+        browser.descriptor().required_capabilities,
+        vec![browser_runtime_capability()]
+    );
 }
 
 #[tokio::test]

@@ -12,5 +12,7 @@ apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/.jyowo/
 apps/desktop/src-tauri/binaries/jyowo-agent-supervisor-*
 apps/desktop/src-tauri/binaries/jyowo-harness-daemon-*
+apps/desktop/src-tauri/browser-runtime/*
+!apps/desktop/src-tauri/browser-runtime/.gitkeep
 output/
 .playwright

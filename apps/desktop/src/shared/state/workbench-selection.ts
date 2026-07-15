@@ -11,6 +11,7 @@ type ConversationEventRef = {
 export type TaskWorkbenchTargetKind =
   | 'artifact'
   | 'audit'
+  | 'browser'
   | 'command'
   | 'diff'
   | 'environment'

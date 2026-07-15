@@ -25,8 +25,11 @@
     "test:e2e": "env -u FORCE_COLOR -u NO_COLOR playwright test",
     "test:e2e:storybook": "env -u FORCE_COLOR -u NO_COLOR playwright test -c playwright.storybook.config.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm knip",
-    "check:full": "pnpm --dir ../.. build:daemon-sidecar && pnpm check && pnpm build-storybook && pnpm test:e2e && pnpm test:e2e:storybook && pnpm tauri build --config src-tauri/tauri.check.conf.json",
-    "tauri": "pnpm --dir ../.. build:daemon-sidecar && tauri"
+    "check:full": "pnpm check && pnpm build-storybook && pnpm test:e2e && pnpm test:e2e:storybook && pnpm tauri:build --config src-tauri/tauri.check.conf.json",
+    "tauri": "tauri",
+    "tauri:build": "pnpm --dir ../.. build:daemon-sidecar && pnpm --dir ../.. build:browser-runtime && tauri build",
+    "tauri:dev": "pnpm --dir ../.. build:daemon-sidecar && tauri dev",
+    "tauri:release": "pnpm --dir ../.. build:daemon-sidecar && pnpm --dir ../.. build:browser-runtime && tauri"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",

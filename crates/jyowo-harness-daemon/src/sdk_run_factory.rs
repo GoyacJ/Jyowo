@@ -45,7 +45,10 @@ use harness_subagent::{
     ChildRunOutcome, ChildRunRequest, DefaultSubagentRunner, DelegationPolicy,
     SubagentEngineFactory, SubagentError, SubagentRunner,
 };
-use harness_tool::{ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap};
+use harness_tool::{
+    builtin::{browser_runtime_capability, BrokeredPlatformRuntimeCap},
+    ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap,
+};
 use jyowo_harness_sdk::{
     ext::{
         AuthorizedToolInput, ContentDelta, HealthStatus, InferContext, ModelDescriptor,
@@ -60,11 +63,11 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    AgentStarterCapabilities, HarnessPermissionBroker, PermissionBroker,
+    AgentStarterCapabilities, BrowserService, HarnessPermissionBroker, PermissionBroker,
     PermissionRuntimeAuthority, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment,
     RuntimeConfigResolver, RuntimeConfigSnapshot, RuntimeMcpServerConfig, StartSegmentRequest,
-    WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory, WorkspaceToolAction,
-    WorkspaceToolDispatcher,
+    TaskBrowserRuntime, WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory,
+    WorkspaceToolAction, WorkspaceToolDispatcher,
 };
 
 struct DaemonAuthorizationEventSink {
@@ -802,6 +805,7 @@ pub struct SdkRunCoordinatorFactory {
     permissions: Arc<PermissionBroker>,
     redactor: Arc<dyn Redactor>,
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
+    browser_service: Arc<BrowserService>,
     subagent_engines: Arc<SdkSubagentEngineRegistry>,
     segments: Arc<Mutex<HashMap<(TaskId, RunSegmentId), SharedSegment>>>,
 }
@@ -865,6 +869,7 @@ struct SdkSubagentRuntimeTemplate {
     permissions: Arc<PermissionBroker>,
     redactor: Arc<dyn Redactor>,
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
+    browser_service: Arc<BrowserService>,
     workspace_tools: WorkspaceToolDispatcher,
     agent_tool_policy: AgentToolPolicy,
 }
@@ -1022,6 +1027,13 @@ impl SubagentEngineFactory for SdkIsolatedSubagentEngineFactory {
                     ToolCapability::NetworkBroker,
                     authorization.network_broker,
                 )
+                .with_capability::<dyn BrokeredPlatformRuntimeCap>(
+                    browser_runtime_capability(),
+                    Arc::new(TaskBrowserRuntime::new(
+                        Arc::clone(&self.runtime.browser_service),
+                        self.context.child_task_id,
+                    )),
+                )
                 .with_memory_database_path(&self.runtime.runtime_config.memory_database_path)
                 .with_subagent_runner(Arc::clone(&self.context.subagent_runner))
                 .with_subagent_engine_factory(Arc::clone(&engine_factory));
@@ -1110,6 +1122,9 @@ impl SdkRunCoordinatorFactory {
             permissions,
             redactor,
             provider_continuation_store: None,
+            browser_service: Arc::new(BrowserService::unavailable(
+                "browser service was not configured",
+            )),
             subagent_engines,
             segments: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -1121,6 +1136,12 @@ impl SdkRunCoordinatorFactory {
         store: Arc<dyn ProviderContinuationStore>,
     ) -> Self {
         self.provider_continuation_store = Some(store);
+        self
+    }
+
+    #[must_use]
+    pub fn with_browser_service_arc(mut self, service: Arc<BrowserService>) -> Self {
+        self.browser_service = service;
         self
     }
 
@@ -1149,6 +1170,7 @@ impl SdkRunCoordinatorFactory {
         permissions: Arc<PermissionBroker>,
         redactor: Arc<dyn Redactor>,
         provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
+        browser_service: Arc<BrowserService>,
         request: StartSegmentRequest,
         workspace_tools: WorkspaceToolDispatcher,
         subagent_runner: Arc<dyn SubagentRunner>,
@@ -1261,6 +1283,7 @@ impl SdkRunCoordinatorFactory {
                         permissions: Arc::clone(&permissions),
                         redactor: Arc::clone(&redactor),
                         provider_continuation_store: provider_continuation_store.clone(),
+                        browser_service: Arc::clone(&browser_service),
                         workspace_tools: workspace_tools.clone(),
                         agent_tool_policy: agent_tool_policy.clone(),
                     }),
@@ -1278,6 +1301,13 @@ impl SdkRunCoordinatorFactory {
                 .with_capability::<dyn ToolNetworkBrokerCap>(
                     ToolCapability::NetworkBroker,
                     authorization.network_broker,
+                )
+                .with_capability::<dyn BrokeredPlatformRuntimeCap>(
+                    browser_runtime_capability(),
+                    Arc::new(TaskBrowserRuntime::new(
+                        Arc::clone(&browser_service),
+                        request.task_id,
+                    )),
                 )
                 .with_memory_database_path(memory_database_path);
             let harness_builder = if subagents_enabled {
@@ -2023,6 +2053,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
             let permissions = Arc::clone(&self.permissions);
             let redactor = Arc::clone(&self.redactor);
             let provider_continuation_store = self.provider_continuation_store.clone();
+            let browser_service = Arc::clone(&self.browser_service);
             let subagent_engines = Arc::clone(&self.subagent_engines);
             let segments = Arc::clone(&self.segments);
             let request_digest = request_digest.clone();
@@ -2039,6 +2070,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                     permissions,
                     Arc::clone(&redactor),
                     provider_continuation_store,
+                    browser_service,
                     request,
                     workspace_tools,
                     subagent_runner,
@@ -3673,6 +3705,7 @@ mod tests {
                 permissions: Arc::clone(&fixture.factory.permissions),
                 redactor: Arc::new(NoopRedactor),
                 provider_continuation_store: Some(continuation_store_cap),
+                browser_service: Arc::clone(&fixture.factory.browser_service),
                 workspace_tools: fixture.workspace_tools.clone(),
                 agent_tool_policy: AgentToolPolicy {
                     subagents: AgentUsePolicy::Allowed,

@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { type UseFormSetValue, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -239,7 +240,9 @@ export function ModelConfigDialog({
     const invalidJsonField = invalidGeminiJsonField(values)
     if (invalidJsonField) {
       setError('root', {
-        message: t('provider.errors.invalidJsonField', { field: invalidJsonField }),
+        message: t('provider.errors.invalidJsonField', {
+          field: invalidJsonField,
+        }),
       })
       return
     }
@@ -249,7 +252,9 @@ export function ModelConfigDialog({
       request.configId = profile.id
       request.setDefault = profile.isDefault
     }
-    request.modelOptions = {}
+    if (profile) {
+      request.modelOptions = {}
+    }
     if (values.providerId === 'openai') {
       try {
         const openaiResponses = openAiResponsesOptionsFromValues(values)
@@ -264,7 +269,10 @@ export function ModelConfigDialog({
       }
     }
     if (values.providerId === 'km') {
-      request.modelOptions = modelOptionsFromValues(values)
+      const modelOptions = modelOptionsFromValues(values)
+      if (profile || hasModelOptions(modelOptions)) {
+        request.modelOptions = modelOptions
+      }
     }
     if (displayName) {
       request.displayName = displayName
@@ -274,11 +282,11 @@ export function ModelConfigDialog({
     }
     try {
       const providerDefaults = providerDefaultsFromValues(values, supportedParameters)
+      if (providerPersistsProtocol(values.providerId)) {
+        request.protocol = values.protocol
+      }
       if (values.providerId === 'openai') {
         // OpenAI Responses request fields are typed model options, not provider defaults.
-      } else if (providerPersistsProtocol(values.providerId)) {
-        request.protocol = values.protocol
-        request.providerDefaults = providerDefaults
       } else if (hasProviderDefaults(providerDefaults)) {
         request.providerDefaults = providerDefaults
       }
@@ -294,7 +302,11 @@ export function ModelConfigDialog({
     }
     const apiKeyRequired = selectedProvider?.runtimeCapability.authScheme !== 'none'
     if (apiKeyRequired && !profile?.hasApiKey && !apiKey) {
-      setError('root', { message: t('provider.errors.apiKeyRequired') })
+      setError('root.apiKey', { message: t('provider.errors.apiKeyRequired') })
+      const apiKeyField = form.elements.namedItem('apiKey')
+      if (apiKeyField instanceof HTMLInputElement) {
+        apiKeyField.focus()
+      }
       return
     }
 
@@ -312,8 +324,8 @@ export function ModelConfigDialog({
 
   return (
     <Dialog onOpenChange={changeOpen} open={open}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(calc(100vw-2rem),36rem)] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[min(calc(100vw-2rem),36rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-border border-b px-6 py-5 pr-12">
           <DialogTitle>
             {profile ? t('models.configDialog.editTitle') : t('provider.createTitle')}
           </DialogTitle>
@@ -323,809 +335,890 @@ export function ModelConfigDialog({
         </DialogHeader>
 
         <form
-          className="grid gap-4"
+          className="flex min-h-0 flex-col overflow-hidden"
           ref={formRef}
           onSubmit={(event) => {
             const form = event.currentTarget
             void handleSubmit((values) => submit(values, form))(event)
           }}
         >
-          <label className="grid gap-1 text-sm" htmlFor="provider-display-name">
-            <span className="font-medium">{t('provider.profileName')}</span>
-            <Input id="provider-display-name" {...register('displayName')} />
-          </label>
-
-          <label className="grid gap-1 text-sm" htmlFor="provider-provider-id">
-            <span className="font-medium">{t('provider.provider')}</span>
-            <Select
-              id="provider-provider-id"
-              {...register('providerId', {
-                required: t('provider.errors.providerRequired'),
-                onChange: (event) => {
-                  const provider = providers.find(
-                    (candidate) => candidate.providerId === event.target.value,
-                  )
-                  const model = firstRunnableModel(provider)
-                  setValue('baseUrl', provider?.defaultBaseUrl ?? '')
-                  setValue('modelId', model?.modelId ?? '')
-                  setValue('protocol', defaultProtocolForModel(model))
-                  resetProviderOptionFields(setValue)
-                },
-              })}
-            >
-              {providers.map((provider) => (
-                <option key={provider.providerId} value={provider.providerId}>
-                  {provider.displayName}
-                </option>
-              ))}
-            </Select>
-          </label>
-
-          <label className="grid gap-1 text-sm" htmlFor="provider-model-id">
-            <span className="font-medium">{t('provider.model')}</span>
-            <Select
-              id="provider-model-id"
-              {...register('modelId', {
-                required: t('provider.errors.modelRequired'),
-                validate: (value) =>
-                  modelOptions.some(
-                    (model) => model.modelId === value && model.runtimeStatus.kind === 'runnable',
-                  ) || t('provider.errors.modelRequired'),
-                onChange: (event) => {
-                  const model = modelOptions.find(
-                    (candidate) => candidate.modelId === event.target.value,
-                  )
-                  setValue('protocol', defaultProtocolForModel(model))
-                },
-              })}
-            >
-              {!selectedModel ? <option hidden value="" /> : null}
-              {modelOptions.map((model) => (
-                <option
-                  disabled={model.runtimeStatus.kind !== 'runnable'}
-                  key={model.modelId}
-                  value={model.modelId}
-                >
-                  {model.displayName}
-                </option>
-              ))}
-            </Select>
-          </label>
-
-          {!isQwen && !isDeepSeek && protocolOptions.length > 1 ? (
-            <label className="grid gap-1 text-sm" htmlFor="provider-protocol">
-              <span className="font-medium">{t('provider.apiMode')}</span>
-              <Select id="provider-protocol" {...register('protocol')}>
-                {protocolOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {protocolLabel(option)}
+          <div className="grid min-h-0 gap-4 overflow-y-auto px-6 py-5">
+            <label className="grid gap-1 text-sm" htmlFor="provider-provider-id">
+              <span className="font-medium">{t('provider.provider')}</span>
+              <Select
+                id="provider-provider-id"
+                {...register('providerId', {
+                  required: t('provider.errors.providerRequired'),
+                  onChange: (event) => {
+                    const provider = providers.find(
+                      (candidate) => candidate.providerId === event.target.value,
+                    )
+                    const model = firstRunnableModel(provider)
+                    setValue('baseUrl', provider?.defaultBaseUrl ?? '')
+                    setValue('modelId', model?.modelId ?? '')
+                    setValue('protocol', defaultProtocolForModel(model))
+                    resetProviderOptionFields(setValue)
+                  },
+                })}
+              >
+                {providers.map((provider) => (
+                  <option key={provider.providerId} value={provider.providerId}>
+                    {provider.displayName}
                   </option>
                 ))}
               </Select>
             </label>
-          ) : null}
 
-          {isQwen ? (
-            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
-              <label className="grid gap-1" htmlFor="provider-protocol">
-                <span className="font-medium">{t('provider.apiMode')}</span>
-                <Select id="provider-protocol" {...register('protocol')}>
-                  <option value="responses">Responses</option>
-                  <option value="chat_completions">Chat Completions</option>
-                  <option value="messages">Messages</option>
-                  <option value="dashscope">DashScope</option>
-                </Select>
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" {...register('enableThinking')} />
-                <span>{t('provider.enableThinking')}</span>
-              </label>
-              <label className="grid gap-1" htmlFor="provider-thinking-budget">
-                <span className="font-medium">{t('provider.thinkingBudget')}</span>
-                <Input
-                  id="provider-thinking-budget"
-                  inputMode="numeric"
-                  {...register('thinkingBudget')}
+            <label className="grid gap-1 text-sm" htmlFor="provider-model-id">
+              <span className="font-medium">{t('provider.model')}</span>
+              <Select
+                id="provider-model-id"
+                {...register('modelId', {
+                  required: t('provider.errors.modelRequired'),
+                  validate: (value) =>
+                    modelOptions.some(
+                      (model) => model.modelId === value && model.runtimeStatus.kind === 'runnable',
+                    ) || t('provider.errors.modelRequired'),
+                  onChange: (event) => {
+                    const model = modelOptions.find(
+                      (candidate) => candidate.modelId === event.target.value,
+                    )
+                    setValue('protocol', defaultProtocolForModel(model))
+                  },
+                })}
+              >
+                {!selectedModel ? <option hidden value="" /> : null}
+                {modelOptions.map((model) => (
+                  <option
+                    disabled={model.runtimeStatus.kind !== 'runnable'}
+                    key={model.modelId}
+                    value={model.modelId}
+                  >
+                    {model.displayName}
+                  </option>
+                ))}
+              </Select>
+            </label>
+
+            <label className="grid gap-1 text-sm" htmlFor="provider-api-key">
+              <span className="font-medium">{t('provider.apiKey')}</span>
+              <Input
+                aria-describedby={
+                  errors.root?.apiKey?.message ? 'provider-api-key-error' : undefined
+                }
+                aria-invalid={errors.root?.apiKey?.message ? true : undefined}
+                aria-required={
+                  selectedProvider?.runtimeCapability.authScheme !== 'none' && !profile?.hasApiKey
+                }
+                id="provider-api-key"
+                placeholder={
+                  profile?.hasApiKey
+                    ? t('provider.apiKeyExistingPlaceholder')
+                    : t('provider.apiKeyPlaceholder')
+                }
+                type="password"
+                name="apiKey"
+              />
+              {errors.root?.apiKey?.message ? (
+                <span className="text-destructive text-sm" id="provider-api-key-error" role="alert">
+                  {errors.root.apiKey.message}
+                </span>
+              ) : null}
+            </label>
+
+            <details className="group rounded-md border border-border">
+              <summary className="flex cursor-pointer list-none items-start gap-3 rounded-md px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <ChevronRight
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
                 />
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" {...register('preserveThinking')} />
-                <span>{t('provider.preserveThinking')}</span>
-              </label>
-              <label className="grid gap-1" htmlFor="provider-reasoning-effort">
-                <span className="font-medium">{t('provider.reasoningEffort')}</span>
-                <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
-                  <option value="">{t('provider.default')}</option>
-                  <option value="none">None</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </Select>
-              </label>
-              <div className="grid gap-2">
-                <span className="font-medium">{t('provider.builtinTools')}</span>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('webSearch')} />
-                  <span>web_search</span>
+                <span className="grid gap-0.5 text-sm">
+                  <span className="font-medium">{t('provider.connectionOptions')}</span>
+                  <span className="text-muted-foreground">
+                    {t('provider.connectionOptionsDescription')}
+                  </span>
+                </span>
+              </summary>
+              <div className="grid gap-4 border-border border-t px-4 py-4">
+                <label className="grid gap-1 text-sm" htmlFor="provider-display-name">
+                  <span className="font-medium">{t('provider.profileName')}</span>
+                  <Input id="provider-display-name" {...register('displayName')} />
                 </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('codeInterpreter')} />
-                  <span>code_interpreter</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    disabled={!qwenChatWebExtractorEnabled}
-                    {...register('webExtractor')}
-                  />
-                  <span>web_extractor</span>
-                </label>
-              </div>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" {...register('sessionCache')} />
-                <span>{t('provider.sessionCache')}</span>
-              </label>
-            </div>
-          ) : null}
 
-          {isDeepSeek ? (
-            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
-              <label className="grid gap-1" htmlFor="provider-protocol">
-                <span className="font-medium">{t('provider.apiMode')}</span>
-                <Select
-                  id="provider-protocol"
-                  value={protocol}
-                  onChange={(event) => {
-                    const nextProtocol = event.currentTarget.value as ModelProtocol
-                    setValue('protocol', nextProtocol)
-                    setValue('baseUrl', deepseekBaseUrlForProtocol(nextProtocol))
-                  }}
-                >
-                  <option value="chat_completions">Chat Completions</option>
-                  <option value="messages">Anthropic Messages</option>
-                </Select>
-              </label>
-              <label className="grid gap-1" htmlFor="provider-thinking-mode">
-                <span className="font-medium">{t('provider.enableThinking')}</span>
-                <Select id="provider-thinking-mode" {...register('thinkingMode')}>
-                  <option value="">{t('provider.default')}</option>
-                  <option value="enabled">Enabled</option>
-                  <option value="disabled">Disabled</option>
-                </Select>
-              </label>
-              <label className="grid gap-1" htmlFor="provider-reasoning-effort">
-                <span className="font-medium">{t('provider.reasoningEffort')}</span>
-                <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
-                  <option value="">{t('provider.default')}</option>
-                  <option value="high">High</option>
-                  <option value="max">Max</option>
-                </Select>
-              </label>
-              {thinkingMode === 'disabled' ? (
-                <>
-                  <label className="grid gap-1" htmlFor="provider-top-p">
-                    <span className="font-medium">{t('provider.topP')}</span>
-                    <Input id="provider-top-p" inputMode="decimal" {...register('topP')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-stop-sequences">
-                    <span className="font-medium">{t('provider.stopSequences')}</span>
-                    <Input id="provider-stop-sequences" {...register('stopSequences')} />
-                  </label>
-                </>
-              ) : null}
-            </div>
-          ) : null}
+                <label className="grid gap-1 text-sm" htmlFor="provider-base-url">
+                  <span className="font-medium">{t('provider.baseUrl')}</span>
+                  <Input
+                    id="provider-base-url"
+                    placeholder={selectedProvider?.defaultBaseUrl}
+                    {...register('baseUrl')}
+                  />
+                </label>
 
-          {isOpenAI ? (
-            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
-              <span className="font-medium">OpenAI Responses options</span>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-1" htmlFor="provider-openai-reasoning-effort">
-                  <span className="font-medium">OpenAI reasoning effort</span>
-                  <Select
-                    id="provider-openai-reasoning-effort"
-                    {...register('openaiReasoningEffort')}
-                  >
-                    <option value="">{t('provider.default')}</option>
-                    <option value="minimal">minimal</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                  </Select>
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-reasoning-summary">
-                  <span className="font-medium">OpenAI reasoning summary</span>
-                  <Select
-                    id="provider-openai-reasoning-summary"
-                    {...register('openaiReasoningSummary')}
-                  >
-                    <option value="">{t('provider.default')}</option>
-                    <option value="auto">auto</option>
-                    <option value="concise">concise</option>
-                    <option value="detailed">detailed</option>
-                  </Select>
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-reasoning-context">
-                  <span className="font-medium">OpenAI reasoning context</span>
+                <label className="grid gap-1 text-sm" htmlFor="provider-official-quota-api-key">
+                  <span className="font-medium">{t('provider.officialQuotaApiKey')}</span>
                   <Input
-                    id="provider-openai-reasoning-context"
-                    {...register('openaiReasoningContext')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-text-verbosity">
-                  <span className="font-medium">OpenAI text verbosity</span>
-                  <Select id="provider-openai-text-verbosity" {...register('openaiTextVerbosity')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                  </Select>
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-service-tier">
-                  <span className="font-medium">OpenAI service tier</span>
-                  <Select id="provider-openai-service-tier" {...register('openaiServiceTier')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="auto">auto</option>
-                    <option value="default">default</option>
-                    <option value="flex">flex</option>
-                    <option value="priority">priority</option>
-                  </Select>
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-truncation">
-                  <span className="font-medium">OpenAI truncation</span>
-                  <Select id="provider-openai-truncation" {...register('openaiTruncation')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="auto">auto</option>
-                    <option value="disabled">disabled</option>
-                  </Select>
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-prompt-cache-key">
-                  <span className="font-medium">OpenAI prompt cache key</span>
-                  <Input
-                    id="provider-openai-prompt-cache-key"
-                    {...register('openaiPromptCacheKey')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-prompt-cache-retention">
-                  <span className="font-medium">OpenAI prompt cache retention</span>
-                  <Input
-                    id="provider-openai-prompt-cache-retention"
-                    {...register('openaiPromptCacheRetention')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-instructions">
-                  <span className="font-medium">OpenAI instructions</span>
-                  <Input id="provider-openai-instructions" {...register('openaiInstructions')} />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-include">
-                  <span className="font-medium">OpenAI include</span>
-                  <Input id="provider-openai-include" {...register('openaiInclude')} />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-max-tool-calls">
-                  <span className="font-medium">OpenAI max tool calls</span>
-                  <Input
-                    id="provider-openai-max-tool-calls"
-                    inputMode="numeric"
-                    {...register('openaiMaxToolCalls')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-top-logprobs">
-                  <span className="font-medium">OpenAI top logprobs</span>
-                  <Input
-                    id="provider-openai-top-logprobs"
-                    inputMode="numeric"
-                    {...register('openaiTopLogprobs')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-top-p">
-                  <span className="font-medium">OpenAI top P</span>
-                  <Input
-                    id="provider-openai-top-p"
-                    inputMode="decimal"
-                    {...register('openaiTopP')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-user">
-                  <span className="font-medium">OpenAI user</span>
-                  <Input id="provider-openai-user" {...register('openaiUser')} />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-safety-identifier">
-                  <span className="font-medium">OpenAI safety identifier</span>
-                  <Input
-                    id="provider-openai-safety-identifier"
-                    {...register('openaiSafetyIdentifier')}
+                    id="provider-official-quota-api-key"
+                    placeholder={
+                      profile?.hasOfficialQuotaApiKey
+                        ? t('provider.officialQuotaApiKeyExistingPlaceholder')
+                        : t('provider.officialQuotaApiKeyPlaceholder')
+                    }
+                    type="password"
+                    name="officialQuotaApiKey"
                   />
                 </label>
               </div>
-              <div className="grid gap-2">
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('openaiBackground')} />
-                  <span>OpenAI background mode</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('openaiStore')} />
-                  <span>OpenAI store response</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('openaiParallelToolCalls')} />
-                  <span>OpenAI parallel tool calls</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('openaiStrictToolSchemas')} />
-                  <span>OpenAI strict tool schemas</span>
-                </label>
-              </div>
-              <div className="grid gap-3">
-                <label className="grid gap-1" htmlFor="provider-openai-metadata-json">
-                  <span className="font-medium">OpenAI metadata JSON</span>
-                  <Input id="provider-openai-metadata-json" {...register('openaiMetadataJson')} />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-conversation-json">
-                  <span className="font-medium">OpenAI conversation JSON</span>
-                  <Input
-                    id="provider-openai-conversation-json"
-                    {...register('openaiConversationJson')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-prompt-json">
-                  <span className="font-medium">OpenAI prompt JSON</span>
-                  <Input id="provider-openai-prompt-json" {...register('openaiPromptJson')} />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-tool-choice-json">
-                  <span className="font-medium">OpenAI tool choice JSON</span>
-                  <Input
-                    id="provider-openai-tool-choice-json"
-                    {...register('openaiToolChoiceJson')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-text-format-json">
-                  <span className="font-medium">OpenAI text format JSON</span>
-                  <Input
-                    id="provider-openai-text-format-json"
-                    {...register('openaiTextFormatJson')}
-                  />
-                </label>
-                <label className="grid gap-1" htmlFor="provider-openai-advanced-json">
-                  <span className="font-medium">OpenAI advanced JSON</span>
-                  <Input id="provider-openai-advanced-json" {...register('openaiAdvancedJson')} />
-                </label>
-              </div>
-            </div>
-          ) : null}
+            </details>
 
-          {!isQwen && !isDeepSeek && !isOpenAI && supportedParameters.size > 0 ? (
-            <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
-              <span className="font-medium">{t('provider.providerOptions')}</span>
-              {isDoubao && supportedParameters.has('thinking') ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-type">
-                  <span className="font-medium">{t('provider.thinkingMode')}</span>
-                  <Select id="provider-thinking-type" {...register('thinkingType')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="enabled">Enabled</option>
-                    <option value="auto">Auto</option>
-                    <option value="disabled">Disabled</option>
-                  </Select>
-                </label>
-              ) : null}
-              {isZhipu && supportedParameters.has('thinking') ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-mode">
-                  <span className="font-medium">{t('provider.enableThinking')}</span>
-                  <Select id="provider-thinking-mode" {...register('thinkingMode')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="enabled">{t('provider.enabled')}</option>
-                    <option value="disabled">{t('provider.disabled')}</option>
-                  </Select>
-                </label>
-              ) : null}
-              {!isDoubao &&
-              !isZhipu &&
-              supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('enableThinking')} />
-                  <span>{t('provider.enableThinking')}</span>
-                </label>
-              ) : null}
-              {isZhipu && supportedParameters.has('thinking') ? (
-                <label className="grid gap-1" htmlFor="provider-clear-thinking">
-                  <span className="font-medium">{t('provider.clearThinking')}</span>
-                  <Select id="provider-clear-thinking" {...register('clearThinking')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="true">{t('provider.enabled')}</option>
-                    <option value="false">{t('provider.disabled')}</option>
-                  </Select>
-                </label>
-              ) : null}
-              {!isDoubao &&
-              !isZhipu &&
-              supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-budget">
-                  <span className="font-medium">{t('provider.thinkingBudget')}</span>
-                  <Input
-                    id="provider-thinking-budget"
-                    inputMode="numeric"
-                    {...register('thinkingBudget')}
-                  />
-                </label>
-              ) : null}
-              {supportedParameters.has('reasoning_effort') ? (
-                <label className="grid gap-1" htmlFor="provider-reasoning-effort">
-                  <span className="font-medium">{t('provider.reasoningEffort')}</span>
-                  <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="max">Max</option>
-                    <option value="xhigh">XHigh</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                    <option value="minimal">Minimal</option>
-                    <option value="none">None</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('do_sample') ? (
-                <label className="grid gap-1" htmlFor="provider-do-sample">
-                  <span className="font-medium">{t('provider.doSample')}</span>
-                  <Select id="provider-do-sample" {...register('doSample')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="true">{t('provider.enabled')}</option>
-                    <option value="false">{t('provider.disabled')}</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('tool_stream') ? (
-                <label className="grid gap-1" htmlFor="provider-tool-stream">
-                  <span className="font-medium">{t('provider.toolStream')}</span>
-                  <Select id="provider-tool-stream" {...register('toolStream')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="true">{t('provider.enabled')}</option>
-                    <option value="false">{t('provider.disabled')}</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('thinkingConfig') ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-level">
-                  <span className="font-medium">{t('provider.thinkingLevel')}</span>
-                  <Select id="provider-thinking-level" {...register('thinkingLevel')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="MINIMAL">Minimal</option>
-                    <option value="LOW">Low</option>
-                    <option value="MEDIUM">Medium</option>
-                    <option value="HIGH">High</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('output_config') ? (
-                <label className="grid gap-1" htmlFor="provider-output-effort">
-                  <span className="font-medium">{t('provider.outputEffort')}</span>
-                  <Select id="provider-output-effort" {...register('outputEffort')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    {isAnthropic ? <option value="xhigh">XHigh</option> : null}
-                    {isAnthropic ? <option value="max">Max</option> : null}
-                  </Select>
-                </label>
-              ) : null}
-              {isAnthropic ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-type">
-                  <span className="font-medium">Thinking type</span>
-                  <Select id="provider-thinking-type" {...register('thinkingType')}>
-                    <option value="">{t('provider.default')}</option>
-                    {(
-                      providerCapabilityMetadata?.thinkingModes ?? [
-                        'adaptive',
-                        'enabled',
-                        'disabled',
-                      ]
-                    ).map((mode) => (
-                      <option key={mode} value={mode}>
-                        {mode}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-              ) : null}
-              {isAnthropic ? (
-                <label className="grid gap-1" htmlFor="provider-thinking-display">
-                  <span className="font-medium">Thinking display</span>
-                  <Select id="provider-thinking-display" {...register('thinkingDisplay')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="summarized">summarized</option>
-                    <option value="omitted">omitted</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportsAny(supportedParameters, ['service_tier', 'serviceTier']) ? (
-                <label className="grid gap-1" htmlFor="provider-service-tier">
-                  <span className="font-medium">{t('provider.serviceTier')}</span>
-                  <Select id="provider-service-tier" {...register('serviceTier')}>
-                    <option value="">{t('provider.default')}</option>
-                    {selectedProvider?.providerId === 'gemini' ? (
-                      <>
-                        <option value="unspecified">Unspecified</option>
-                        <option value="standard">Standard</option>
-                        <option value="flex">Flex</option>
-                        <option value="priority">Priority</option>
-                      </>
-                    ) : (
-                      serviceTierOptions.map((tier) => (
-                        <option key={tier} value={tier}>
-                          {serviceTierLabel(tier)}
+            <details className="group rounded-md border border-border">
+              <summary className="flex cursor-pointer list-none items-start gap-3 rounded-md px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <ChevronRight
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+                />
+                <span className="grid gap-0.5 text-sm">
+                  <span className="font-medium">{t('provider.advancedSettings')}</span>
+                  <span className="text-muted-foreground">
+                    {t('provider.advancedSettingsDescription')}
+                  </span>
+                </span>
+              </summary>
+              <div className="grid gap-4 border-border border-t px-4 py-4">
+                {!isQwen && !isDeepSeek && protocolOptions.length > 1 ? (
+                  <label className="grid gap-1 text-sm" htmlFor="provider-protocol">
+                    <span className="font-medium">{t('provider.apiMode')}</span>
+                    <Select id="provider-protocol" {...register('protocol')}>
+                      {protocolOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {protocolLabel(option)}
                         </option>
-                      ))
-                    )}
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('temperature') ? (
-                <label className="grid gap-1" htmlFor="provider-temperature">
-                  <span className="font-medium">{t('provider.temperature')}</span>
-                  <Input
-                    id="provider-temperature"
-                    inputMode="decimal"
-                    {...register('temperature')}
-                  />
-                </label>
-              ) : null}
-              {selectedProvider?.providerId === 'km' && supportedParameters.has('tools') ? (
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('webSearch')} />
-                  <span>$web_search</span>
-                </label>
-              ) : null}
-              {supportedParameters.has('prompt_cache_key') ? (
-                <label className="grid gap-1" htmlFor="provider-prompt-cache-key">
-                  <span className="font-medium">{t('provider.promptCacheKey')}</span>
-                  <Input id="provider-prompt-cache-key" {...register('promptCacheKey')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('safety_identifier') ? (
-                <label className="grid gap-1" htmlFor="provider-safety-identifier">
-                  <span className="font-medium">{t('provider.safetyIdentifier')}</span>
-                  <Input id="provider-safety-identifier" {...register('safetyIdentifier')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('partial') ? (
-                <>
-                  <label className="grid gap-1" htmlFor="provider-kimi-partial-content">
-                    <span className="font-medium">{t('provider.kimiPartialContent')}</span>
-                    <Input id="provider-kimi-partial-content" {...register('kimiPartialContent')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-kimi-partial-name">
-                    <span className="font-medium">{t('provider.kimiPartialName')}</span>
-                    <Input id="provider-kimi-partial-name" {...register('kimiPartialName')} />
-                  </label>
-                </>
-              ) : null}
-              {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
-                <label className="grid gap-1" htmlFor="provider-top-p">
-                  <span className="font-medium">{t('provider.topP')}</span>
-                  <Input
-                    id="provider-top-p"
-                    disabled={anthropicSamplingLocked}
-                    inputMode="decimal"
-                    {...register('topP')}
-                  />
-                </label>
-              ) : null}
-              {supportedParameters.has('max_tokens') ? (
-                <label className="grid gap-1" htmlFor="provider-max-tokens">
-                  <span className="font-medium">{t('provider.maxTokens')}</span>
-                  <Input id="provider-max-tokens" inputMode="numeric" {...register('maxTokens')} />
-                </label>
-              ) : null}
-              {supportsAny(supportedParameters, ['top_k', 'topK']) ? (
-                <label className="grid gap-1" htmlFor="provider-top-k">
-                  <span className="font-medium">{t('provider.topK')}</span>
-                  <Input
-                    id="provider-top-k"
-                    disabled={anthropicSamplingLocked}
-                    inputMode="numeric"
-                    {...register('topK')}
-                  />
-                </label>
-              ) : null}
-              {supportedParameters.has('seed') ? (
-                <label className="grid gap-1" htmlFor="provider-seed">
-                  <span className="font-medium">{t('provider.seed')}</span>
-                  <Input id="provider-seed" inputMode="numeric" {...register('seed')} />
-                </label>
-              ) : null}
-              {supportsAny(supportedParameters, ['stop_sequences', 'stopSequences', 'stop']) ? (
-                <label className="grid gap-1" htmlFor="provider-stop-sequences">
-                  <span className="font-medium">{t('provider.stopSequences')}</span>
-                  <Input id="provider-stop-sequences" {...register('stopSequences')} />
-                </label>
-              ) : null}
-              {isAnthropic ? (
-                <>
-                  <label className="grid gap-1" htmlFor="provider-tool-choice">
-                    <span className="font-medium">Tool choice</span>
-                    <Select id="provider-tool-choice" {...register('toolChoice')}>
-                      <option value="">{t('provider.default')}</option>
-                      <option value="auto">auto</option>
-                      <option value="none">none</option>
-                      <option value="any">any</option>
-                      <option value="tool">tool</option>
+                      ))}
                     </Select>
                   </label>
-                  <label className="grid gap-1" htmlFor="provider-tool-name">
-                    <span className="font-medium">Tool name</span>
-                    <Input id="provider-tool-name" {...register('toolName')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-cache-ttl">
-                    <span className="font-medium">Cache TTL</span>
-                    <Select id="provider-cache-ttl" {...register('cacheTtl')}>
-                      <option value="">{t('provider.default')}</option>
-                      <option value="5m">5m</option>
-                      <option value="1h">1h</option>
-                    </Select>
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-anthropic-beta">
-                    <span className="font-medium">Anthropic beta</span>
-                    <Input id="provider-anthropic-beta" {...register('anthropicBeta')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-user-profile-id">
-                    <span className="font-medium">User profile ID</span>
-                    <Input id="provider-user-profile-id" {...register('anthropicUserProfileId')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-inference-geo">
-                    <span className="font-medium">Inference geo</span>
-                    <Input id="provider-inference-geo" {...register('inferenceGeo')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-speed">
-                    <span className="font-medium">Speed</span>
-                    <Input id="provider-speed" {...register('speed')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-metadata-json">
-                    <span className="font-medium">Metadata JSON</span>
-                    <Input id="provider-metadata-json" {...register('metadataJson')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-fallbacks-json">
-                    <span className="font-medium">Fallbacks JSON</span>
-                    <Input id="provider-fallbacks-json" {...register('fallbacksJson')} />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-context-management-json">
-                    <span className="font-medium">Context management JSON</span>
-                    <Input
-                      id="provider-context-management-json"
-                      {...register('contextManagementJson')}
-                    />
-                  </label>
-                  <label className="grid gap-1" htmlFor="provider-anthropic-advanced-json">
-                    <span className="font-medium">Advanced Anthropic JSON</span>
-                    <Input
-                      id="provider-anthropic-advanced-json"
-                      {...register('anthropicAdvancedJson')}
-                    />
-                  </label>
-                </>
-              ) : null}
-              {supportedParameters.has('response_format') ? (
-                <label className="grid gap-1" htmlFor="provider-response-format">
-                  <span className="font-medium">{t('provider.responseFormat')}</span>
-                  <Select id="provider-response-format" {...register('responseFormat')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="json_object">JSON object</option>
-                  </Select>
-                </label>
-              ) : null}
-              {supportedParameters.has('responseMimeType') ? (
-                <label className="grid gap-1" htmlFor="provider-response-mime-type">
-                  <span className="font-medium">{t('provider.responseMimeType')}</span>
-                  <Input id="provider-response-mime-type" {...register('responseMimeType')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('user_id') ? (
-                <label className="grid gap-1" htmlFor="provider-user-id">
-                  <span className="font-medium">{t('provider.userId')}</span>
-                  <Input id="provider-user-id" {...register('userId')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('responseJsonSchema') ? (
-                <label className="grid gap-1" htmlFor="provider-response-json-schema">
-                  <span className="font-medium">{t('provider.responseJsonSchema')}</span>
-                  <Textarea
-                    id="provider-response-json-schema"
-                    rows={3}
-                    {...register('responseJsonSchema')}
-                  />
-                </label>
-              ) : null}
-              {supportedParameters.has('toolConfig') ? (
-                <label className="grid gap-1" htmlFor="provider-tool-config">
-                  <span className="font-medium">{t('provider.toolConfig')}</span>
-                  <Textarea id="provider-tool-config" rows={3} {...register('toolConfig')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('safetySettings') ? (
-                <label className="grid gap-1" htmlFor="provider-safety-settings">
-                  <span className="font-medium">{t('provider.safetySettings')}</span>
-                  <Textarea
-                    id="provider-safety-settings"
-                    rows={3}
-                    {...register('safetySettings')}
-                  />
-                </label>
-              ) : null}
-              {supportedParameters.has('cachedContent') ? (
-                <label className="grid gap-1" htmlFor="provider-cached-content">
-                  <span className="font-medium">{t('provider.cachedContent')}</span>
-                  <Input id="provider-cached-content" {...register('cachedContent')} />
-                </label>
-              ) : null}
-              {supportedParameters.has('store') ? (
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" {...register('storeResponse')} />
-                  <span>{t('provider.storeResponse')}</span>
-                </label>
-              ) : null}
-              {supportedParameters.has('performanceConfig') ? (
-                <label className="grid gap-1" htmlFor="provider-performance-latency">
-                  <span className="font-medium">{t('provider.performanceLatency')}</span>
-                  <Select id="provider-performance-latency" {...register('performanceLatency')}>
-                    <option value="">{t('provider.default')}</option>
-                    <option value="standard">Standard</option>
-                    <option value="optimized">Optimized</option>
-                  </Select>
-                </label>
-              ) : null}
-              <label className="grid gap-1" htmlFor="provider-advanced-body-json">
-                <span className="font-medium">{t('provider.advancedBodyJson')}</span>
-                <textarea
-                  className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm tracking-normal outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-muted-foreground focus:border-ring/60 focus:ring-2 focus:ring-ring/10"
-                  id="provider-advanced-body-json"
-                  {...register('advancedBodyJson')}
-                />
-              </label>
-            </div>
-          ) : null}
+                ) : null}
 
-          <label className="grid gap-1 text-sm" htmlFor="provider-base-url">
-            <span className="font-medium">{t('provider.baseUrl')}</span>
-            <Input
-              id="provider-base-url"
-              placeholder={selectedProvider?.defaultBaseUrl}
-              {...register('baseUrl')}
-            />
-          </label>
+                {isQwen ? (
+                  <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+                    <label className="grid gap-1" htmlFor="provider-protocol">
+                      <span className="font-medium">{t('provider.apiMode')}</span>
+                      <Select id="provider-protocol" {...register('protocol')}>
+                        <option value="responses">Responses</option>
+                        <option value="chat_completions">Chat Completions</option>
+                        <option value="messages">Messages</option>
+                        <option value="dashscope">DashScope</option>
+                      </Select>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" {...register('enableThinking')} />
+                      <span>{t('provider.enableThinking')}</span>
+                    </label>
+                    <label className="grid gap-1" htmlFor="provider-thinking-budget">
+                      <span className="font-medium">{t('provider.thinkingBudget')}</span>
+                      <Input
+                        id="provider-thinking-budget"
+                        inputMode="numeric"
+                        {...register('thinkingBudget')}
+                      />
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" {...register('preserveThinking')} />
+                      <span>{t('provider.preserveThinking')}</span>
+                    </label>
+                    <label className="grid gap-1" htmlFor="provider-reasoning-effort">
+                      <span className="font-medium">{t('provider.reasoningEffort')}</span>
+                      <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
+                        <option value="">{t('provider.default')}</option>
+                        <option value="none">None</option>
+                        <option value="minimal">Minimal</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </Select>
+                    </label>
+                    <div className="grid gap-2">
+                      <span className="font-medium">{t('provider.builtinTools')}</span>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('webSearch')} />
+                        <span>web_search</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('codeInterpreter')} />
+                        <span>code_interpreter</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          disabled={!qwenChatWebExtractorEnabled}
+                          {...register('webExtractor')}
+                        />
+                        <span>web_extractor</span>
+                      </label>
+                    </div>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" {...register('sessionCache')} />
+                      <span>{t('provider.sessionCache')}</span>
+                    </label>
+                  </div>
+                ) : null}
 
-          <label className="grid gap-1 text-sm" htmlFor="provider-api-key">
-            <span className="font-medium">{t('provider.apiKey')}</span>
-            <Input
-              id="provider-api-key"
-              placeholder={
-                profile?.hasApiKey
-                  ? t('provider.apiKeyExistingPlaceholder')
-                  : t('provider.apiKeyPlaceholder')
-              }
-              type="password"
-              name="apiKey"
-            />
-          </label>
+                {isDeepSeek ? (
+                  <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+                    <label className="grid gap-1" htmlFor="provider-protocol">
+                      <span className="font-medium">{t('provider.apiMode')}</span>
+                      <Select
+                        id="provider-protocol"
+                        value={protocol}
+                        onChange={(event) => {
+                          const nextProtocol = event.currentTarget.value as ModelProtocol
+                          setValue('protocol', nextProtocol)
+                          setValue('baseUrl', deepseekBaseUrlForProtocol(nextProtocol))
+                        }}
+                      >
+                        <option value="chat_completions">Chat Completions</option>
+                        <option value="messages">Anthropic Messages</option>
+                      </Select>
+                    </label>
+                    <label className="grid gap-1" htmlFor="provider-thinking-mode">
+                      <span className="font-medium">{t('provider.enableThinking')}</span>
+                      <Select id="provider-thinking-mode" {...register('thinkingMode')}>
+                        <option value="">{t('provider.default')}</option>
+                        <option value="enabled">Enabled</option>
+                        <option value="disabled">Disabled</option>
+                      </Select>
+                    </label>
+                    <label className="grid gap-1" htmlFor="provider-reasoning-effort">
+                      <span className="font-medium">{t('provider.reasoningEffort')}</span>
+                      <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
+                        <option value="">{t('provider.default')}</option>
+                        <option value="high">High</option>
+                        <option value="max">Max</option>
+                      </Select>
+                    </label>
+                    {thinkingMode === 'disabled' ? (
+                      <>
+                        <label className="grid gap-1" htmlFor="provider-top-p">
+                          <span className="font-medium">{t('provider.topP')}</span>
+                          <Input id="provider-top-p" inputMode="decimal" {...register('topP')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-stop-sequences">
+                          <span className="font-medium">{t('provider.stopSequences')}</span>
+                          <Input id="provider-stop-sequences" {...register('stopSequences')} />
+                        </label>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
 
-          <label className="grid gap-1 text-sm" htmlFor="provider-official-quota-api-key">
-            <span className="font-medium">{t('provider.officialQuotaApiKey')}</span>
-            <Input
-              id="provider-official-quota-api-key"
-              placeholder={
-                profile?.hasOfficialQuotaApiKey
-                  ? t('provider.officialQuotaApiKeyExistingPlaceholder')
-                  : t('provider.officialQuotaApiKeyPlaceholder')
-              }
-              type="password"
-              name="officialQuotaApiKey"
-            />
-          </label>
+                {isOpenAI ? (
+                  <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+                    <span className="font-medium">OpenAI Responses options</span>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1" htmlFor="provider-openai-reasoning-effort">
+                        <span className="font-medium">OpenAI reasoning effort</span>
+                        <Select
+                          id="provider-openai-reasoning-effort"
+                          {...register('openaiReasoningEffort')}
+                        >
+                          <option value="">{t('provider.default')}</option>
+                          <option value="minimal">minimal</option>
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                        </Select>
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-reasoning-summary">
+                        <span className="font-medium">OpenAI reasoning summary</span>
+                        <Select
+                          id="provider-openai-reasoning-summary"
+                          {...register('openaiReasoningSummary')}
+                        >
+                          <option value="">{t('provider.default')}</option>
+                          <option value="auto">auto</option>
+                          <option value="concise">concise</option>
+                          <option value="detailed">detailed</option>
+                        </Select>
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-reasoning-context">
+                        <span className="font-medium">OpenAI reasoning context</span>
+                        <Input
+                          id="provider-openai-reasoning-context"
+                          {...register('openaiReasoningContext')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-text-verbosity">
+                        <span className="font-medium">OpenAI text verbosity</span>
+                        <Select
+                          id="provider-openai-text-verbosity"
+                          {...register('openaiTextVerbosity')}
+                        >
+                          <option value="">{t('provider.default')}</option>
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                        </Select>
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-service-tier">
+                        <span className="font-medium">OpenAI service tier</span>
+                        <Select
+                          id="provider-openai-service-tier"
+                          {...register('openaiServiceTier')}
+                        >
+                          <option value="">{t('provider.default')}</option>
+                          <option value="auto">auto</option>
+                          <option value="default">default</option>
+                          <option value="flex">flex</option>
+                          <option value="priority">priority</option>
+                        </Select>
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-truncation">
+                        <span className="font-medium">OpenAI truncation</span>
+                        <Select id="provider-openai-truncation" {...register('openaiTruncation')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="auto">auto</option>
+                          <option value="disabled">disabled</option>
+                        </Select>
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-prompt-cache-key">
+                        <span className="font-medium">OpenAI prompt cache key</span>
+                        <Input
+                          id="provider-openai-prompt-cache-key"
+                          {...register('openaiPromptCacheKey')}
+                        />
+                      </label>
+                      <label
+                        className="grid gap-1"
+                        htmlFor="provider-openai-prompt-cache-retention"
+                      >
+                        <span className="font-medium">OpenAI prompt cache retention</span>
+                        <Input
+                          id="provider-openai-prompt-cache-retention"
+                          {...register('openaiPromptCacheRetention')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-instructions">
+                        <span className="font-medium">OpenAI instructions</span>
+                        <Input
+                          id="provider-openai-instructions"
+                          {...register('openaiInstructions')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-include">
+                        <span className="font-medium">OpenAI include</span>
+                        <Input id="provider-openai-include" {...register('openaiInclude')} />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-max-tool-calls">
+                        <span className="font-medium">OpenAI max tool calls</span>
+                        <Input
+                          id="provider-openai-max-tool-calls"
+                          inputMode="numeric"
+                          {...register('openaiMaxToolCalls')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-top-logprobs">
+                        <span className="font-medium">OpenAI top logprobs</span>
+                        <Input
+                          id="provider-openai-top-logprobs"
+                          inputMode="numeric"
+                          {...register('openaiTopLogprobs')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-top-p">
+                        <span className="font-medium">OpenAI top P</span>
+                        <Input
+                          id="provider-openai-top-p"
+                          inputMode="decimal"
+                          {...register('openaiTopP')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-user">
+                        <span className="font-medium">OpenAI user</span>
+                        <Input id="provider-openai-user" {...register('openaiUser')} />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-safety-identifier">
+                        <span className="font-medium">OpenAI safety identifier</span>
+                        <Input
+                          id="provider-openai-safety-identifier"
+                          {...register('openaiSafetyIdentifier')}
+                        />
+                      </label>
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('openaiBackground')} />
+                        <span>OpenAI background mode</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('openaiStore')} />
+                        <span>OpenAI store response</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('openaiParallelToolCalls')} />
+                        <span>OpenAI parallel tool calls</span>
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('openaiStrictToolSchemas')} />
+                        <span>OpenAI strict tool schemas</span>
+                      </label>
+                    </div>
+                    <div className="grid gap-3">
+                      <label className="grid gap-1" htmlFor="provider-openai-metadata-json">
+                        <span className="font-medium">OpenAI metadata JSON</span>
+                        <Input
+                          id="provider-openai-metadata-json"
+                          {...register('openaiMetadataJson')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-conversation-json">
+                        <span className="font-medium">OpenAI conversation JSON</span>
+                        <Input
+                          id="provider-openai-conversation-json"
+                          {...register('openaiConversationJson')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-prompt-json">
+                        <span className="font-medium">OpenAI prompt JSON</span>
+                        <Input id="provider-openai-prompt-json" {...register('openaiPromptJson')} />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-tool-choice-json">
+                        <span className="font-medium">OpenAI tool choice JSON</span>
+                        <Input
+                          id="provider-openai-tool-choice-json"
+                          {...register('openaiToolChoiceJson')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-text-format-json">
+                        <span className="font-medium">OpenAI text format JSON</span>
+                        <Input
+                          id="provider-openai-text-format-json"
+                          {...register('openaiTextFormatJson')}
+                        />
+                      </label>
+                      <label className="grid gap-1" htmlFor="provider-openai-advanced-json">
+                        <span className="font-medium">OpenAI advanced JSON</span>
+                        <Input
+                          id="provider-openai-advanced-json"
+                          {...register('openaiAdvancedJson')}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
 
-          {errors.root?.message ? (
-            <p className="text-destructive text-sm" role="alert">
-              {errors.root.message}
-            </p>
-          ) : null}
+                {!isQwen && !isDeepSeek && !isOpenAI && supportedParameters.size > 0 ? (
+                  <div className="grid gap-3 rounded-sm border border-border p-3 text-sm">
+                    <span className="font-medium">{t('provider.providerOptions')}</span>
+                    {isDoubao && supportedParameters.has('thinking') ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-type">
+                        <span className="font-medium">{t('provider.thinkingMode')}</span>
+                        <Select id="provider-thinking-type" {...register('thinkingType')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="enabled">Enabled</option>
+                          <option value="auto">Auto</option>
+                          <option value="disabled">Disabled</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {isZhipu && supportedParameters.has('thinking') ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-mode">
+                        <span className="font-medium">{t('provider.enableThinking')}</span>
+                        <Select id="provider-thinking-mode" {...register('thinkingMode')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="enabled">{t('provider.enabled')}</option>
+                          <option value="disabled">{t('provider.disabled')}</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {!isDoubao &&
+                    !isZhipu &&
+                    supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('enableThinking')} />
+                        <span>{t('provider.enableThinking')}</span>
+                      </label>
+                    ) : null}
+                    {isZhipu && supportedParameters.has('thinking') ? (
+                      <label className="grid gap-1" htmlFor="provider-clear-thinking">
+                        <span className="font-medium">{t('provider.clearThinking')}</span>
+                        <Select id="provider-clear-thinking" {...register('clearThinking')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="true">{t('provider.enabled')}</option>
+                          <option value="false">{t('provider.disabled')}</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {!isDoubao &&
+                    !isZhipu &&
+                    supportsAny(supportedParameters, ['thinking', 'thinkingConfig']) ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-budget">
+                        <span className="font-medium">{t('provider.thinkingBudget')}</span>
+                        <Input
+                          id="provider-thinking-budget"
+                          inputMode="numeric"
+                          {...register('thinkingBudget')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('reasoning_effort') ? (
+                      <label className="grid gap-1" htmlFor="provider-reasoning-effort">
+                        <span className="font-medium">{t('provider.reasoningEffort')}</span>
+                        <Select id="provider-reasoning-effort" {...register('reasoningEffort')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="max">Max</option>
+                          <option value="xhigh">XHigh</option>
+                          <option value="high">High</option>
+                          <option value="medium">Medium</option>
+                          <option value="low">Low</option>
+                          <option value="minimal">Minimal</option>
+                          <option value="none">None</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('do_sample') ? (
+                      <label className="grid gap-1" htmlFor="provider-do-sample">
+                        <span className="font-medium">{t('provider.doSample')}</span>
+                        <Select id="provider-do-sample" {...register('doSample')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="true">{t('provider.enabled')}</option>
+                          <option value="false">{t('provider.disabled')}</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('tool_stream') ? (
+                      <label className="grid gap-1" htmlFor="provider-tool-stream">
+                        <span className="font-medium">{t('provider.toolStream')}</span>
+                        <Select id="provider-tool-stream" {...register('toolStream')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="true">{t('provider.enabled')}</option>
+                          <option value="false">{t('provider.disabled')}</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('thinkingConfig') ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-level">
+                        <span className="font-medium">{t('provider.thinkingLevel')}</span>
+                        <Select id="provider-thinking-level" {...register('thinkingLevel')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="MINIMAL">Minimal</option>
+                          <option value="LOW">Low</option>
+                          <option value="MEDIUM">Medium</option>
+                          <option value="HIGH">High</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('output_config') ? (
+                      <label className="grid gap-1" htmlFor="provider-output-effort">
+                        <span className="font-medium">{t('provider.outputEffort')}</span>
+                        <Select id="provider-output-effort" {...register('outputEffort')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          {isAnthropic ? <option value="xhigh">XHigh</option> : null}
+                          {isAnthropic ? <option value="max">Max</option> : null}
+                        </Select>
+                      </label>
+                    ) : null}
+                    {isAnthropic ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-type">
+                        <span className="font-medium">Thinking type</span>
+                        <Select id="provider-thinking-type" {...register('thinkingType')}>
+                          <option value="">{t('provider.default')}</option>
+                          {(
+                            providerCapabilityMetadata?.thinkingModes ?? [
+                              'adaptive',
+                              'enabled',
+                              'disabled',
+                            ]
+                          ).map((mode) => (
+                            <option key={mode} value={mode}>
+                              {mode}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                    ) : null}
+                    {isAnthropic ? (
+                      <label className="grid gap-1" htmlFor="provider-thinking-display">
+                        <span className="font-medium">Thinking display</span>
+                        <Select id="provider-thinking-display" {...register('thinkingDisplay')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="summarized">summarized</option>
+                          <option value="omitted">omitted</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportsAny(supportedParameters, ['service_tier', 'serviceTier']) ? (
+                      <label className="grid gap-1" htmlFor="provider-service-tier">
+                        <span className="font-medium">{t('provider.serviceTier')}</span>
+                        <Select id="provider-service-tier" {...register('serviceTier')}>
+                          <option value="">{t('provider.default')}</option>
+                          {selectedProvider?.providerId === 'gemini' ? (
+                            <>
+                              <option value="unspecified">Unspecified</option>
+                              <option value="standard">Standard</option>
+                              <option value="flex">Flex</option>
+                              <option value="priority">Priority</option>
+                            </>
+                          ) : (
+                            serviceTierOptions.map((tier) => (
+                              <option key={tier} value={tier}>
+                                {serviceTierLabel(tier)}
+                              </option>
+                            ))
+                          )}
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('temperature') ? (
+                      <label className="grid gap-1" htmlFor="provider-temperature">
+                        <span className="font-medium">{t('provider.temperature')}</span>
+                        <Input
+                          id="provider-temperature"
+                          inputMode="decimal"
+                          {...register('temperature')}
+                        />
+                      </label>
+                    ) : null}
+                    {selectedProvider?.providerId === 'km' && supportedParameters.has('tools') ? (
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('webSearch')} />
+                        <span>$web_search</span>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('prompt_cache_key') ? (
+                      <label className="grid gap-1" htmlFor="provider-prompt-cache-key">
+                        <span className="font-medium">{t('provider.promptCacheKey')}</span>
+                        <Input id="provider-prompt-cache-key" {...register('promptCacheKey')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('safety_identifier') ? (
+                      <label className="grid gap-1" htmlFor="provider-safety-identifier">
+                        <span className="font-medium">{t('provider.safetyIdentifier')}</span>
+                        <Input id="provider-safety-identifier" {...register('safetyIdentifier')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('partial') ? (
+                      <>
+                        <label className="grid gap-1" htmlFor="provider-kimi-partial-content">
+                          <span className="font-medium">{t('provider.kimiPartialContent')}</span>
+                          <Input
+                            id="provider-kimi-partial-content"
+                            {...register('kimiPartialContent')}
+                          />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-kimi-partial-name">
+                          <span className="font-medium">{t('provider.kimiPartialName')}</span>
+                          <Input id="provider-kimi-partial-name" {...register('kimiPartialName')} />
+                        </label>
+                      </>
+                    ) : null}
+                    {supportsAny(supportedParameters, ['top_p', 'topP']) ? (
+                      <label className="grid gap-1" htmlFor="provider-top-p">
+                        <span className="font-medium">{t('provider.topP')}</span>
+                        <Input
+                          id="provider-top-p"
+                          disabled={anthropicSamplingLocked}
+                          inputMode="decimal"
+                          {...register('topP')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('max_tokens') ? (
+                      <label className="grid gap-1" htmlFor="provider-max-tokens">
+                        <span className="font-medium">{t('provider.maxTokens')}</span>
+                        <Input
+                          id="provider-max-tokens"
+                          inputMode="numeric"
+                          {...register('maxTokens')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportsAny(supportedParameters, ['top_k', 'topK']) ? (
+                      <label className="grid gap-1" htmlFor="provider-top-k">
+                        <span className="font-medium">{t('provider.topK')}</span>
+                        <Input
+                          id="provider-top-k"
+                          disabled={anthropicSamplingLocked}
+                          inputMode="numeric"
+                          {...register('topK')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('seed') ? (
+                      <label className="grid gap-1" htmlFor="provider-seed">
+                        <span className="font-medium">{t('provider.seed')}</span>
+                        <Input id="provider-seed" inputMode="numeric" {...register('seed')} />
+                      </label>
+                    ) : null}
+                    {supportsAny(supportedParameters, [
+                      'stop_sequences',
+                      'stopSequences',
+                      'stop',
+                    ]) ? (
+                      <label className="grid gap-1" htmlFor="provider-stop-sequences">
+                        <span className="font-medium">{t('provider.stopSequences')}</span>
+                        <Input id="provider-stop-sequences" {...register('stopSequences')} />
+                      </label>
+                    ) : null}
+                    {isAnthropic ? (
+                      <>
+                        <label className="grid gap-1" htmlFor="provider-tool-choice">
+                          <span className="font-medium">Tool choice</span>
+                          <Select id="provider-tool-choice" {...register('toolChoice')}>
+                            <option value="">{t('provider.default')}</option>
+                            <option value="auto">auto</option>
+                            <option value="none">none</option>
+                            <option value="any">any</option>
+                            <option value="tool">tool</option>
+                          </Select>
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-tool-name">
+                          <span className="font-medium">Tool name</span>
+                          <Input id="provider-tool-name" {...register('toolName')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-cache-ttl">
+                          <span className="font-medium">Cache TTL</span>
+                          <Select id="provider-cache-ttl" {...register('cacheTtl')}>
+                            <option value="">{t('provider.default')}</option>
+                            <option value="5m">5m</option>
+                            <option value="1h">1h</option>
+                          </Select>
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-anthropic-beta">
+                          <span className="font-medium">Anthropic beta</span>
+                          <Input id="provider-anthropic-beta" {...register('anthropicBeta')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-user-profile-id">
+                          <span className="font-medium">User profile ID</span>
+                          <Input
+                            id="provider-user-profile-id"
+                            {...register('anthropicUserProfileId')}
+                          />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-inference-geo">
+                          <span className="font-medium">Inference geo</span>
+                          <Input id="provider-inference-geo" {...register('inferenceGeo')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-speed">
+                          <span className="font-medium">Speed</span>
+                          <Input id="provider-speed" {...register('speed')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-metadata-json">
+                          <span className="font-medium">Metadata JSON</span>
+                          <Input id="provider-metadata-json" {...register('metadataJson')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-fallbacks-json">
+                          <span className="font-medium">Fallbacks JSON</span>
+                          <Input id="provider-fallbacks-json" {...register('fallbacksJson')} />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-context-management-json">
+                          <span className="font-medium">Context management JSON</span>
+                          <Input
+                            id="provider-context-management-json"
+                            {...register('contextManagementJson')}
+                          />
+                        </label>
+                        <label className="grid gap-1" htmlFor="provider-anthropic-advanced-json">
+                          <span className="font-medium">Advanced Anthropic JSON</span>
+                          <Input
+                            id="provider-anthropic-advanced-json"
+                            {...register('anthropicAdvancedJson')}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                    {supportedParameters.has('response_format') ? (
+                      <label className="grid gap-1" htmlFor="provider-response-format">
+                        <span className="font-medium">{t('provider.responseFormat')}</span>
+                        <Select id="provider-response-format" {...register('responseFormat')}>
+                          <option value="">{t('provider.default')}</option>
+                          <option value="json_object">JSON object</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('responseMimeType') ? (
+                      <label className="grid gap-1" htmlFor="provider-response-mime-type">
+                        <span className="font-medium">{t('provider.responseMimeType')}</span>
+                        <Input id="provider-response-mime-type" {...register('responseMimeType')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('user_id') ? (
+                      <label className="grid gap-1" htmlFor="provider-user-id">
+                        <span className="font-medium">{t('provider.userId')}</span>
+                        <Input id="provider-user-id" {...register('userId')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('responseJsonSchema') ? (
+                      <label className="grid gap-1" htmlFor="provider-response-json-schema">
+                        <span className="font-medium">{t('provider.responseJsonSchema')}</span>
+                        <Textarea
+                          id="provider-response-json-schema"
+                          rows={3}
+                          {...register('responseJsonSchema')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('toolConfig') ? (
+                      <label className="grid gap-1" htmlFor="provider-tool-config">
+                        <span className="font-medium">{t('provider.toolConfig')}</span>
+                        <Textarea id="provider-tool-config" rows={3} {...register('toolConfig')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('safetySettings') ? (
+                      <label className="grid gap-1" htmlFor="provider-safety-settings">
+                        <span className="font-medium">{t('provider.safetySettings')}</span>
+                        <Textarea
+                          id="provider-safety-settings"
+                          rows={3}
+                          {...register('safetySettings')}
+                        />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('cachedContent') ? (
+                      <label className="grid gap-1" htmlFor="provider-cached-content">
+                        <span className="font-medium">{t('provider.cachedContent')}</span>
+                        <Input id="provider-cached-content" {...register('cachedContent')} />
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('store') ? (
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" {...register('storeResponse')} />
+                        <span>{t('provider.storeResponse')}</span>
+                      </label>
+                    ) : null}
+                    {supportedParameters.has('performanceConfig') ? (
+                      <label className="grid gap-1" htmlFor="provider-performance-latency">
+                        <span className="font-medium">{t('provider.performanceLatency')}</span>
+                        <Select
+                          id="provider-performance-latency"
+                          {...register('performanceLatency')}
+                        >
+                          <option value="">{t('provider.default')}</option>
+                          <option value="standard">Standard</option>
+                          <option value="optimized">Optimized</option>
+                        </Select>
+                      </label>
+                    ) : null}
+                    <label className="grid gap-1" htmlFor="provider-advanced-body-json">
+                      <span className="font-medium">{t('provider.advancedBodyJson')}</span>
+                      <textarea
+                        className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm tracking-normal outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-muted-foreground focus:border-ring/60 focus:ring-2 focus:ring-ring/10"
+                        id="provider-advanced-body-json"
+                        {...register('advancedBodyJson')}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+            </details>
 
-          <DialogFooter>
+            {errors.root?.message ? (
+              <p className="text-destructive text-sm" role="alert">
+                {errors.root.message}
+              </p>
+            ) : null}
+          </div>
+
+          <DialogFooter className="border-border border-t px-6 py-4">
             <Button
               disabled={isSubmitting}
               type="button"
@@ -1543,6 +1636,10 @@ function openAiResponsesOptionsFromValues(values: ModelConfigFormValues): OpenAi
 
 function hasOpenAiResponsesOptions(options: OpenAiResponsesOptions): boolean {
   return Object.keys(options).length > 0
+}
+
+function hasModelOptions(options: ProviderSettingsRequest['modelOptions']): boolean {
+  return Object.keys(options ?? {}).length > 0
 }
 
 function providerDefaultsFromValues(

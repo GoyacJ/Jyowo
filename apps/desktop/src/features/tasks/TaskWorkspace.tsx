@@ -415,7 +415,11 @@ export function TaskWorkspaceView({
         />
         {showWorkbench && client?.loadTaskEvents && client.readBlob ? (
           <TaskWorkbench
-            client={{ loadTaskEvents: client.loadTaskEvents, readBlob: client.readBlob }}
+            client={{
+              loadTaskEvents: client.loadTaskEvents,
+              readBlob: client.readBlob,
+              request: client.request,
+            }}
             events={events}
             projection={liveSnapshot.projection}
             onClosed={() => {

@@ -567,13 +567,24 @@ fn launch_sidecar(app: &AppHandle, paths: &DaemonPaths) -> Result<(), String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let global_config_dir = daemon_global_config_dir(&home)?;
-    let command = app
+    let mut command = app
         .shell()
         .sidecar(DAEMON_SIDECAR_NAME)
         .map_err(|error| error.to_string())?
         .env("JYOWO_DAEMON_RUNTIME_DIR", &paths.runtime_root)
         .env("JYOWO_USER_INSTANCE_ID", &paths.user_instance_id)
         .env("JYOWO_CONFIG_DIR", global_config_dir);
+    if let Some(browser_runtime) = browser_runtime_environment(app)? {
+        if let Some(runtime_dir) = browser_runtime.runtime_dir {
+            command = command.env("JYOWO_BROWSER_RUNTIME_DIR", runtime_dir);
+        }
+        if let Some(node) = browser_runtime.node {
+            command = command.env("JYOWO_BROWSER_NODE", node);
+        }
+        if let Some(script) = browser_runtime.script {
+            command = command.env("JYOWO_BROWSER_RUNTIME_SCRIPT", script);
+        }
+    }
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn(async move {
         let _child_guard = child;
@@ -584,6 +595,54 @@ fn launch_sidecar(app: &AppHandle, paths: &DaemonPaths) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+struct BrowserRuntimeEnvironment {
+    runtime_dir: Option<PathBuf>,
+    node: Option<PathBuf>,
+    script: Option<PathBuf>,
+}
+
+fn browser_runtime_environment(
+    app: &AppHandle,
+) -> Result<Option<BrowserRuntimeEnvironment>, String> {
+    if let Some(runtime_dir) = std::env::var_os("JYOWO_BROWSER_RUNTIME_DIR").map(PathBuf::from) {
+        if runtime_dir.join("runtime-manifest.json").is_file() {
+            return Ok(Some(BrowserRuntimeEnvironment {
+                runtime_dir: Some(runtime_dir),
+                node: std::env::var_os("JYOWO_BROWSER_NODE").map(PathBuf::from),
+                script: std::env::var_os("JYOWO_BROWSER_RUNTIME_SCRIPT").map(PathBuf::from),
+            }));
+        }
+    }
+
+    let packaged = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?
+        .join("browser-runtime");
+    if packaged.join("runtime-manifest.json").is_file() {
+        return Ok(Some(BrowserRuntimeEnvironment {
+            runtime_dir: Some(packaged),
+            node: None,
+            script: None,
+        }));
+    }
+
+    let development = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser-runtime");
+    let script = development.join("src/runtime.mjs");
+    if script.is_file() {
+        return Ok(Some(BrowserRuntimeEnvironment {
+            runtime_dir: None,
+            node: Some(
+                std::env::var_os("JYOWO_BROWSER_NODE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("node")),
+            ),
+            script: Some(script),
+        }));
+    }
+    Ok(None)
 }
 
 fn daemon_global_config_dir(home: &Path) -> Result<PathBuf, String> {

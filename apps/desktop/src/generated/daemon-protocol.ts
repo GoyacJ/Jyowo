@@ -247,6 +247,11 @@ export type ClientRequest =
       workspaceRoot?: string | null
     }
   | {
+      command: BrowserCommand
+      taskId: TypedUlid
+      type: 'browser'
+    }
+  | {
       base64Data: string
       mediaType: string
       taskId: TypedUlid
@@ -492,6 +497,24 @@ export type WorkspaceAccess =
 export type AutomationWorkspaceScope = 'current_workspace'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "BrowserCommand".
+ */
+export type BrowserCommand =
+  | {
+      type: 'open'
+      url?: string | null
+    }
+  | {
+      type: 'status'
+    }
+  | {
+      type: 'close'
+    }
+  | {
+      type: 'show'
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ServerMessage".
  */
 export type ServerMessage =
@@ -650,6 +673,15 @@ export type ServerMessage =
   | {
       runs: AutomationRunRecord[]
       type: 'automation_runs'
+    }
+  | {
+      currentUrl?: string | null
+      dashboardUrl?: string | null
+      status: BrowserSessionStatus
+      taskId: TypedUlid
+      title?: string | null
+      type: 'browser_session'
+      unavailableReason?: string | null
     }
   | {
       afterOffset: number
@@ -1027,6 +1059,11 @@ export type MemoryProviderTrust = 'built_in' | 'workspace' | 'team' | 'plugin' |
  * via the `definition` "AutomationRunStatus".
  */
 export type AutomationRunStatus = 'started' | 'rejected' | 'failed'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "BrowserSessionStatus".
+ */
+export type BrowserSessionStatus = 'unavailable' | 'starting' | 'ready' | 'stopped' | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ProtocolErrorCode".

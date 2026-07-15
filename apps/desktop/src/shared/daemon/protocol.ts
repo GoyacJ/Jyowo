@@ -3,7 +3,7 @@ import addFormats from 'ajv-formats'
 import type { ClientFrame, ServerFrame } from '@/generated/daemon-protocol'
 import schema from '@/generated/daemon-protocol.schema.json'
 
-export const DAEMON_PROTOCOL_VERSION = 3
+export const DAEMON_PROTOCOL_VERSION = 4
 
 const ajv = new Ajv2020({
   allErrors: true,

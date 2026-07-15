@@ -304,7 +304,7 @@ describe('useTaskEvents', () => {
 function eventBatch(events: ReturnType<typeof event>[], afterOffset: number, latestOffset: number) {
   return {
     requestId: null,
-    protocolVersion: 3,
+    protocolVersion: 4,
     message: { afterOffset, events, gap: false, latestOffset, type: 'event_batch' as const },
   }
 }
@@ -312,7 +312,7 @@ function eventBatch(events: ReturnType<typeof event>[], afterOffset: number, lat
 function gapBatch(afterOffset: number, latestOffset: number) {
   return {
     requestId: null,
-    protocolVersion: 3,
+    protocolVersion: 4,
     message: { afterOffset, events: [], gap: true, latestOffset, type: 'event_batch' as const },
   }
 }
@@ -350,7 +350,7 @@ function snapshot(offset: number, title: string): TaskSnapshot {
 function taskListFrame() {
   return {
     requestId: null,
-    protocolVersion: 3,
+    protocolVersion: 4,
     message: { type: 'task_list' as const, tasks: [] },
   }
 }

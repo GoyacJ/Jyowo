@@ -21,7 +21,7 @@ use crate::{
     UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -187,6 +187,10 @@ pub enum ClientRequest {
         workspace_root: Option<String>,
         automation_id: Option<String>,
     },
+    Browser {
+        task_id: TaskId,
+        command: BrowserCommand,
+    },
     StageBlob(StageBlobCommand),
     ReadBlob {
         blob_id: BlobId,
@@ -240,9 +244,44 @@ pub enum ServerMessage {
     AutomationDeleted(AutomationDeletedResponse),
     AutomationRun(AutomationRunResponse),
     AutomationRuns(AutomationRunsResponse),
+    BrowserSession(BrowserSessionState),
     EventBatch(TaskEventBatch),
     Blob(BlobPayload),
     Error(ProtocolError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum BrowserCommand {
+    Open { url: Option<String> },
+    Status,
+    Close,
+    Show,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSessionStatus {
+    Unavailable,
+    Starting,
+    Ready,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserSessionState {
+    pub task_id: TaskId,
+    pub status: BrowserSessionStatus,
+    pub dashboard_url: Option<String>,
+    pub current_url: Option<String>,
+    pub title: Option<String>,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

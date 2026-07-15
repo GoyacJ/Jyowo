@@ -82,6 +82,7 @@ fn default_builtin_toolset_name_snapshot_is_stable() {
         "Artifact",
         "Automation",
         "Bash",
+        "BrowserDevTools",
         "BrowserUse",
         "Clarify",
         "ComputerUse",
@@ -127,7 +128,13 @@ fn default_builtin_toolset_name_snapshot_is_stable() {
         "ZhipuVideoGeneration",
         "ZhipuVideoGenerationQuery",
     ]);
-    expected.extend(["memory", "skills_invoke", "skills_list", "skills_view"]);
+    expected.extend([
+        "memory",
+        "skills_invoke",
+        "skills_list",
+        "skills_run_script",
+        "skills_view",
+    ]);
 
     assert_eq!(names, expected);
 }

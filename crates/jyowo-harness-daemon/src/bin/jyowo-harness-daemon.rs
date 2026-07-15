@@ -4,11 +4,11 @@ use std::time::{Duration, Instant};
 
 use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
-    AutomationScheduler, IpcServerConfig, LocalIpcServer, MemoryService, PermissionBroker,
-    RecoveryService, RuntimeConfigResolver, RuntimeGuard, SdkRunCoordinatorFactory,
-    SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory, SkillReferenceCandidateService,
-    Supervisor, SupervisorAutomationTaskSubmitter, SupervisorQuotas,
-    WorkspaceSubagentRunnerFactory,
+    AutomationScheduler, BrowserService, IpcServerConfig, LocalIpcServer, MemoryService,
+    PermissionBroker, RecoveryService, RuntimeConfigResolver, RuntimeGuard,
+    SdkRunCoordinatorFactory, SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory,
+    SkillReferenceCandidateService, Supervisor, SupervisorAutomationTaskSubmitter,
+    SupervisorQuotas, WorkspaceSubagentRunnerFactory,
 };
 use harness_journal::TaskStore;
 use harness_observability::DefaultRedactor;
@@ -50,6 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let skill_reference_candidates =
         Arc::new(SkillReferenceCandidateService::new(runtime_config.clone()));
     let memory_service = Arc::new(MemoryService::new(runtime_config.clone()));
+    let browser_service = Arc::new(BrowserService::from_environment(
+        runtime.runtime_dir().join("browser"),
+    ));
     let run_factory = Arc::new(
         SdkRunCoordinatorFactory::new_with_subagent_engines(
             Arc::clone(&store),
@@ -59,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::clone(&redactor),
             Arc::clone(&subagent_engines),
         )
+        .with_browser_service_arc(Arc::clone(&browser_service))
         .with_provider_continuation_store_arc(provider_continuation_store),
     );
     let runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory> =
@@ -91,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&automation_scheduler),
+        Arc::clone(&browser_service),
     )
     .await?;
     #[cfg(windows)]
@@ -102,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&automation_scheduler),
+        Arc::clone(&browser_service),
     )
     .await?;
 
@@ -112,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     wait_for_shutdown(&server, &store).await?;
     server.shutdown().await?;
+    browser_service.shutdown().await;
     Ok(())
 }
 

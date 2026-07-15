@@ -19,7 +19,17 @@ impl LocalIpcServer {
         store: Arc<TaskStore>,
         config: IpcServerConfig,
     ) -> Result<Self, IpcError> {
-        Self::bind_named_pipe_inner(pipe_name.into(), store, config, None, None, None, None).await
+        Self::bind_named_pipe_inner(
+            pipe_name.into(),
+            store,
+            config,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn bind_named_pipe_with_supervisor(
@@ -36,6 +46,7 @@ impl LocalIpcServer {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -48,6 +59,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Arc<crate::SkillReferenceCandidateService>,
         memory_service: Arc<crate::MemoryService>,
         automation_scheduler: Arc<crate::AutomationScheduler>,
+        browser_service: Arc<crate::BrowserService>,
     ) -> Result<Self, IpcError> {
         Self::bind_named_pipe_inner(
             pipe_name.into(),
@@ -57,6 +69,7 @@ impl LocalIpcServer {
             Some(skill_reference_candidates),
             Some(memory_service),
             Some(automation_scheduler),
+            Some(browser_service),
         )
         .await
     }
@@ -69,6 +82,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Option<Arc<crate::SkillReferenceCandidateService>>,
         memory_service: Option<Arc<crate::MemoryService>>,
         automation_scheduler: Option<Arc<crate::AutomationScheduler>>,
+        browser_service: Option<Arc<crate::BrowserService>>,
     ) -> Result<Self, IpcError> {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let clients = Arc::new(AtomicUsize::new(0));
@@ -103,6 +117,9 @@ impl LocalIpcServer {
                         }
                         if let Some(automation_scheduler) = automation_scheduler.as_ref() {
                             connection = connection.with_automation_scheduler(Arc::clone(automation_scheduler));
+                        }
+                        if let Some(browser_service) = browser_service.as_ref() {
+                            connection = connection.with_browser_service(Arc::clone(browser_service));
                         }
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {

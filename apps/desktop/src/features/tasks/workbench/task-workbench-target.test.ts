@@ -21,18 +21,45 @@ describe('taskWorkbenchTargetFromTimelineItem', () => {
   })
 
   it('ignores commands, audit events, workspace notices, and narrative', () => {
-    for (const kind of [
-      'command',
-      'error',
-      'notice',
-      'permission',
-      'tool_activity',
-      'assistant_text',
-    ] as const) {
+    for (const kind of ['command', 'error', 'notice', 'permission', 'assistant_text'] as const) {
       expect(taskWorkbenchTargetFromTimelineItem(item(kind), taskId)).toBeNull()
     }
     expect(
       taskWorkbenchTargetFromTimelineItem({ ...item('user_message'), blobId: undefined }, taskId),
+    ).toBeNull()
+  })
+
+  it.each(['BrowserUse', 'BrowserDevTools'])('maps %s activity to one task browser', (toolName) => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('tool_activity'),
+          tool: {
+            operation: 'browse',
+            status: 'completed',
+            toolName,
+            toolUseId: 'browser-tool',
+          },
+        },
+        taskId,
+      ),
+    ).toMatchObject({ kind: 'browser', resourceId: taskId, taskId })
+  })
+
+  it('ignores non-browser tool activity', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('tool_activity'),
+          tool: {
+            operation: 'read',
+            status: 'completed',
+            toolName: 'Read',
+            toolUseId: 'read-tool',
+          },
+        },
+        taskId,
+      ),
     ).toBeNull()
   })
 })
