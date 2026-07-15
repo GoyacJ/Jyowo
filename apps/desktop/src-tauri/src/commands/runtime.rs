@@ -1490,6 +1490,23 @@ pub(crate) fn build_plugin_registry(
     plugin_store: &dyn PluginStore,
     global_plugin_store: Option<&DesktopPluginStore>,
 ) -> Result<PluginRegistry, CommandErrorPayload> {
+    let sidecar_sandbox = Some(desktop_plugin_sidecar_sandbox(execution_cwd));
+    build_plugin_registry_with_sidecar_sandbox(
+        execution_cwd,
+        project_workspace_root,
+        plugin_store,
+        global_plugin_store,
+        sidecar_sandbox,
+    )
+}
+
+pub(crate) fn build_plugin_registry_with_sidecar_sandbox(
+    execution_cwd: &Path,
+    project_workspace_root: Option<&Path>,
+    plugin_store: &dyn PluginStore,
+    global_plugin_store: Option<&DesktopPluginStore>,
+    sidecar_sandbox: Option<(Arc<dyn SandboxBackend>, SandboxMode)>,
+) -> Result<PluginRegistry, CommandErrorPayload> {
     let settings = plugin_store.load_record()?;
     let global_settings = global_plugin_store
         .map(PluginStore::load_record)
@@ -1522,7 +1539,6 @@ pub(crate) fn build_plugin_registry(
         })
         .unwrap_or_default();
     let allow_project_plugins = settings.allow_project_plugins;
-    let (sidecar_sandbox, sidecar_sandbox_mode) = desktop_plugin_sidecar_sandbox(execution_cwd);
     let mut entries = BTreeMap::new();
     let mut plugin_enabled_by_name = BTreeMap::<PluginName, bool>::new();
     if let (Some(global_store), Some(global_settings)) = (global_plugin_store, &global_settings) {
@@ -1572,24 +1588,24 @@ pub(crate) fn build_plugin_registry(
         builder = builder.with_source(DiscoverySource::User(global_store.package_root()));
     }
 
+    let mut manifest_loader = CargoExtensionManifestLoader::new()
+        .with_timeout(Duration::from_secs(5))
+        .with_search_paths(desktop_cargo_extension_search_paths(plugin_store));
+    let mut runtime_loader = CargoExtensionRuntimeLoader::new();
+    if let Some((sandbox, mode)) = sidecar_sandbox {
+        manifest_loader = manifest_loader.with_sandbox(
+            sandbox.clone(),
+            mode.clone(),
+            execution_cwd.to_path_buf(),
+        );
+        runtime_loader = runtime_loader.with_sandbox(sandbox, mode, execution_cwd.to_path_buf());
+    }
+
     let mut builder = builder
         .with_source(DiscoverySource::CargoExtension)
         .with_manifest_loader(Arc::new(FileManifestLoader))
-        .with_manifest_loader(Arc::new(
-            CargoExtensionManifestLoader::new()
-                .with_timeout(Duration::from_secs(5))
-                .with_search_paths(desktop_cargo_extension_search_paths(plugin_store))
-                .with_sandbox(
-                    sidecar_sandbox.clone(),
-                    sidecar_sandbox_mode.clone(),
-                    execution_cwd.to_path_buf(),
-                ),
-        ))
-        .with_runtime_loader(Arc::new(CargoExtensionRuntimeLoader::new().with_sandbox(
-            sidecar_sandbox,
-            sidecar_sandbox_mode,
-            execution_cwd.to_path_buf(),
-        )));
+        .with_manifest_loader(Arc::new(manifest_loader))
+        .with_runtime_loader(Arc::new(runtime_loader));
 
     if let Some(project_workspace_root) = project_workspace_root {
         if allow_project_plugins {

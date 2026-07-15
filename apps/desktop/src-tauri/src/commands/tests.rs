@@ -7,7 +7,8 @@ mod tests {
     use crate::commands::mcp::mcp_stdio_env;
     use crate::commands::plugins::{plugin_package_dir_name, redact_plugin_detail_config_values};
     use crate::commands::runtime::{
-        desktop_cargo_extension_search_paths, desktop_settings_permission_rules,
+        build_plugin_registry_with_sidecar_sandbox, desktop_cargo_extension_search_paths,
+        desktop_settings_permission_rules,
     };
     use crate::commands::skills::{
         emit_skill_catalog_install_progress, get_or_create_skill_catalog_install_task,
@@ -912,9 +913,18 @@ exit 0
             "standalone-tools",
         );
 
-        let response = list_plugins_with_runtime_state(&state).await.unwrap();
+        let registry = build_plugin_registry_with_sidecar_sandbox(
+            state.conversation_cwd(),
+            None,
+            state.plugin_store.as_ref(),
+            None,
+            None,
+        )
+        .unwrap();
+        registry.discover().await.unwrap();
+        let plugins = registry.product_snapshot();
 
-        assert!(response.plugins.iter().any(|plugin| {
+        assert!(plugins.iter().any(|plugin| {
             plugin.id == PluginId("standalone-tools@0.1.0".to_owned())
                 && plugin.source == PluginSourceKind::CargoExtension
         }));
