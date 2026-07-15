@@ -34,7 +34,6 @@ async-trait = { workspace = true }
 blake3 = "1.8.5"
 bytes = { workspace = true }
 chrono = { workspace = true }
-command-fds = { version = "0.3.3", features = ["tokio"] }
 futures = { workspace = true }
 os_pipe = "1.2.3"
 parking_lot = "0.12.5"
@@ -45,3 +44,6 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "process"] }
 tokio-util = { workspace = true, features = ["io"] }
+
+[target.'cfg(unix)'.dependencies]
+command-fds = { version = "0.3.3", features = ["tokio"] }

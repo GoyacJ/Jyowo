@@ -25,6 +25,14 @@ test('release workflow checks versions before matrix builds', () => {
   assert.match(workflow, /pnpm check:tauri-updater/)
 })
 
+test('release workflow pins the browser runtime Node.js version', () => {
+  const setupNodeVersions = [...workflow.matchAll(/node-version:\s*([^\s]+)/g)].map(
+    ([, version]) => version,
+  )
+
+  assert.deepEqual(setupNodeVersions, ['24.12.0', '24.12.0', '24.12.0'])
+})
+
 test('release workflow verifies the published updater manifest after all builds', () => {
   assert.match(workflow, /verify:\s*\n\s*name:\s*verify release/)
   assert.match(workflow, /needs:\s*build/)
@@ -94,7 +102,7 @@ test('ci pnpm jobs install Node, pnpm, and dependencies', () => {
     assert.match(job, /pnpm\/action-setup@v4/)
     assert.match(job, /version:\s*11\.7\.0/)
     assert.match(job, /actions\/setup-node@v4/)
-    assert.match(job, /node-version:\s*24/)
+    assert.match(job, /node-version:\s*24\.12\.0/)
     assert.match(job, /cache:\s*pnpm/)
     assert.match(job, /cache-dependency-path:\s*pnpm-lock\.yaml/)
     assert.match(job, /pnpm install --frozen-lockfile/)
