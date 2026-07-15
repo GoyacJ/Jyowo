@@ -9,6 +9,7 @@
 pub mod account_usage;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
+#[path = "auxiliary.rs"]
 pub mod aux;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
