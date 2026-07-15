@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -40,7 +40,8 @@ if (cargo.error) {
 }
 if (cargo.status !== 0) process.exit(cargo.status ?? 1)
 
-const source = cargoBuiltBinaryPath({ repoRoot, target })
+const targetDir = resolve(repoRoot, process.env.CARGO_TARGET_DIR ?? 'target')
+const source = cargoBuiltBinaryPath({ repoRoot, target, targetDir })
 const destination = sidecarOutputPath({ repoRoot, target })
 mkdirSync(dirname(destination), { recursive: true })
 copyFileSync(source, destination)

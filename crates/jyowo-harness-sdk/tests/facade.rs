@@ -669,7 +669,15 @@ fn tool_registry_builtin_skills_registers_only_safe_skill_tools() {
         .collect::<Vec<_>>();
     names.sort();
 
-    assert_eq!(names, vec!["skills_invoke", "skills_list", "skills_view"]);
+    assert_eq!(
+        names,
+        vec![
+            "skills_invoke",
+            "skills_list",
+            "skills_run_script",
+            "skills_view"
+        ]
+    );
 }
 
 #[test]

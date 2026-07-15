@@ -20,6 +20,15 @@ test('release workflow is triggered only by semantic version tags', () => {
 test('release workflow checks versions before matrix builds', () => {
   assert.match(workflow, /needs:\s*version/)
   assert.match(workflow, /pnpm check:release-version/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY is not configured/)
+  assert.match(workflow, /pnpm check:release-workflow/)
+  assert.match(workflow, /pnpm check:tauri-updater/)
+})
+
+test('release workflow verifies the published updater manifest after all builds', () => {
+  assert.match(workflow, /verify:\s*\n\s*name:\s*verify release/)
+  assert.match(workflow, /needs:\s*build/)
+  assert.match(workflow, /node scripts\/verify-release-assets\.mjs "\$GITHUB_REF_NAME"/)
 })
 
 test('release workflow builds all supported desktop platforms', () => {

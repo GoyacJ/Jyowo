@@ -984,6 +984,7 @@ export const zhCN = {
         check: '检查更新',
         checking: '检查中',
         downloadInstall: '下载并安装',
+        restart: '重启以完成更新',
       },
       status: {
         idle: '未检查',
@@ -992,7 +993,7 @@ export const zhCN = {
         available: '有新版本',
         downloading: '下载中',
         installed: '已安装待重启',
-        failed: '检查失败',
+        failed: '更新失败',
       },
     },
     models: {

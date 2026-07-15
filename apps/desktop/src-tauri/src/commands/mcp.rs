@@ -275,7 +275,7 @@ async fn save_mcp_server_record_for_layer_with_runtime_state(
     mcp_store_for_layer(state, config_layer)?.save_record(&record)?;
 
     refresh_effective_mcp_server(&record.id, state).await?;
-    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state).await?;
 
     Ok(SaveMcpServerResponse { server })
 }
@@ -580,7 +580,7 @@ pub async fn set_mcp_server_enabled_for_layer_with_runtime_state(
     }
     store.save_record(&record)?;
     refresh_effective_mcp_server(&record.id, state).await?;
-    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state).await?;
     Ok(SetMcpServerEnabledResponse { server })
 }
 
@@ -619,7 +619,7 @@ pub async fn restart_mcp_server_for_layer_with_runtime_state(
     };
     ensure_mcp_server_record(&record)?;
     refresh_effective_mcp_server(&record.id, state).await?;
-    let server = mcp_summary_for_persisted_record(&record, config_layer, state)?;
+    let server = mcp_summary_for_persisted_record(&record, config_layer, state).await?;
     Ok(RestartMcpServerResponse { server })
 }
 
@@ -668,7 +668,7 @@ async fn refresh_effective_mcp_server(
     Ok(())
 }
 
-fn mcp_summary_for_persisted_record(
+async fn mcp_summary_for_persisted_record(
     record: &McpServerConfigRecord,
     config_layer: McpConfigLayer,
     state: &DesktopRuntimeState,
@@ -696,7 +696,30 @@ fn mcp_summary_for_persisted_record(
         overrides_global: config_layer == McpConfigLayer::Project
             && global_ids.contains(&record.id),
     };
-    Ok(mcp_server_summary_from_layered_record(&entry))
+    let persisted_summary = mcp_server_summary_from_layered_record(&entry);
+    if !entry.effective || !record.enabled {
+        return Ok(persisted_summary);
+    }
+
+    let Some(settings_runtime) = state.settings_runtime() else {
+        return Ok(persisted_summary);
+    };
+    let Some(config) = settings_runtime.mcp_config() else {
+        return Ok(persisted_summary);
+    };
+    let server_id = McpServerId(record.id.clone());
+    let Some(mut runtime_summary) =
+        mcp_server_summary_from_registry(&config.registry, &server_id).await
+    else {
+        return Ok(persisted_summary);
+    };
+    runtime_summary.enabled = persisted_summary.enabled;
+    runtime_summary.required = persisted_summary.required;
+    runtime_summary.config_layer = persisted_summary.config_layer;
+    runtime_summary.effective = persisted_summary.effective;
+    runtime_summary.manageable = persisted_summary.manageable;
+    runtime_summary.overrides_global = persisted_summary.overrides_global;
+    Ok(runtime_summary)
 }
 
 pub async fn list_mcp_diagnostics_with_store(

@@ -1062,12 +1062,28 @@ async fn delete_mcp_server_with_runtime_state_removes_registry_server_and_inject
         )
         .await
         .unwrap();
-    let state = runtime_state_with_mcp_registry_for_workspace(
+    let mut state = runtime_state_with_mcp_registry_for_workspace(
         workspace,
         mcp_registry,
         vec![server_id.clone()],
     )
     .await;
+    let store = Arc::new(RecordingMcpServerStore::default());
+    *store.record.lock().unwrap() = Some(McpServerConfigRecord {
+        enabled: true,
+        required: false,
+        display_name: "Workspace GitHub".to_owned(),
+        id: "github".to_owned(),
+        scope: "global".to_owned(),
+        transport: McpServerTransportConfig::Stdio {
+            command: "node".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            working_dir: None,
+        },
+    });
+    state.set_mcp_server_store_for_test(store);
     let settings_runtime = state.settings_runtime().unwrap();
     settings_runtime
         .mcp_config()
@@ -1153,16 +1169,22 @@ async fn list_mcp_servers_with_runtime_state_includes_origin_scope_and_tool_coun
     assert_eq!(
         value,
         json!({
+            "configLayer": "global",
             "servers": [
                 {
+                    "configLayer": "global",
                     "displayName": "Workspace GitHub",
+                    "effective": true,
                     "enabled": true,
                     "exposedToolCount": 2,
                     "id": "github",
                     "manageable": false,
                     "origin": "workspace",
+                    "overridesGlobal": false,
+                    "required": false,
                     "scope": "global",
                     "status": "ready",
+                    "statusSource": "settings",
                     "transport": "inProcess"
                 }
             ]

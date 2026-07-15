@@ -2579,7 +2579,6 @@ export type McpConfigLayer = z.infer<typeof mcpConfigLayerSchema>
 export type McpServerSummary = z.infer<typeof mcpServerSummarySchema>
 export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
-export type BrowserMcpPreset = z.infer<typeof browserMcpPresetSchema>
 export type ListBrowserMcpPresetsResponse = z.infer<typeof listBrowserMcpPresetsResponseSchema>
 export type SaveBrowserMcpPresetRequest = z.input<typeof saveBrowserMcpPresetRequestSchema>
 export type SaveBrowserMcpPresetResponse = z.infer<typeof saveBrowserMcpPresetResponseSchema>

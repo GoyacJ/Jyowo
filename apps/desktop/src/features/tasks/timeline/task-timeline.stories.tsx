@@ -11,6 +11,7 @@ import type {
 import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
+import { taskWorkbenchTargetKey } from '@/shared/state/workbench-selection'
 import jyowoLogoUrl from '../../../../src-tauri/icons/jyowo-logo-concept-02.png?url'
 
 const taskId = '01J00000000000000000000001'
@@ -197,16 +198,27 @@ export const OpenWorkbench: Story = workspaceStory(
   snapshot('completed', [
     item(1, 'user_message', 'Show the final changes.'),
     item(2, 'diff', '2 files changed, 18 insertions', segmentId, false, diffBlobId),
-    item(3, 'assistant_text', 'The recovery invariant is covered.', segmentId),
+    item(3, 'file', 'recovery-report.md', segmentId, false, fileBlobId),
+    item(4, 'assistant_text', 'The recovery invariant is covered.', segmentId),
   ]),
-  {
-    blobId: diffBlobId,
-    kind: 'diff',
-    resourceId: diffBlobId,
-    sourceEventId: 'event-2',
-    taskId,
-    title: '2 files changed, 18 insertions',
-  },
+  [
+    {
+      blobId: diffBlobId,
+      kind: 'diff',
+      resourceId: diffBlobId,
+      sourceEventId: 'event-2',
+      taskId,
+      title: '2 files changed, 18 insertions',
+    },
+    {
+      blobId: fileBlobId,
+      kind: 'file',
+      resourceId: fileBlobId,
+      sourceEventId: 'event-3',
+      taskId,
+      title: 'recovery-report.md',
+    },
+  ],
 )
 
 export const ObjectPreviews: Story = workspaceStory(
@@ -235,7 +247,10 @@ export const ScrollFollowing: Story = {
   render: () => <ScrollFollowingFixture />,
 }
 
-function workspaceStory(storySnapshot: TaskSnapshot, initialTarget?: TaskWorkbenchTarget): Story {
+function workspaceStory(
+  storySnapshot: TaskSnapshot,
+  initialTarget?: TaskWorkbenchTarget | TaskWorkbenchTarget[],
+): Story {
   return {
     args: {
       client: storyClient,
@@ -249,10 +264,24 @@ function workspaceStory(storySnapshot: TaskSnapshot, initialTarget?: TaskWorkben
 function WorkspaceFixture({
   initialTarget,
   ...props
-}: Parameters<typeof TaskWorkspaceView>[0] & { initialTarget?: TaskWorkbenchTarget }) {
+}: Parameters<typeof TaskWorkspaceView>[0] & {
+  initialTarget?: TaskWorkbenchTarget | TaskWorkbenchTarget[]
+}) {
   useEffect(() => {
     uiStore.setState({ taskWorkbenchByTaskId: {} })
-    if (initialTarget) uiStore.getState().openTaskWorkbench(initialTarget)
+    const targets = initialTarget
+      ? Array.isArray(initialTarget)
+        ? initialTarget
+        : [initialTarget]
+      : []
+    targets.forEach((target, index) => {
+      uiStore.getState().openTaskWorkbench(target)
+      if (index < targets.length - 1) {
+        uiStore
+          .getState()
+          .setTaskWorkbenchTabPinned(target.taskId, taskWorkbenchTargetKey(target), true)
+      }
+    })
     return () => {
       uiStore.setState({ taskWorkbenchByTaskId: {} })
     }

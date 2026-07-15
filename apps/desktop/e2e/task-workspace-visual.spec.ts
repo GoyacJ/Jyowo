@@ -51,6 +51,8 @@ async function openWorkspaceStory(
   }, theme)
   await expect(page.locator('main')).toBeVisible()
   if (story === 'open-workbench' && viewport.width < 1024) {
-    await page.getByRole('complementary', { name: 'Task workbench' }).scrollIntoViewIfNeeded()
+    await page
+      .getByRole('complementary', { name: /Task workbench|任务工作台/ })
+      .scrollIntoViewIfNeeded()
   }
 }

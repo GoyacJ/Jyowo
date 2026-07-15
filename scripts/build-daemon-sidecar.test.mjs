@@ -36,6 +36,14 @@ test('computes daemon build and bundle paths', () => {
     cargoBuiltBinaryPath({ repoRoot: '/repo', target: 'x86_64-pc-windows-msvc' }),
     join('/repo', 'target', 'x86_64-pc-windows-msvc', 'debug', 'jyowo-harness-daemon.exe'),
   )
+  assert.equal(
+    cargoBuiltBinaryPath({
+      repoRoot: '/repo',
+      target: 'aarch64-apple-darwin',
+      targetDir: '/tmp/custom-target',
+    }),
+    join('/tmp/custom-target', 'aarch64-apple-darwin', 'debug', 'jyowo-harness-daemon'),
+  )
 })
 
 test('parses the active Rust host target', () => {

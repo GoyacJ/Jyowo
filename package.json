@@ -16,7 +16,7 @@
     "check:daemon-protocol": "node scripts/generate-daemon-protocol.mjs --check",
     "audit:tests": "node scripts/audit-tests.mjs",
     "check:release-version": "node --test scripts/check-release-version.test.mjs && node scripts/check-release-version.mjs",
-    "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs",
+    "check:release-workflow": "node --test scripts/release-workflow-policy.test.mjs scripts/verify-release-assets.test.mjs",
     "check:tauri-updater": "node --test scripts/tauri-updater-policy.test.mjs",
     "check:tauri-window": "node --test scripts/tauri-window-policy.test.mjs",
     "check:agent-orchestration-no-fakes": "node --test scripts/check-agent-orchestration-no-fakes.test.mjs && node scripts/check-agent-orchestration-no-fakes.mjs",

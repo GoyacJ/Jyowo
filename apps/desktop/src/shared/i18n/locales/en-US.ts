@@ -989,6 +989,7 @@ export const enUS = {
         check: 'Check for updates',
         checking: 'Checking',
         downloadInstall: 'Download and install',
+        restart: 'Restart to finish update',
       },
       status: {
         idle: 'Not checked',
@@ -997,7 +998,7 @@ export const enUS = {
         available: 'Update available',
         downloading: 'Downloading',
         installed: 'Installed, restart pending',
-        failed: 'Check failed',
+        failed: 'Update failed',
       },
     },
     models: {

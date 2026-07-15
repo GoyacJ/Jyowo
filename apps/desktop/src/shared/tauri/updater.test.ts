@@ -70,6 +70,28 @@ describe('shared tauri updater wrapper', () => {
     ])
   })
 
+  it('completes determinate progress when the final chunk event is omitted', async () => {
+    const update = createUpdate({
+      downloadAndInstall: vi.fn(async (onEvent) => {
+        onEvent?.({ event: 'Started', data: { contentLength: 100 } })
+        onEvent?.({ event: 'Progress', data: { chunkLength: 40 } })
+        onEvent?.({ event: 'Finished' })
+      }),
+    })
+    const events: Array<unknown> = []
+
+    await downloadAndInstallUpdate(
+      { currentVersion: '0.1.0', handle: update, version: '0.2.0' },
+      (event) => events.push(event),
+    )
+
+    expect(events.at(-1)).toEqual({
+      contentLength: 100,
+      downloadedBytes: 100,
+      kind: 'finished',
+    })
+  })
+
   it('relaunches through the wrapped process plugin client', async () => {
     const client = createClient(null)
 

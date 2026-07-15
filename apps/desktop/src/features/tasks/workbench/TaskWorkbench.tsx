@@ -280,45 +280,68 @@ export function TaskWorkbench({
         </div>
       </header>
 
-      <div
-        aria-label={t('workbench.tabsLabel')}
-        className="flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-border border-b px-1.5 pt-1"
-        onKeyDown={(event) => {
-          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-          const buttons = Array.from(
-            tablistRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
-          )
-          const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
-          if (current < 0 || buttons.length === 0) return
-          event.preventDefault()
-          const next =
-            event.key === 'Home'
-              ? 0
-              : event.key === 'End'
-                ? buttons.length - 1
-                : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) %
-                  buttons.length
-          buttons[next]?.focus()
-          buttons[next]?.click()
-        }}
-        ref={tablistRef}
-        role="tablist"
-      >
-        {session.tabs.map((tab) => {
-          const domId = taskWorkbenchTabDomId(projection.taskId, tab.id)
-          return (
-            <WorkbenchTab
-              active={tab.id === activeTab.id}
-              domId={domId}
-              key={tab.id}
-              onActivate={() => activateTab(projection.taskId, tab.id)}
-              onClose={() => dismissTab(tab.id)}
-              onPinnedChange={(pinned) => setPinned(projection.taskId, tab.id, pinned)}
-              panelId={`${domId}-panel`}
-              tab={tab}
-            />
-          )
-        })}
+      <div className="flex shrink-0 items-stretch border-border border-b">
+        <div
+          aria-label={t('workbench.tabsLabel')}
+          className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto px-1.5 pt-1"
+          onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+            const buttons = Array.from(
+              tablistRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
+            )
+            const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+            if (current < 0 || buttons.length === 0) return
+            event.preventDefault()
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? buttons.length - 1
+                  : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) %
+                    buttons.length
+            buttons[next]?.focus()
+            buttons[next]?.click()
+          }}
+          ref={tablistRef}
+          role="tablist"
+        >
+          {session.tabs.map((tab) => {
+            const domId = taskWorkbenchTabDomId(projection.taskId, tab.id)
+            return (
+              <WorkbenchTab
+                active={tab.id === activeTab.id}
+                domId={domId}
+                key={tab.id}
+                onActivate={() => activateTab(projection.taskId, tab.id)}
+                onPinnedChange={(pinned) => setPinned(projection.taskId, tab.id, pinned)}
+                panelId={`${domId}-panel`}
+                tab={tab}
+              />
+            )
+          })}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 border-border border-l px-1">
+          <button
+            aria-label={activeTab.pinned ? t('workbench.unpinTab') : t('workbench.pinTab')}
+            className="rounded p-1 hover:bg-muted"
+            onClick={() => setPinned(projection.taskId, activeTab.id, !activeTab.pinned)}
+            type="button"
+          >
+            {activeTab.pinned ? (
+              <PinOff aria-hidden="true" className="size-3" />
+            ) : (
+              <Pin aria-hidden="true" className="size-3" />
+            )}
+          </button>
+          <button
+            aria-label={t('workbench.closeTab', { title: activeTab.target.title })}
+            className="rounded p-1 hover:bg-muted"
+            onClick={() => dismissTab(activeTab.id)}
+            type="button"
+          >
+            <X aria-hidden="true" className="size-3" />
+          </button>
+        </div>
       </div>
 
       <div
@@ -347,7 +370,6 @@ function WorkbenchTab({
   active,
   domId,
   onActivate,
-  onClose,
   onPinnedChange,
   panelId,
   tab,
@@ -355,55 +377,29 @@ function WorkbenchTab({
   active: boolean
   domId: string
   onActivate: () => void
-  onClose: () => void
   onPinnedChange: (pinned: boolean) => void
   panelId: string
   tab: TaskWorkbenchTab
 }) {
-  const { t } = useTranslation('tasks')
   return (
-    <div
-      className="group flex max-w-56 min-w-32 items-center rounded-t-md border border-transparent border-b-0 text-muted-foreground data-[active=true]:border-border data-[active=true]:bg-surface data-[active=true]:text-foreground"
+    <button
+      aria-controls={panelId}
+      aria-selected={active}
+      className="flex max-w-56 min-w-32 items-center gap-1.5 rounded-t-md border border-transparent border-b-0 px-2 py-2 text-left text-[11px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:border-border data-[active=true]:bg-surface data-[active=true]:text-foreground"
       data-active={active}
       data-preview={tab.pinned ? undefined : 'true'}
+      id={domId}
+      onClick={onActivate}
+      onDoubleClick={() => {
+        if (!tab.pinned) onPinnedChange(true)
+      }}
+      role="tab"
+      tabIndex={active ? 0 : -1}
+      type="button"
     >
-      <button
-        aria-controls={panelId}
-        aria-selected={active}
-        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-2 text-left text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        id={domId}
-        onClick={onActivate}
-        onDoubleClick={() => {
-          if (!tab.pinned) onPinnedChange(true)
-        }}
-        role="tab"
-        tabIndex={active ? 0 : -1}
-        type="button"
-      >
-        <TargetIcon className="size-3.5 shrink-0" kind={tab.target.kind} />
-        <span className={tab.pinned ? 'truncate' : 'truncate italic'}>{tab.target.title}</span>
-      </button>
-      <button
-        aria-label={tab.pinned ? t('workbench.unpinTab') : t('workbench.pinTab')}
-        className="rounded p-1 opacity-0 hover:bg-muted group-hover:opacity-100 group-focus-within:opacity-100"
-        onClick={() => onPinnedChange(!tab.pinned)}
-        type="button"
-      >
-        {tab.pinned ? (
-          <PinOff aria-hidden="true" className="size-3" />
-        ) : (
-          <Pin aria-hidden="true" className="size-3" />
-        )}
-      </button>
-      <button
-        aria-label={t('workbench.closeTab', { title: tab.target.title })}
-        className="mr-1 rounded p-1 hover:bg-muted"
-        onClick={onClose}
-        type="button"
-      >
-        <X aria-hidden="true" className="size-3" />
-      </button>
-    </div>
+      <TargetIcon className="size-3.5 shrink-0" kind={tab.target.kind} />
+      <span className={tab.pinned ? 'truncate' : 'truncate italic'}>{tab.target.title}</span>
+    </button>
   )
 }
 

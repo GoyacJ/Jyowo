@@ -73,6 +73,7 @@ describe('AboutSettings', () => {
     vi.mocked(checkForAppUpdate).mockReturnValueOnce(check.promise)
 
     renderAboutSettings()
+    await screen.findByText('0.1.0')
     fireEvent.click(await screen.findByRole('button', { name: '检查更新' }))
 
     expect(await screen.findAllByText('检查中')).toHaveLength(2)
@@ -82,6 +83,7 @@ describe('AboutSettings', () => {
     })
 
     expect(await screen.findByText('已是最新')).toBeInTheDocument()
+    expect(screen.getAllByText('0.1.0')).toHaveLength(2)
   })
 
   it('shows available update metadata and renders release notes as text', async () => {
@@ -108,7 +110,7 @@ describe('AboutSettings', () => {
     expect(container.querySelector('script')).toBeNull()
   })
 
-  it('shows download progress, installed state, and relaunches after install', async () => {
+  it('shows download progress and waits for confirmation before relaunching', async () => {
     const install = deferred<void>()
     vi.mocked(checkForAppUpdate).mockResolvedValueOnce({
       kind: 'available',
@@ -144,7 +146,36 @@ describe('AboutSettings', () => {
     })
 
     expect(await screen.findByText('已安装待重启')).toBeInTheDocument()
+    expect(relaunchApp).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '重启以完成更新' }))
     await waitFor(() => expect(relaunchApp).toHaveBeenCalledOnce())
+  })
+
+  it('keeps restart available when relaunch fails', async () => {
+    vi.mocked(checkForAppUpdate).mockResolvedValueOnce({
+      kind: 'available',
+      update: {
+        currentVersion: '0.1.0',
+        handle: {
+          currentVersion: '0.1.0',
+          downloadAndInstall: vi.fn(),
+          version: '0.2.0',
+        },
+        version: '0.2.0',
+      },
+    })
+    vi.mocked(downloadAndInstallUpdate).mockResolvedValueOnce()
+    vi.mocked(relaunchApp).mockRejectedValueOnce(new Error('restart blocked'))
+
+    renderAboutSettings()
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }))
+    fireEvent.click(await screen.findByRole('button', { name: '下载并安装' }))
+    fireEvent.click(await screen.findByRole('button', { name: '重启以完成更新' }))
+
+    expect(await screen.findByText('更新失败')).toBeInTheDocument()
+    expect(screen.getByText('restart blocked')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重启以完成更新' })).toBeInTheDocument()
   })
 
   it('shows check failure details', async () => {
@@ -153,7 +184,7 @@ describe('AboutSettings', () => {
     renderAboutSettings()
     fireEvent.click(await screen.findByRole('button', { name: '检查更新' }))
 
-    expect(await screen.findByText('检查失败')).toBeInTheDocument()
+    expect(await screen.findByText('更新失败')).toBeInTheDocument()
     expect(screen.getByText('offline')).toBeInTheDocument()
   })
 })

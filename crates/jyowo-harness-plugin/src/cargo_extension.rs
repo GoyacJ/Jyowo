@@ -699,6 +699,11 @@ async fn run_extension_command_sandboxed(
         .parent()
         .ok_or_else(|| "sidecar binary parent directory unavailable".to_owned())?
         .to_path_buf();
+    let scope = if workspace_root == cwd {
+        SandboxScope::WorkspaceOnly
+    } else {
+        SandboxScope::WorkspacePlus(vec![workspace_root])
+    };
     let max_wall_clock_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let spec = ExecSpec {
         command: binary.display().to_string(),
@@ -706,7 +711,7 @@ async fn run_extension_command_sandboxed(
         env: BTreeMap::new(),
         authorized_env_keys: Default::default(),
         secret_env_keys: Default::default(),
-        cwd: Some(cwd),
+        cwd: Some(cwd.clone()),
         stdin: if input.is_some() {
             StdioSpec::Piped
         } else {
@@ -718,7 +723,7 @@ async fn run_extension_command_sandboxed(
         activity_timeout: Some(timeout),
         policy: SandboxPolicy {
             mode,
-            scope: SandboxScope::WorkspaceOnly,
+            scope,
             network: NetworkAccess::None,
             resource_limits: ResourceLimits {
                 max_memory_bytes: None,
@@ -739,7 +744,7 @@ async fn run_extension_command_sandboxed(
         run_id: RunId::new(),
         tool_use_id: None,
         tenant_id: TenantId::SINGLE,
-        workspace_root,
+        workspace_root: cwd,
         correlation_id: CorrelationId::new(),
         event_sink: Arc::new(NoopSandboxEventSink),
         redactor: Arc::new(NoopRedactor),
@@ -1501,7 +1506,11 @@ mod tests {
     #[tokio::test]
     async fn sandboxed_extension_command_uses_backend_and_locked_policy() {
         let root = tempfile::tempdir().unwrap();
-        let binary = root.path().join("jyowo-plugin-sidecar");
+        let runtime_root = root.path().join("runtime");
+        let workspace_root = root.path().join("workspace");
+        fs::create_dir_all(&runtime_root).unwrap();
+        fs::create_dir_all(&workspace_root).unwrap();
+        let binary = runtime_root.join("jyowo-plugin-sidecar");
         let backend = Arc::new(RecordingSandbox::new(br#"{"ok":true}"#.to_vec()));
         let sandbox: Arc<dyn SandboxBackend> = backend.clone();
 
@@ -1512,7 +1521,7 @@ mod tests {
             Duration::from_millis(250),
             Some(sandbox),
             Some(SandboxMode::OsLevel(LocalIsolationTag::Seatbelt)),
-            Some(root.path().to_path_buf()),
+            Some(workspace_root.clone()),
         )
         .await
         .unwrap();
@@ -1524,13 +1533,16 @@ mod tests {
         let spec = backend.spec();
         assert_eq!(spec.command, binary.display().to_string());
         assert_eq!(spec.args, vec!["--harness-runtime"]);
-        assert_eq!(spec.cwd, Some(root.path().to_path_buf()));
+        assert_eq!(spec.cwd, Some(runtime_root));
         assert_eq!(spec.stdin, StdioSpec::Piped);
         assert_eq!(spec.stdout, StdioSpec::Piped);
         assert_eq!(spec.stderr, StdioSpec::Null);
         assert_eq!(spec.workspace_access, WorkspaceAccess::ReadOnly);
         assert_eq!(spec.policy.network, NetworkAccess::None);
-        assert_eq!(spec.policy.scope, SandboxScope::WorkspaceOnly);
+        assert_eq!(
+            spec.policy.scope,
+            SandboxScope::WorkspacePlus(vec![workspace_root])
+        );
         assert!(matches!(
             spec.policy.mode,
             SandboxMode::OsLevel(LocalIsolationTag::Seatbelt)

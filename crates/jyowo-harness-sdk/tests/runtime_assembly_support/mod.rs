@@ -1157,7 +1157,9 @@ impl ModelProvider for TwoModelProvider {
         _req: ModelRequest,
         _ctx: InferContext,
     ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(futures::stream::empty()))
+        Ok(Box::pin(futures::stream::iter([
+            ModelStreamEvent::MessageStop,
+        ])))
     }
 }
 

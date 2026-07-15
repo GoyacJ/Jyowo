@@ -95,6 +95,9 @@ export async function downloadAndInstallUpdate(
       return
     }
 
+    if (contentLength !== undefined) {
+      downloadedBytes = contentLength
+    }
     onProgress?.({ contentLength, downloadedBytes, kind: 'finished' })
   })
 }

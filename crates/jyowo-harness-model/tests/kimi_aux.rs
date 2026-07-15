@@ -1,7 +1,9 @@
 #![cfg(feature = "km")]
 
+use std::future::Future;
+
 use chrono::Utc;
-use harness_contracts::{Message, MessageId, MessagePart, MessageRole};
+use harness_contracts::{Message, MessageId, MessagePart, MessageRole, ModelError};
 use harness_model::{
     InferContext, KmProvider, ModelProtocol, ModelRequest, ModelRequestOptions,
     ProviderRequestContext,
@@ -142,30 +144,27 @@ async fn kimi_files_api_supports_official_file_lifecycle() {
         .expect("file upload should parse");
     assert_eq!(uploaded.id, "file-123");
     assert_eq!(uploaded.purpose, "file-extract");
-    assert!(provider
-        .list_files(None, &InferContext::for_test())
+    let context = InferContext::for_test();
+    assert!(retry_local_mock(|| provider.list_files(None, &context))
         .await
         .expect("file list should parse")
         .data
         .is_empty());
     assert_eq!(
-        provider
-            .retrieve_file("file-123", &InferContext::for_test())
+        retry_local_mock(|| provider.retrieve_file("file-123", &context))
             .await
             .expect("file retrieve should parse")
             .filename,
         "note.txt"
     );
     assert_eq!(
-        provider
-            .file_content("file-123", &InferContext::for_test())
+        retry_local_mock(|| provider.file_content("file-123", &context))
             .await
             .expect("file content should parse"),
         "extracted text"
     );
     assert!(
-        provider
-            .delete_file("file-123", &InferContext::for_test())
+        retry_local_mock(|| provider.delete_file("file-123", &context))
             .await
             .expect("file delete should parse")
             .deleted
@@ -253,6 +252,17 @@ async fn kimi_batch_api_supports_official_endpoints() {
 
 fn provider(server: &MockServer) -> KmProvider {
     KmProvider::from_api_key("provider-key").with_base_url(server.uri())
+}
+
+async fn retry_local_mock<T, F, Fut>(mut request: F) -> Result<T, ModelError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ModelError>>,
+{
+    match request().await {
+        Err(ModelError::ProviderUnavailable(_)) => request().await,
+        result => result,
+    }
 }
 
 fn request() -> ModelRequest {

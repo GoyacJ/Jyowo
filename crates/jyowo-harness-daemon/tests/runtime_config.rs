@@ -134,7 +134,7 @@ fn configured_false_public_metadata_does_not_require_secret_store_access() {
 }
 
 #[tokio::test]
-async fn required_secret_status_query_propagates_store_failure() {
+async fn required_secret_status_isolates_store_failure_to_its_skill() {
     let fixture = RuntimeFixture::new();
     fixture.write_global_provider_files();
     fixture.write_project(
@@ -159,14 +159,16 @@ async fn required_secret_status_query_propagates_store_failure() {
         .build();
     let mut registry_snapshot = (*registry.snapshot()).clone();
 
-    let error = jyowo_harness_sdk::apply_skill_config_statuses(
-        &mut registry_snapshot,
-        &snapshot.skill_config,
-    )
-    .expect_err("required secret status must propagate secure-store failure");
+    jyowo_harness_sdk::apply_skill_config_statuses(&mut registry_snapshot, &snapshot.skill_config)
+        .expect("status assembly must isolate secure-store failure");
 
-    assert_eq!(error, SkillConfigStoreError::SecretStoreUnavailable);
-    assert!(!format!("{error:?} {error}").contains("must-not-leak-secret"));
+    assert!(matches!(
+        registry_snapshot
+            .status
+            .get(&SkillId("workspace:required-secret".to_owned())),
+        Some(SkillStatus::PrerequisiteMissing { config_keys, .. })
+            if config_keys == &["token".to_owned()]
+    ));
 }
 
 #[tokio::test]

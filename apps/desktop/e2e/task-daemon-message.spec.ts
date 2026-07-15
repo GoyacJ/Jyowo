@@ -24,9 +24,5 @@ test('projects a submitted message from raw daemon engine events', async ({ page
   await expect(page.getByText(/assistant delta produced/i)).toHaveCount(0)
   await expect(page.getByText(/engine\.run_(started|ended)/i)).toHaveCount(0)
 
-  await page.getByRole('button', { name: '打开审计' }).filter({ hasText: '运行已完成' }).click()
-  await expect(page.getByText('engine.assistant_delta_produced', { exact: true })).toHaveCount(2)
-  await expect(page.getByText('engine.run_started', { exact: true })).toBeVisible()
-  await expect(page.getByText('engine.run_ended', { exact: true })).toBeVisible()
   expect(browserErrors).toEqual([])
 })

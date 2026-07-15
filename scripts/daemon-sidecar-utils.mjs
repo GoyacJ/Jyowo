@@ -21,9 +21,9 @@ export function sidecarOutputPath({ repoRoot, target }) {
   )
 }
 
-export function cargoBuiltBinaryPath({ repoRoot, target, profile = 'debug' }) {
+export function cargoBuiltBinaryPath({ repoRoot, target, profile = 'debug', targetDir }) {
   const suffix = target.includes('windows') ? '.exe' : ''
-  return join(repoRoot, 'target', target, profile, `${DAEMON_BIN_NAME}${suffix}`)
+  return join(targetDir ?? join(repoRoot, 'target'), target, profile, `${DAEMON_BIN_NAME}${suffix}`)
 }
 
 export function parseRustHostTriple(output) {

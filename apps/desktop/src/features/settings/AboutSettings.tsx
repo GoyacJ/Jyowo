@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Download, Info, RefreshCw } from 'lucide-react'
+import { Download, Info, RefreshCw, RotateCcw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -18,7 +18,7 @@ import { StatusBadge, type StatusBadgeProps } from '@/shared/ui/status-badge'
 type AboutUpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
-  | { kind: 'current' }
+  | { kind: 'current'; version?: string }
   | { kind: 'available'; update: AppUpdate }
   | {
       contentLength?: number
@@ -27,7 +27,12 @@ type AboutUpdateState =
       update: AppUpdate
     }
   | { kind: 'installed'; update: AppUpdate }
-  | { kind: 'failed'; message: string; update?: AppUpdate }
+  | {
+      kind: 'failed'
+      message: string
+      operation: 'check' | 'download' | 'relaunch'
+      update?: AppUpdate
+    }
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -45,6 +50,14 @@ function progressPercent(state: AboutUpdateState): number | undefined {
   return Math.min(100, Math.round((state.downloadedBytes / state.contentLength) * 100))
 }
 
+function latestVersionForState(state: AboutUpdateState): string | undefined {
+  if (state.kind === 'current') {
+    return state.version
+  }
+
+  return updateForState(state)?.version
+}
+
 export function AboutSettings() {
   const { t } = useTranslation('settings')
   const commandClient = useCommandClient()
@@ -55,6 +68,7 @@ export function AboutSettings() {
   const [updateState, setUpdateState] = useState<AboutUpdateState>({ kind: 'idle' })
   const appInfo = appInfoQuery.data
   const update = updateForState(updateState)
+  const latestVersion = latestVersionForState(updateState)
   const percent = progressPercent(updateState)
   const releaseNotes = update?.body?.trim()
   const isChecking = updateState.kind === 'checking'
@@ -65,9 +79,11 @@ export function AboutSettings() {
 
     try {
       const result = await checkForAppUpdate()
-      setUpdateState(result.kind === 'current' ? { kind: 'current' } : result)
+      setUpdateState(
+        result.kind === 'current' ? { kind: 'current', version: appInfo?.version } : result,
+      )
     } catch (error) {
-      setUpdateState({ kind: 'failed', message: getErrorMessage(error) })
+      setUpdateState({ kind: 'failed', message: getErrorMessage(error), operation: 'check' })
     }
   }
 
@@ -88,9 +104,30 @@ export function AboutSettings() {
         })
       })
       setUpdateState({ kind: 'installed', update })
+    } catch (error) {
+      setUpdateState({
+        kind: 'failed',
+        message: getErrorMessage(error),
+        operation: 'download',
+        update,
+      })
+    }
+  }
+
+  async function handleRelaunch() {
+    if (!update) {
+      return
+    }
+
+    try {
       await relaunchApp()
     } catch (error) {
-      setUpdateState({ kind: 'failed', message: getErrorMessage(error), update })
+      setUpdateState({
+        kind: 'failed',
+        message: getErrorMessage(error),
+        operation: 'relaunch',
+        update,
+      })
     }
   }
 
@@ -142,7 +179,7 @@ export function AboutSettings() {
           <dt className="text-muted-foreground text-xs uppercase tracking-normal">
             {t('about.latestVersion')}
           </dt>
-          <dd className="mt-2 overflow-wrap-anywhere font-medium">{update?.version ?? '-'}</dd>
+          <dd className="mt-2 overflow-wrap-anywhere font-medium">{latestVersion ?? '-'}</dd>
         </div>
       </dl>
 
@@ -152,7 +189,8 @@ export function AboutSettings() {
         </p>
       ) : null}
 
-      {updateState.kind === 'available' ? (
+      {updateState.kind === 'available' ||
+      (updateState.kind === 'failed' && updateState.operation === 'download') ? (
         <Button
           disabled={isDownloading}
           onClick={() => {
@@ -161,6 +199,18 @@ export function AboutSettings() {
         >
           <Download data-icon="inline-start" />
           {t('about.actions.downloadInstall')}
+        </Button>
+      ) : null}
+
+      {updateState.kind === 'installed' ||
+      (updateState.kind === 'failed' && updateState.operation === 'relaunch') ? (
+        <Button
+          onClick={() => {
+            void handleRelaunch()
+          }}
+        >
+          <RotateCcw data-icon="inline-start" />
+          {t('about.actions.restart')}
         </Button>
       ) : null}
 

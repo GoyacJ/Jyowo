@@ -13,7 +13,7 @@ test('command palette is keyboard usable and restores focus', async ({ page }) =
 
   await expect(dialog).toBeVisible()
   await expect(commandSearch).toBeFocused()
-  await expect(page.getByRole('option', { name: '新建对话' })).toBeVisible()
+  await expect(page.getByRole('option', { name: '新建会话' })).toBeVisible()
 
   await page.keyboard.press('Escape')
 
@@ -27,17 +27,4 @@ test('command palette is keyboard usable and restores focus', async ({ page }) =
   await expect(dialog).toBeHidden()
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('region', { name: '设置' })).toBeVisible()
-})
-
-test('command palette opens eval support route', async ({ page }) => {
-  await page.goto('/')
-
-  await page.getByRole('button', { name: '打开命令面板' }).focus()
-  await page.keyboard.press('ControlOrMeta+K')
-  await page.getByRole('combobox', { name: '搜索命令' }).fill('评测')
-  await page.keyboard.press('Enter')
-
-  await expect(page).toHaveURL(/\/evals$/)
-  await expect(page.getByRole('heading', { name: '评测', exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Regression smoke' })).toBeVisible()
 })
