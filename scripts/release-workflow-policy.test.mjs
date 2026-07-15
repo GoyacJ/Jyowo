@@ -129,6 +129,14 @@ test('ci Linux Rust jobs install Tauri system dependencies', () => {
   }
 })
 
+test('ci full Rust job limits linker resource usage', () => {
+  const job = ciJob('rust')
+
+  assert.match(job, /CARGO_BUILD_JOBS:\s*['"]2['"]/)
+  assert.match(job, /CARGO_PROFILE_DEV_DEBUG:\s*['"]0['"]/)
+  assert.match(job, /CARGO_PROFILE_TEST_DEBUG:\s*['"]0['"]/)
+})
+
 test('ci full desktop build installs Playwright Chromium', () => {
   const job = ciJob('desktop-build')
 
