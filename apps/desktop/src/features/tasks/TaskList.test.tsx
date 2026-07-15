@@ -147,6 +147,31 @@ describe('TaskList', () => {
     expect(onRemoveTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }))
   })
 
+  it('offers inline pin and remove actions around the task overflow menu', async () => {
+    const user = userEvent.setup()
+    const onSetTaskPinned = vi.fn()
+    const onRemoveTask = vi.fn()
+    renderTaskList({ onRemoveTask, onSetTaskPinned })
+
+    const taskRow = screen.getByText('Task 2').closest('li')
+    if (!taskRow) throw new Error('Task row not found')
+    expect(
+      within(taskRow)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual([null, 'Pin Task 2', 'Task 2 actions', 'Remove Task 2'])
+
+    await user.click(screen.getByRole('button', { name: 'Pin Task 2' }))
+    expect(onSetTaskPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: taskId(2) }),
+      true,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Remove Task 2' }))
+    expect(onRemoveTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
   it('invokes project menu actions and disables unavailable moves', async () => {
     const user = userEvent.setup()
     const onRenameProject = vi.fn()

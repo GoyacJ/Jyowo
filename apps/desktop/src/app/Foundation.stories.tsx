@@ -71,7 +71,7 @@ const uiPreferencesSmoke: UiPreferences = {
   sidebarCollapsed: false,
   sidebarSections: { pinned: true, projects: true, conversations: true },
   expandedProjects: {},
-  taskWorkbenchMode: 'closed',
+  taskWorkbenchWidth: 400,
   chatComposerHeight: 160,
   contextPanelWidth: 320,
 }

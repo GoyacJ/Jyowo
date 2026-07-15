@@ -2,10 +2,11 @@ import '@testing-library/jest-dom/vitest'
 
 import { fireEvent, render, screen } from '@testing-library/react'
 import { I18nextProvider } from 'react-i18next'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 import { createAppI18n } from '@/shared/i18n/i18n'
+import { uiStore } from '@/shared/state/ui-store'
 import { TaskTimeline } from './TaskTimeline'
 
 const items: TimelineItemProjection[] = [
@@ -33,7 +34,9 @@ describe('TaskTimeline', () => {
 
     expect(
       screen.getAllByTestId('timeline-item').map((node) => Number(node.dataset.offset)),
-    ).toEqual(items.map((entry) => entry.globalOffset))
+    ).toEqual(
+      items.filter((entry) => entry.summary !== 'Run started').map((entry) => entry.globalOffset),
+    )
     expect(screen.getAllByTestId('user-message')[0]).toHaveClass('ml-auto')
     expect(
       screen.getByText('I am reading the scheduler.').closest('[data-narrative]'),
@@ -42,23 +45,124 @@ describe('TaskTimeline', () => {
       screen.getByText('cargo test -p scheduler').closest('[data-artifact]'),
     ).toBeInTheDocument()
     expect(screen.getByText('Read scheduler.rs').closest('[data-artifact]')).toBeNull()
-    expect(screen.getByText(/left this sentence/)).toHaveAttribute('data-incomplete', 'true')
+    expect(screen.getByText(/left this sentence/).closest('[data-incomplete]')).toHaveAttribute(
+      'data-incomplete',
+      'true',
+    )
   })
 
-  it('offers a jump to latest when partial output grows away from the bottom', () => {
-    const partial = item(40, 'assistant_text', 'partial', 'segment-streaming', true)
-    const { rerender } = render(<TaskTimeline items={[partial]} />)
+  it('opens file and artifact outputs in the workbench', () => {
+    const onSelectItem = vi.fn()
+    const file = { ...item(30, 'file', 'report.md'), blobId: 'report-blob' }
+    const artifact = { ...item(31, 'artifact', 'demo.mp4'), blobId: 'artifact-blob' }
+
+    render(<TaskTimeline items={[file, artifact]} onSelectItem={onSelectItem} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Artifact' }))
+    expect(onSelectItem).toHaveBeenNthCalledWith(1, file, expect.any(HTMLElement))
+    expect(onSelectItem).toHaveBeenNthCalledWith(2, artifact, expect.any(HTMLElement))
+  })
+
+  it('opens user message attachments without making plain messages interactive', () => {
+    const onSelectItem = vi.fn()
+    const attachment = { ...item(32, 'user_message', 'design.png'), blobId: 'attachment-blob' }
+    const plainMessage = item(33, 'user_message', 'No attachment')
+
+    render(<TaskTimeline items={[attachment, plainMessage]} onSelectItem={onSelectItem} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }))
+    expect(onSelectItem).toHaveBeenCalledWith(attachment, expect.any(HTMLElement))
+    expect(screen.getByText('No attachment').closest('button')).toBeNull()
+  })
+
+  it('restores paused position per task without cross-task prepend compensation', () => {
+    const first = item(42, 'assistant_text', 'Task one', 'segment-task-one')
+    const second = item(43, 'user_message', 'Task one update')
+    uiStore.getState().setTimelineScrollSession('timeline-task-2', {
+      hasNewContent: false,
+      mode: 'paused',
+      newItemCount: 0,
+      scrollTop: 300,
+      showJumpToLatest: true,
+      visibleAnchor: null,
+    })
+    const { rerender } = render(<TaskTimeline items={[first]} taskId="timeline-task-1" />)
     const viewport = screen.getByTestId('task-timeline-viewport')
+    let scrollHeight = 1_200
     Object.defineProperties(viewport, {
       clientHeight: { configurable: true, value: 300 },
-      scrollHeight: { configurable: true, value: 1_200 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
       scrollTop: { configurable: true, value: 200, writable: true },
     })
-    fireEvent.scroll(viewport)
+    fireEvent.wheel(viewport, { deltaY: -24 })
+    rerender(<TaskTimeline items={[first, second]} taskId="timeline-task-1" />)
 
-    rerender(<TaskTimeline items={[{ ...partial, summary: 'partial output grew' }]} />)
+    scrollHeight = 1_600
+    rerender(
+      <TaskTimeline items={[item(90, 'user_message', 'Task two')]} taskId="timeline-task-2" />,
+    )
+    expect(viewport.scrollTop).toBe(300)
 
-    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
+    rerender(<TaskTimeline items={[first, second]} taskId="timeline-task-1" />)
+    expect(viewport.scrollTop).toBe(200)
+  })
+
+  it('restores a saved task session after the timeline remounts', () => {
+    uiStore.getState().setTimelineScrollSession('timeline-remount', {
+      hasNewContent: true,
+      mode: 'paused',
+      newItemCount: 2,
+      scrollTop: 375,
+      showJumpToLatest: true,
+      visibleAnchor: null,
+    })
+
+    render(
+      <TaskTimeline
+        items={[item(46, 'assistant_text', 'Restored timeline', 'segment-remount')]}
+        taskId="timeline-remount"
+      />,
+    )
+
+    expect(screen.getByTestId('task-timeline-viewport').scrollTop).toBe(375)
+  })
+
+  it('accepts scrollbar pointer and touch upward gestures', () => {
+    const { unmount } = render(
+      <TaskTimeline
+        items={[item(44, 'assistant_text', 'Pointer interruption', 'segment-pointer')]}
+        taskId="timeline-pointer"
+      />,
+    )
+    const pointerViewport = screen.getByTestId('task-timeline-viewport')
+    Object.defineProperties(pointerViewport, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: { configurable: true, value: 900, writable: true },
+    })
+    fireEvent.pointerDown(pointerViewport, { clientY: 10 })
+    pointerViewport.scrollTop = 800
+    fireEvent.scroll(pointerViewport)
+    unmount()
+    expect(uiStore.getState().timelineScrollByTaskId['timeline-pointer']?.mode).toBe('paused')
+
+    const { unmount: unmountTouch } = render(
+      <TaskTimeline
+        items={[item(45, 'assistant_text', 'Touch interruption', 'segment-touch')]}
+        taskId="timeline-touch"
+      />,
+    )
+    const touchViewport = screen.getByTestId('task-timeline-viewport')
+    Object.defineProperties(touchViewport, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: { configurable: true, value: 800, writable: true },
+    })
+    fireEvent.touchStart(touchViewport, { touches: [{ clientY: 260 }] })
+    fireEvent.touchMove(touchViewport, { touches: [{ clientY: 300 }] })
+    unmountTouch()
+    expect(uiStore.getState().timelineScrollByTaskId['timeline-touch']?.mode).toBe('paused')
   })
 
   it('renders cancelled and superseded historical run terminal states', () => {
@@ -74,26 +178,15 @@ describe('TaskTimeline', () => {
       />,
     )
 
-    expect(screen.getByRole('region', { name: 'Run cancelled' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Run superseded' })).toBeInTheDocument()
+    expect(screen.getByText('Run cancelled')).toBeInTheDocument()
+    expect(screen.getByText('Run superseded')).toBeInTheDocument()
   })
 
-  it('prefers the generated terminal reason for the projected current run', () => {
-    render(
-      <TaskTimeline
-        currentRun={{
-          endedAt: '2026-07-11T06:01:00Z',
-          incompleteOutput: false,
-          segmentId: 'segment-current',
-          startedAt: '2026-07-11T06:00:00Z',
-          state: 'completed',
-          terminalReason: 'cancelled',
-        }}
-        items={[item(60, 'notice', 'Run completed', 'segment-current')]}
-      />,
-    )
+  it('keeps ordinary terminal lifecycle events out of the conversation', () => {
+    render(<TaskTimeline items={[item(60, 'notice', 'Run completed', 'segment-current')]} />)
 
-    expect(screen.getByRole('region', { name: 'Run cancelled' })).toBeInTheDocument()
+    expect(screen.queryByTestId('timeline-item')).not.toBeInTheDocument()
+    expect(screen.queryByText('Run completed')).not.toBeInTheDocument()
   })
 
   it('keeps adjacent assistant messages in separate narrative groups', () => {
@@ -149,6 +242,98 @@ describe('TaskTimeline', () => {
     )
   })
 
+  it('renders assistant Markdown with GFM structure and long-word wrapping', () => {
+    const { container } = render(
+      <TaskTimeline
+        items={[
+          item(
+            1_600,
+            'assistant_text',
+            '## Result\n\nThis is **done** with `code`.\n\n| File | State |\n| --- | --- |\n| scheduler.rs | fixed |\n\nverylongtokenwithoutbreakpoints0123456789',
+            'segment-markdown',
+          ),
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Result', level: 2 })).toHaveClass('text-xl')
+    expect(screen.getByText('done').tagName).toBe('STRONG')
+    expect(screen.getByText('code').tagName).toBe('CODE')
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(container.querySelector('.overflow-wrap-anywhere')).toBeInTheDocument()
+  })
+
+  it('does not insert a duplicate run-status heading into the narrative', () => {
+    render(
+      <TaskTimeline
+        items={[
+          item(1_700, 'assistant_text', 'First response', 'segment-reused'),
+          item(1_701, 'user_message', 'Continue'),
+          item(1_702, 'assistant_text', 'Second response', 'segment-reused'),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText('running')).not.toBeInTheDocument()
+    expect(screen.getByText('First response')).toBeInTheDocument()
+    expect(screen.getByText('Second response')).toBeInTheDocument()
+  })
+
+  it('removes adjacent low-value lifecycle events from the conversation', () => {
+    render(
+      <TaskTimeline
+        items={[
+          item(1_800, 'notice', 'Run started', 'segment-lifecycle'),
+          item(1_801, 'notice', 'Workspace acquired', 'segment-lifecycle'),
+          item(1_802, 'notice', 'Workspace released', 'segment-lifecycle'),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByTestId('timeline-item')).not.toBeInTheDocument()
+    expect(screen.queryByText(/run record/)).not.toBeInTheDocument()
+  })
+
+  it('groups projected tool calls under a semantic activity summary', () => {
+    const read = {
+      ...item(1_900, 'tool_activity', 'Read scheduler.rs', 'segment-tools'),
+      tool: {
+        durationMs: 42,
+        operation: 'read' as const,
+        resultSummary: '18 lines returned',
+        status: 'completed' as const,
+        subject: 'src/scheduler.rs',
+        toolName: 'read_file',
+        toolUseId: 'tool-read',
+      },
+    }
+    const command = {
+      ...item(1_901, 'tool_activity', 'Ran command', 'segment-tools'),
+      tool: {
+        command: 'pnpm test',
+        durationMs: 1_200,
+        operation: 'command' as const,
+        output: '69 test files passed',
+        status: 'completed' as const,
+        toolName: 'exec_command',
+        toolUseId: 'tool-command',
+      },
+    }
+
+    render(<TaskTimeline items={[read, command]} onSelectItem={() => undefined} />)
+
+    expect(screen.getByText('Read 1 file · Ran 1 command')).toBeInTheDocument()
+    expect(screen.getByText('Read 1 file · Ran 1 command').closest('details')).toHaveAttribute(
+      'open',
+    )
+    expect(screen.getByRole('region', { name: 'Command output' })).toHaveTextContent('$ pnpm test')
+    expect(screen.getByRole('region', { name: 'Command output' })).toHaveTextContent(
+      '69 test files passed',
+    )
+    expect(screen.queryByRole('button', { name: /Ran command/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Task update: Ran command')
+  })
+
   it('virtualizes a long single-run history instead of mounting every event', () => {
     const longRun = Array.from({ length: 500 }, (_, index) =>
       item(100 + index, 'tool_activity', `Read file ${index}`, 'segment-long'),
@@ -179,11 +364,11 @@ describe('TaskTimeline', () => {
       </I18nextProvider>,
     )
 
-    expect(screen.getByText('运行已开始')).toBeInTheDocument()
-    expect(screen.getByText('运行已完成')).toBeInTheDocument()
+    expect(screen.queryByText('运行已开始')).not.toBeInTheDocument()
+    expect(screen.queryByText('运行已完成')).not.toBeInTheDocument()
     expect(screen.getByText('Run completed')).toBeInTheDocument()
     expect(screen.getByText('未完成')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '打开更改' })).toHaveTextContent('打开')
+    expect(screen.queryByRole('button', { name: '打开更改' })).not.toBeInTheDocument()
     expect(screen.getByText('详情')).toBeInTheDocument()
     expect(screen.getByText('任务已置顶')).toBeInTheDocument()
     expect(screen.getByText('任务已移除')).toBeInTheDocument()

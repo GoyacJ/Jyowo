@@ -141,7 +141,7 @@ describe('SettingsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
 
@@ -192,6 +192,8 @@ describe('SettingsPage', () => {
     renderSettingsPage({
       runtimeTools: {
         generation: 4,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'GitStatus',
@@ -208,6 +210,9 @@ describe('SettingsPage', () => {
             deferPolicy: 'alwaysLoad',
             longRunning: false,
             serviceBinding: null,
+            configuredEnabled: true,
+            available: true,
+            unavailableReason: null,
           },
         ],
       },
@@ -240,17 +245,15 @@ describe('SettingsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(await screen.findByRole('heading', { name: '运行时执行状态' })).toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
-    expect(screen.getByText('GitStatus')).toBeInTheDocument()
-    expect(await screen.findByText('routing')).toBeInTheDocument()
-    expect(screen.getByText('local-process')).toBeInTheDocument()
-    expect(screen.getByText('docker-process')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
+    expect(await screen.findByText('GitStatus')).toBeInTheDocument()
+    expect(await screen.findByText('沙箱 routing')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('查看详情'))
+    expect(screen.getByText('local-process, docker-process')).toBeInTheDocument()
     expect(
       screen.getByText('network broker is not registered in the capability registry'),
     ).toBeInTheDocument()
-    expect(screen.getAllByText('WebFetch').length).toBeGreaterThan(0)
-    expect(screen.getByText('HTTP broker is not registered')).toBeInTheDocument()
+    expect(screen.queryByText('WebFetch')).not.toBeInTheDocument()
   })
 
   it('opens runtime tools from the tools route search', async () => {
@@ -259,6 +262,8 @@ describe('SettingsPage', () => {
     renderSettingsPage({
       runtimeTools: {
         generation: 5,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'GitStatus',
@@ -275,13 +280,16 @@ describe('SettingsPage', () => {
             deferPolicy: 'alwaysLoad',
             longRunning: false,
             serviceBinding: null,
+            configuredEnabled: true,
+            available: true,
+            unavailableReason: null,
           },
         ],
       },
     })
 
     expect(screen.getByRole('tab', { name: '工具' })).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
     expect(await screen.findByText('GitStatus')).toBeInTheDocument()
   })
 

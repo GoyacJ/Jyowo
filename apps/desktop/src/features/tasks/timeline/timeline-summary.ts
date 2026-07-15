@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
+import { toolActivitySummary } from './tool-activity-summary'
 
 const summaryKeys = {
   'Artifact updated': 'artifactUpdated',
@@ -49,6 +50,7 @@ const summaryKeys = {
 
 export function timelineSummary(item: TimelineItemProjection, t: TFunction<'tasks'>) {
   if (item.kind === 'assistant_text' || item.kind === 'user_message') return item.summary
+  if (item.kind === 'tool_activity' && item.tool) return toolActivitySummary(item, t)
   const key = summaryKeys[item.summary as keyof typeof summaryKeys]
   if (key) return t(`timeline.summary.${key}`)
   if (item.kind === 'tool_activity' && item.summary.startsWith('Using ')) {

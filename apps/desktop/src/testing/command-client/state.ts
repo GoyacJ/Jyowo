@@ -5,10 +5,11 @@ import type {
   ListProviderCapabilityRouteOptionsResponse,
   ListProviderCapabilityRoutesResponse,
   ListProviderSettingsResponse,
+  ListRuntimeToolsResponse,
   SkillCatalogInstallProgressPayload,
 } from '@/shared/tauri/commands'
 
-import { cloneResponse, type TestCommandClientOptions } from './base'
+import { cloneResponse, fixtureRuntimeTools, type TestCommandClientOptions } from './base'
 import { fixtureProviderSettingsList, testJyowoProject } from './settings'
 
 export type TestCommandHandlers<T extends keyof CommandClient> = Pick<CommandClient, T>
@@ -27,6 +28,7 @@ export type TestCommandClientState = {
   providerRevealConfigIdsByToken: Map<string, string>
   providerRevealCounter: number
   providerSettings: ListProviderSettingsResponse
+  runtimeTools: ListRuntimeToolsResponse
 }
 
 export function createTestCommandClientState(
@@ -46,6 +48,7 @@ export function createTestCommandClientState(
     providerRevealConfigIdsByToken: new Map(),
     providerRevealCounter: 0,
     providerSettings: cloneResponse(options.providerSettingsList ?? fixtureProviderSettingsList),
+    runtimeTools: cloneResponse(options.runtimeTools ?? fixtureRuntimeTools),
   }
 
   state.emitCatalogInstallProgress = (request, stage, percent) => {

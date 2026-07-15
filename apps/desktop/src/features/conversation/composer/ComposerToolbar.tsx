@@ -67,7 +67,7 @@ export function ComposerToolbar({
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+      <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 text-muted-foreground">
         <ComposerPermissionModeMenu
           autoModeAvailable={autoModeAvailable}
           disabled={disabled}
@@ -107,7 +107,7 @@ export function ComposerToolbar({
         {modelConfigs.length > 0 ? (
           <Select
             aria-label={t('modelConfig')}
-            className="h-8 max-w-[220px] text-xs"
+            className="task-composer-model-select h-8 min-w-0 w-[min(180px,35vw)] max-w-[180px] text-xs"
             disabled={disabled || modelConfigDisabled || !onModelConfigChange}
             onChange={(event) => onModelConfigChange?.(event.target.value)}
             value={modelConfigId ?? ''}
@@ -162,7 +162,9 @@ function ComposerMemoryModeMenu({
               type="button"
             >
               <Database className="size-3.5" />
-              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
+              <span className="task-composer-toolbar-label max-w-[8rem] truncate">
+                {selectedLabel}
+              </span>
               <ChevronDown className="size-3.5 opacity-70" />
             </button>
           </DropdownMenuTrigger>
@@ -244,7 +246,9 @@ function ComposerPermissionModeMenu({
               type="button"
             >
               <Shield className="size-3.5" />
-              <span className="max-w-[8rem] truncate">{selectedLabel}</span>
+              <span className="task-composer-toolbar-label max-w-[8rem] truncate">
+                {selectedLabel}
+              </span>
               <ChevronDown className="size-3.5 opacity-70" />
             </button>
           </DropdownMenuTrigger>

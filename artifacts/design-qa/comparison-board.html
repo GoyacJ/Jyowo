@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Task Workbench Design QA</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 28px 28px 900px; background: #111; color: #eee; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      h1 { margin: 0 0 20px; font-size: 22px; }
+      h2 { margin: 28px 0 12px; font-size: 16px; color: #bbb; }
+      h2#focus-comparison { scroll-margin-top: 28px; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; align-items: start; }
+      .card { overflow: hidden; border: 1px solid #333; border-radius: 12px; background: #1b1b1b; }
+      .label { padding: 10px 12px; border-bottom: 1px solid #333; color: #ccc; }
+      img { display: block; width: 100%; height: auto; background: #080808; }
+      .compact img { height: 500px; object-fit: contain; }
+      .full { grid-column: span 2; }
+      .full img { max-height: 690px; object-fit: contain; }
+      .responsive img { height: 690px; object-fit: contain; }
+      .focus { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; scroll-margin-top: 20px; }
+      .focus .source img { height: 590px; object-fit: contain; }
+      .crop { height: 590px; overflow: hidden; background: #080808; }
+      .crop img { width: 1440px; max-width: none; transform: translateX(-870px); }
+      .jump { position: fixed; top: 16px; right: 20px; z-index: 10; padding: 8px 12px; border: 1px solid #444; border-radius: 8px; background: #222; color: #eee; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <h1>任务工作台：参考设计与实现对照</h1>
+    <a class="jump" href="#focus-comparison">查看局部对照</a>
+
+    <h2>摘要卡片参考</h2>
+    <section class="grid compact">
+      <article class="card"><div class="label">参考 1 · 环境、变更、分支、来源</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/3b7ef449-4079-4219-9704-e14722513907.png" /></article>
+      <article class="card"><div class="label">参考 2 · 环境与子智能体</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/451bc809-6418-4f4d-bf39-95b24c0d2ffe.png" /></article>
+      <article class="card"><div class="label">参考 3 · 分支活动态与来源</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/b34dc124-563a-48f9-a6d2-d57e15172348.png" /></article>
+    </section>
+
+    <h2>桌面结构参考与停靠模式实现</h2>
+    <section class="grid">
+      <article class="card full"><div class="label">参考 4 · 会话与文件工作区并列</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/93f8a17f-c12d-4c54-9a30-acd041ba7b5c.png" /></article>
+      <article class="card responsive"><div class="label">实现 · 对象预览停靠模式 1440 × 900</div><img src="/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-workbench-object-preview-1440x900.png" /></article>
+    </section>
+
+    <h2>子智能体参考与响应式实现</h2>
+    <section class="grid">
+      <article class="card full"><div class="label">参考 5 · 会话与子智能体工作区并列</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/0e3ac6f3-7ac4-4b89-a575-2f498195669f.png" /></article>
+      <article class="card responsive"><div class="label">实现 · 对象预览覆盖模式 900 × 900</div><img src="/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-workbench-object-overlay-900x900.png" /></article>
+      <article class="card responsive"><div class="label">实现 · 对象预览全屏模式 690 × 844</div><img src="/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-workbench-object-fullscreen-690x844.png" /></article>
+    </section>
+
+    <h2 id="focus-comparison">局部对照：摘要卡片与右侧工作台</h2>
+    <section class="focus">
+      <article class="card source"><div class="label">参考局部</div><img src="/Users/goya/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_nfsvik4hifth22_541f/temp/InputTemp/3b7ef449-4079-4219-9704-e14722513907.png" /></article>
+      <article class="card"><div class="label">实现局部 · 对象工作台</div><div class="crop"><img src="/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-workbench-object-preview-1440x900.png" /></div></article>
+    </section>
+  </body>
+</html>

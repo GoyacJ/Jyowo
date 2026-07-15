@@ -151,13 +151,13 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
   const sidebarSections = useUiStore((state) => state.sidebarSections)
   const expandedProjects = useUiStore((state) => state.expandedProjects)
-  const taskWorkbenchMode = useUiStore((state) => state.taskWorkbenchMode)
+  const taskWorkbenchWidth = useUiStore((state) => state.taskWorkbenchWidth)
   const setTheme = useUiStore((state) => state.setTheme)
   const setLocale = useUiStore((state) => state.setLocale)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
   const setSidebarSectionExpanded = useUiStore((state) => state.setSidebarSectionExpanded)
   const setProjectExpanded = useUiStore((state) => state.setProjectExpanded)
-  const setTaskWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
+  const setTaskWorkbenchWidth = useUiStore((state) => state.setTaskWorkbenchWidth)
   const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
@@ -186,7 +186,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
         for (const [path, expanded] of Object.entries(preferences.expandedProjects)) {
           setProjectExpanded(path, expanded)
         }
-        setTaskWorkbenchMode(preferences.taskWorkbenchMode)
+        setTaskWorkbenchWidth(preferences.taskWorkbenchWidth)
         applyTheme(preferences.theme, getSystemPrefersDark())
         setHydrated(true)
         revealWindow()
@@ -211,7 +211,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setProjectExpanded,
     setSidebarCollapsed,
     setSidebarSectionExpanded,
-    setTaskWorkbenchMode,
+    setTaskWorkbenchWidth,
     setTheme,
   ])
 
@@ -225,7 +225,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
       locale,
       sidebarCollapsed,
       sidebarSections,
-      taskWorkbenchMode,
+      taskWorkbenchWidth,
       theme,
     }).catch(() => {
       // Local UI preferences are non-security settings; the app can keep running without persistence.
@@ -236,7 +236,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
     locale,
     sidebarCollapsed,
     sidebarSections,
-    taskWorkbenchMode,
+    taskWorkbenchWidth,
     theme,
   ])
 

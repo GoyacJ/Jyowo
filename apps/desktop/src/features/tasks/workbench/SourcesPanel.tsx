@@ -5,25 +5,31 @@ import { ArtifactText } from './DiffPanel'
 import { ProjectionList } from './EnvironmentPanel'
 
 export function SourcesPanel({
+  error,
   events,
   loading,
   missing,
+  onRetry,
   text,
   timeline,
 }: {
   events: TaskEventEnvelope[]
+  error?: boolean
   loading: boolean
   missing: boolean
+  onRetry?: () => void
   text: string | null
   timeline: TimelineItemProjection[]
 }) {
   const { t } = useTranslation('tasks')
-  if (loading || missing || text !== null) {
+  if (error || loading || missing || text !== null) {
     return (
       <ArtifactText
         empty={t('workbench.empty.source')}
+        error={error}
         loading={loading}
         missing={missing}
+        onRetry={onRetry}
         text={text}
       />
     )

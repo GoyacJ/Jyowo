@@ -99,6 +99,8 @@ async fn list_runtime_tools_returns_the_complete_settings_catalog() {
     let response = list_runtime_tools_with_runtime_state(&state).expect("tools should list");
 
     assert!(response.generation > 0);
+    assert_eq!(response.scope, SettingsScope::Project);
+    assert!(!response.customized);
     assert!(response.tools.len() > 17);
     assert!(response.tools.windows(2).all(|tools| {
         (
@@ -132,6 +134,8 @@ async fn list_runtime_tools_returns_the_complete_settings_catalog() {
     }
 
     assert_eq!(by_name["FileRead"].access, "readOnly");
+    assert!(by_name["FileRead"].configured_enabled);
+    assert!(by_name["FileRead"].available);
     assert_eq!(by_name["FileWrite"].access, "destructive");
     assert_eq!(by_name["Todo"].access, "mutating");
     assert_eq!(
@@ -148,6 +152,77 @@ async fn list_runtime_tools_returns_the_complete_settings_catalog() {
             .provider_id,
         "minimax"
     );
+}
+
+#[tokio::test]
+async fn runtime_tool_switch_persists_a_project_profile_and_reset_restores_inheritance() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("runtime-tool-switch");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+
+    let response = set_runtime_tool_enabled_with_runtime_state(
+        &state,
+        SetRuntimeToolEnabledRequest {
+            name: "FileRead".to_owned(),
+            enabled: false,
+        },
+    )
+    .expect("tool should be disabled");
+    let file_read = response
+        .tools
+        .iter()
+        .find(|tool| tool.name == "FileRead")
+        .unwrap();
+    assert!(!file_read.configured_enabled);
+    assert!(response.customized);
+
+    let reloaded = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should reload");
+    let persisted = list_runtime_tools_with_runtime_state(&reloaded).expect("tools should list");
+    assert!(
+        !persisted
+            .tools
+            .iter()
+            .find(|tool| tool.name == "FileRead")
+            .unwrap()
+            .configured_enabled
+    );
+
+    let reset = reset_runtime_tools_with_runtime_state(&reloaded).expect("tools should reset");
+    assert!(!reset.customized);
+    assert!(
+        reset
+            .tools
+            .iter()
+            .find(|tool| tool.name == "FileRead")
+            .unwrap()
+            .configured_enabled
+    );
+}
+
+#[tokio::test]
+async fn runtime_tool_switch_rejects_unknown_names() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("runtime-tool-switch-unknown");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should initialize");
+
+    let error = set_runtime_tool_enabled_with_runtime_state(
+        &state,
+        SetRuntimeToolEnabledRequest {
+            name: "NotRegistered".to_owned(),
+            enabled: false,
+        },
+    )
+    .expect_err("unknown tools must be rejected");
+
+    assert_eq!(error.code, "INVALID_PAYLOAD");
 }
 
 #[tokio::test]

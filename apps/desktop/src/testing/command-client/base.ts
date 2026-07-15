@@ -84,6 +84,8 @@ export const fixtureRuntimeExecutionStatus: RuntimeExecutionStatus = {
 
 export const fixtureRuntimeTools: ListRuntimeToolsResponse = {
   generation: 1,
+  scope: 'project',
+  customized: false,
   tools: [
     {
       name: 'FileRead',
@@ -100,6 +102,9 @@ export const fixtureRuntimeTools: ListRuntimeToolsResponse = {
       deferPolicy: 'alwaysLoad',
       longRunning: false,
       serviceBinding: null,
+      configuredEnabled: true,
+      available: true,
+      unavailableReason: null,
     },
     {
       name: 'Bash',
@@ -116,6 +121,9 @@ export const fixtureRuntimeTools: ListRuntimeToolsResponse = {
       deferPolicy: 'alwaysLoad',
       longRunning: true,
       serviceBinding: null,
+      configuredEnabled: true,
+      available: true,
+      unavailableReason: null,
     },
   ],
 }

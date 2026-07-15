@@ -8,12 +8,13 @@ use crate::{
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
     ActorId, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobId, CheckpointId,
-    ChildAttachment, ClientId, CommandId, DeltaChunk, EndReason, Event, MessageContent, MessageId,
-    NoopRedactor, PermissionProjection, PermissionRoute, QueueItemId, QueueItemState, RequestId,
-    RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason, SessionId, StopReason,
-    SubagentActorState, SubagentId, SubagentParentProjection, SubagentProjection, TaskId,
-    TaskState, TenantId, UsageSnapshot, WorkspaceLeaseId, WorkspaceLeaseProjection,
-    WorkspaceLeaseState, WorkspaceMode,
+    ChildAttachment, ClientId, CommandId, DeferPolicy, DeltaChunk, EndReason, Event, EventId,
+    MessageContent, MessageId, NoopRedactor, PermissionProjection, PermissionRoute, QueueItemId,
+    QueueItemState, RequestId, RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason,
+    SessionId, StopReason, SubagentActorState, SubagentId, SubagentParentProjection,
+    SubagentProjection, TaskId, TaskState, TenantId, ToolProperties, ToolResult,
+    ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, UsageSnapshot,
+    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
 };
 use rusqlite::params;
 use serde_json::json;
@@ -140,6 +141,99 @@ fn engine_assistant_events_project_text_without_internal_lifecycle_notices() {
     store.rebuild_projections().unwrap();
     assert_eq!(timeline(&path, task_id), before_rebuild);
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn engine_tool_events_update_one_semantic_timeline_item() {
+    let root = temp_root("engine-tool-timeline");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let tool_use_id = ToolUseId::new();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Tool projection"),
+    );
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(segment_id),
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            Some(0),
+            &[
+                Event::ToolUseRequested(ToolUseRequestedEvent {
+                    run_id,
+                    tool_use_id,
+                    tool_name: "read_file".into(),
+                    input: json!({ "path": "/workspace/src/scheduler.rs" }),
+                    properties: ToolProperties {
+                        is_concurrency_safe: true,
+                        is_read_only: true,
+                        is_destructive: false,
+                        long_running: None,
+                        defer_policy: DeferPolicy::AlwaysLoad,
+                    },
+                    causation_id: EventId::new(),
+                    at,
+                }),
+                Event::ToolUseStarted(ToolUseStartedEvent {
+                    run_id,
+                    tool_use_id,
+                    at,
+                }),
+                Event::ToolUseCompleted(ToolUseCompletedEvent {
+                    tool_use_id,
+                    result: ToolResult::Text("first\nsecond".into()),
+                    usage: None,
+                    duration_ms: 42,
+                    at,
+                }),
+            ],
+        )
+        .unwrap();
+
+    let tools = timeline(&path, task_id)
+        .into_iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::ToolActivity)
+        .collect::<Vec<_>>();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].summary, "Read src/scheduler.rs");
+    assert!(!tools[0].incomplete);
+    assert_eq!(
+        tools[0].tool.as_ref().map(|tool| (
+            tool.status,
+            tool.subject.as_deref(),
+            tool.result_summary.as_deref(),
+            tool.duration_ms,
+        )),
+        Some((
+            harness_contracts::TimelineToolStatus::Completed,
+            Some("src/scheduler.rs"),
+            Some("2 lines returned"),
+            Some(42),
+        ))
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

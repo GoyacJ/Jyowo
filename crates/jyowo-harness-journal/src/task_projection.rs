@@ -5,7 +5,8 @@ use harness_contracts::{
     ActorId, ChildAttachment, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode,
     QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
     SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
-    TimelineItemProjection,
+    TimelineItemProjection, TimelineToolOperation, TimelineToolProjection, TimelineToolStatus,
+    ToolResult, ToolResultPart,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -1184,6 +1185,7 @@ fn project_timeline(
         summary,
         blob_id,
         incomplete,
+        tool: None,
     };
     insert_timeline_item(transaction, envelope, &timeline)
 }
@@ -1282,6 +1284,7 @@ fn project_engine_timeline(
                 summary: text.clone(),
                 blob_id: None,
                 incomplete: true,
+                tool: None,
             }
         }
         Event::AssistantMessageCompleted(completed) => {
@@ -1309,6 +1312,7 @@ fn project_engine_timeline(
                 summary: text,
                 blob_id: None,
                 incomplete: false,
+                tool: None,
             }
         }
         Event::AssistantNotice(notice) => engine_timeline_item(
@@ -1349,7 +1353,7 @@ fn project_engine_timeline(
                 .kind
                 .as_deref()
                 .map(artifact_timeline_kind)
-                .unwrap_or(TimelineEventKind::Diff),
+                .unwrap_or(TimelineEventKind::Artifact),
             run_segment_id,
             artifact
                 .title
@@ -1358,46 +1362,73 @@ fn project_engine_timeline(
             artifact.blob_ref.as_ref().map(|blob| blob.id),
             false,
         ),
-        Event::ToolUseRequested(tool) => engine_timeline_item(
-            envelope,
-            TimelineEventKind::ToolActivity,
-            run_segment_id,
-            format!("Using {}", tool.tool_name),
-            None,
-            true,
-        ),
-        Event::ToolUseStarted(_) => engine_timeline_item(
-            envelope,
-            TimelineEventKind::ToolActivity,
-            run_segment_id,
-            "Tool started".into(),
-            None,
-            true,
-        ),
-        Event::ToolUseDenied(_) => engine_timeline_item(
-            envelope,
-            TimelineEventKind::ToolActivity,
-            run_segment_id,
-            "Tool denied".into(),
-            None,
-            false,
-        ),
-        Event::ToolUseCompleted(_) => engine_timeline_item(
-            envelope,
-            TimelineEventKind::ToolActivity,
-            run_segment_id,
-            "Tool completed".into(),
-            None,
-            false,
-        ),
-        Event::ToolUseFailed(failed) => engine_timeline_item(
-            envelope,
-            TimelineEventKind::Error,
-            run_segment_id,
-            bounded_summary(&failed.error.message),
-            None,
-            true,
-        ),
+        Event::ToolUseRequested(tool) => {
+            let operation = timeline_tool_operation(&tool.tool_name);
+            let projection = TimelineToolProjection {
+                tool_use_id: tool.tool_use_id.to_string(),
+                tool_name: tool.tool_name.clone(),
+                operation,
+                status: TimelineToolStatus::Requested,
+                command: timeline_tool_command(operation, &tool.input),
+                subject: timeline_tool_subject(operation, &tool.input),
+                output: None,
+                result_summary: None,
+                duration_ms: None,
+            };
+            return insert_timeline_item(
+                transaction,
+                envelope,
+                &tool_timeline_item(envelope, run_segment_id, projection),
+            );
+        }
+        Event::ToolUseStarted(started) => {
+            return update_tool_timeline(
+                transaction,
+                envelope,
+                run_segment_id,
+                started.tool_use_id.to_string(),
+                TimelineToolStatus::Running,
+                None,
+                None,
+                None,
+            );
+        }
+        Event::ToolUseDenied(denied) => {
+            return update_tool_timeline(
+                transaction,
+                envelope,
+                run_segment_id,
+                denied.tool_use_id.to_string(),
+                TimelineToolStatus::Denied,
+                None,
+                None,
+                None,
+            );
+        }
+        Event::ToolUseCompleted(completed) => {
+            return update_tool_timeline(
+                transaction,
+                envelope,
+                run_segment_id,
+                completed.tool_use_id.to_string(),
+                TimelineToolStatus::Completed,
+                Some(tool_result_summary(&completed.result)),
+                tool_result_preview(&completed.result),
+                Some(completed.duration_ms),
+            );
+        }
+        Event::ToolUseFailed(failed) => {
+            return update_tool_timeline(
+                transaction,
+                envelope,
+                run_segment_id,
+                failed.tool_use_id.to_string(),
+                TimelineToolStatus::Failed,
+                Some(bounded_tool_text(&failed.error.message)),
+                Some(bounded_tool_preview(&failed.error.message)),
+                None,
+            );
+        }
         Event::CompactionApplied(_) => engine_timeline_item(
             envelope,
             TimelineEventKind::Compaction,
@@ -1436,14 +1467,287 @@ fn engine_timeline_item(
         summary,
         blob_id,
         incomplete,
+        tool: None,
     }
+}
+
+fn tool_timeline_item(
+    envelope: &TaskEventEnvelope,
+    run_segment_id: Option<harness_contracts::RunSegmentId>,
+    tool: TimelineToolProjection,
+) -> TimelineItemProjection {
+    TimelineItemProjection {
+        id: envelope.event_id.to_string(),
+        kind: TimelineEventKind::ToolActivity,
+        global_offset: envelope.global_offset,
+        run_segment_id,
+        semantic_group_id: Some(tool.tool_use_id.clone()),
+        summary: tool_timeline_summary(&tool),
+        blob_id: None,
+        incomplete: matches!(
+            tool.status,
+            TimelineToolStatus::Requested | TimelineToolStatus::Running
+        ),
+        tool: Some(tool),
+    }
+}
+
+fn update_tool_timeline(
+    transaction: &Transaction<'_>,
+    envelope: &TaskEventEnvelope,
+    run_segment_id: Option<harness_contracts::RunSegmentId>,
+    tool_use_id: String,
+    status: TimelineToolStatus,
+    result_summary: Option<String>,
+    output: Option<String>,
+    duration_ms: Option<u64>,
+) -> Result<(), TaskStoreError> {
+    let mut item = {
+        let mut statement = transaction.prepare(
+            "SELECT projection_json FROM timeline_projection
+             WHERE task_id = ?1 ORDER BY global_offset DESC",
+        )?;
+        let rows = statement.query_map([envelope.task_id.to_string()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut found = None;
+        for row in rows {
+            let candidate: TimelineItemProjection = serde_json::from_str(&row?)?;
+            if candidate
+                .tool
+                .as_ref()
+                .map(|tool| tool.tool_use_id.as_str())
+                == Some(tool_use_id.as_str())
+            {
+                found = Some(candidate);
+                break;
+            }
+        }
+        found
+    };
+
+    let Some(item) = item.as_mut() else {
+        let fallback = TimelineToolProjection {
+            tool_use_id,
+            tool_name: "tool".into(),
+            operation: TimelineToolOperation::Other,
+            status,
+            command: None,
+            subject: None,
+            output: None,
+            result_summary,
+            duration_ms,
+        };
+        return insert_timeline_item(
+            transaction,
+            envelope,
+            &tool_timeline_item(envelope, run_segment_id, fallback),
+        );
+    };
+
+    let Some(tool) = item.tool.as_mut() else {
+        return integrity("tool timeline item lost its tool projection");
+    };
+    tool.status = status;
+    if result_summary.is_some() {
+        tool.result_summary = result_summary;
+    }
+    if tool.operation == TimelineToolOperation::Command && output.is_some() {
+        tool.output = output;
+    }
+    if duration_ms.is_some() {
+        tool.duration_ms = duration_ms;
+    }
+    item.summary = tool_timeline_summary(tool);
+    item.incomplete = matches!(
+        status,
+        TimelineToolStatus::Requested | TimelineToolStatus::Running
+    );
+    transaction.execute(
+        "UPDATE timeline_projection SET projection_json = ?3
+         WHERE task_id = ?1 AND global_offset = ?2",
+        params![
+            envelope.task_id.to_string(),
+            sqlite_integer(item.global_offset)?,
+            serde_json::to_string(item)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn timeline_tool_operation(tool_name: &str) -> TimelineToolOperation {
+    let name = tool_name.to_ascii_lowercase();
+    if name.contains("edit") || name.contains("write") || name.contains("patch") {
+        TimelineToolOperation::Edit
+    } else if name.contains("read") || name.contains("load") {
+        TimelineToolOperation::Read
+    } else if name.contains("search")
+        || name.contains("find")
+        || name.contains("grep")
+        || name == "rg"
+        || name.contains("glob")
+    {
+        TimelineToolOperation::Search
+    } else if name.contains("exec")
+        || name.contains("command")
+        || name.contains("shell")
+        || name.contains("terminal")
+        || name == "bash"
+    {
+        TimelineToolOperation::Command
+    } else if name.contains("browser") || name.contains("fetch") || name.contains("web") {
+        TimelineToolOperation::Browse
+    } else if name.contains("image") || name.contains("generate") {
+        TimelineToolOperation::Generate
+    } else if name.contains("agent") || name.contains("delegate") || name.contains("spawn") {
+        TimelineToolOperation::Delegate
+    } else {
+        TimelineToolOperation::Other
+    }
+}
+
+fn timeline_tool_subject(
+    operation: TimelineToolOperation,
+    input: &serde_json::Value,
+) -> Option<String> {
+    let object = input.as_object()?;
+    let keys = match operation {
+        TimelineToolOperation::Read | TimelineToolOperation::Edit => {
+            ["path", "file_path", "filePath", "filename"]
+        }
+        TimelineToolOperation::Generate | TimelineToolOperation::Delegate => {
+            ["name", "target", "output_path", "outputPath"]
+        }
+        _ => return None,
+    };
+    keys.into_iter()
+        .find_map(|key| object.get(key).and_then(serde_json::Value::as_str))
+        .map(safe_tool_subject)
+}
+
+fn timeline_tool_command(
+    operation: TimelineToolOperation,
+    input: &serde_json::Value,
+) -> Option<String> {
+    if operation != TimelineToolOperation::Command {
+        return None;
+    }
+    let object = input.as_object()?;
+    ["cmd", "command", "script"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(serde_json::Value::as_str))
+        .map(bounded_tool_preview)
+}
+
+fn safe_tool_subject(value: &str) -> String {
+    let normalized = value.replace('\\', "/");
+    let parts = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let start = parts.len().saturating_sub(2);
+    bounded_tool_text(&parts[start..].join("/"))
+}
+
+fn tool_timeline_summary(tool: &TimelineToolProjection) -> String {
+    let action = match (tool.status, tool.operation) {
+        (TimelineToolStatus::Completed, TimelineToolOperation::Read) => "Read",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Edit) => "Edited",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Search) => "Searched",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Command) => "Ran command",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Browse) => "Browsed",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Generate) => "Generated",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Delegate) => "Delegated",
+        (TimelineToolStatus::Completed, TimelineToolOperation::Other) => "Used tool",
+        (TimelineToolStatus::Denied, _) => "Tool denied",
+        (TimelineToolStatus::Failed, _) => "Tool failed",
+        (_, TimelineToolOperation::Read) => "Reading",
+        (_, TimelineToolOperation::Edit) => "Editing",
+        (_, TimelineToolOperation::Search) => "Searching",
+        (_, TimelineToolOperation::Command) => "Running command",
+        (_, TimelineToolOperation::Browse) => "Browsing",
+        (_, TimelineToolOperation::Generate) => "Generating",
+        (_, TimelineToolOperation::Delegate) => "Delegating",
+        (_, TimelineToolOperation::Other) => "Using tool",
+    };
+    match tool.subject.as_deref() {
+        Some(subject) => format!("{action} {subject}"),
+        None if tool.operation == TimelineToolOperation::Other => {
+            format!("{action} {}", tool.tool_name)
+        }
+        None => action.into(),
+    }
+}
+
+fn tool_result_summary(result: &ToolResult) -> String {
+    match result {
+        ToolResult::Text(text) => format!("{} lines returned", text.lines().count().max(1)),
+        ToolResult::Structured(_) => "Structured result".into(),
+        ToolResult::Blob { content_type, .. } => content_type.clone(),
+        ToolResult::Mixed(parts) => format!("{} result parts", parts.len()),
+        _ => "Result received".into(),
+    }
+}
+
+fn tool_result_preview(result: &ToolResult) -> Option<String> {
+    let preview = match result {
+        ToolResult::Text(text) => Some(text.clone()),
+        ToolResult::Structured(value) => serde_json::to_string_pretty(value).ok(),
+        ToolResult::Mixed(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(tool_result_part_preview)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        ToolResult::Blob { .. } => None,
+        _ => None,
+    }?;
+    Some(bounded_tool_preview(&preview))
+}
+
+fn tool_result_part_preview(part: &ToolResultPart) -> Option<String> {
+    match part {
+        ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => Some(text.clone()),
+        ToolResultPart::Structured { value, .. } => serde_json::to_string_pretty(value).ok(),
+        ToolResultPart::Blob { summary, .. } | ToolResultPart::Reference { summary, .. } => {
+            summary.clone()
+        }
+        ToolResultPart::Table { caption, .. } => caption.clone(),
+        ToolResultPart::Progress { detail, .. } => detail.clone(),
+        ToolResultPart::Error { message, .. } => Some(message.clone()),
+        ToolResultPart::Artifact { preview, title, .. } => {
+            preview.clone().or_else(|| Some(title.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn bounded_tool_text(value: &str) -> String {
+    value.chars().take(160).collect()
+}
+
+fn bounded_tool_preview(value: &str) -> String {
+    const MAX_TOOL_PREVIEW_CHARS: usize = 8_000;
+    let mut preview = value
+        .chars()
+        .take(MAX_TOOL_PREVIEW_CHARS + 1)
+        .collect::<String>();
+    if preview.chars().count() > MAX_TOOL_PREVIEW_CHARS {
+        preview = preview.chars().take(MAX_TOOL_PREVIEW_CHARS).collect();
+        preview.push('…');
+    }
+    preview
 }
 
 fn artifact_timeline_kind(kind: &str) -> TimelineEventKind {
     match kind.to_ascii_lowercase().as_str() {
         "image" | "screenshot" => TimelineEventKind::Image,
         "command" | "terminal" => TimelineEventKind::Command,
-        _ => TimelineEventKind::Diff,
+        "diff" | "patch" => TimelineEventKind::Diff,
+        "file" => TimelineEventKind::File,
+        _ => TimelineEventKind::Artifact,
     }
 }
 
@@ -1783,4 +2087,22 @@ fn invalid_transition<T>(message: impl Into<String>) -> Result<T, TaskStoreError
 
 fn integrity<T>(message: impl Into<String>) -> Result<T, TaskStoreError> {
     Err(TaskStoreError::ProjectionIntegrity(message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::artifact_timeline_kind;
+    use harness_contracts::TimelineEventKind;
+
+    #[test]
+    fn preserves_object_identity_for_generated_artifacts() {
+        assert_eq!(artifact_timeline_kind("image"), TimelineEventKind::Image);
+        assert_eq!(
+            artifact_timeline_kind("command"),
+            TimelineEventKind::Command
+        );
+        assert_eq!(artifact_timeline_kind("diff"), TimelineEventKind::Diff);
+        assert_eq!(artifact_timeline_kind("file"), TimelineEventKind::File);
+        assert_eq!(artifact_timeline_kind("video"), TimelineEventKind::Artifact);
+    }
 }

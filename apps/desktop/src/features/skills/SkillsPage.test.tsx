@@ -91,7 +91,7 @@ describe('SkillsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
     expect(await screen.findByText('FileRead')).toBeInTheDocument()
     expect(await screen.findByText('Bash')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Provider 设置' })).not.toBeInTheDocument()
@@ -107,7 +107,7 @@ describe('SkillsPage', () => {
     renderSkillsPage()
 
     expect(screen.getByRole('tab', { name: '工具' })).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
     expect(await screen.findByText('FileRead')).toBeInTheDocument()
   })
 

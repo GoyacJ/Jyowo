@@ -5153,6 +5153,8 @@
         "tool_activity",
         "command",
         "diff",
+        "file",
+        "artifact",
         "image",
         "permission",
         "compaction",
@@ -5206,6 +5208,16 @@
         },
         "summary": {
           "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineToolProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -5215,6 +5227,85 @@
         "globalOffset",
         "summary",
         "incomplete"
+      ]
+    },
+    "TimelineToolOperation": {
+      "type": "string",
+      "enum": [
+        "read",
+        "edit",
+        "search",
+        "command",
+        "browse",
+        "generate",
+        "delegate",
+        "other"
+      ]
+    },
+    "TimelineToolProjection": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "operation": {
+          "$ref": "#/$defs/TimelineToolOperation"
+        },
+        "output": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resultSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/TimelineToolStatus"
+        },
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "toolUseId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "toolUseId",
+        "toolName",
+        "operation",
+        "status"
+      ]
+    },
+    "TimelineToolStatus": {
+      "type": "string",
+      "enum": [
+        "requested",
+        "running",
+        "completed",
+        "denied",
+        "failed"
       ]
     },
     "ToolGroup": {

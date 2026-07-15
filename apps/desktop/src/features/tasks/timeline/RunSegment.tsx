@@ -1,88 +1,30 @@
 import { useTranslation } from 'react-i18next'
-import type { RunProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
+import type { TimelineItemProjection } from '@/generated/daemon-protocol'
+import { MarkdownMessage } from '@/shared/markdown/MarkdownMessage'
 
-import { TimelineEvent, TimelineItem } from './TimelineEvent'
+import { isLowValueLifecycleItem, TimelineEvent, TimelineItem } from './TimelineEvent'
+import { ToolActivityGroup } from './ToolActivityGroup'
+import type { ToolTimelineItem } from './tool-activity-summary'
 
 export function RunSegment({
   items,
   onSelectItem,
-  run,
   segmentId,
-  showHeader = true,
-  statusItems = items,
 }: {
   items: TimelineItemProjection[]
-  onSelectItem?: (item: TimelineItemProjection) => void
-  run?: RunProjection | null
+  onSelectItem?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
   segmentId: string
-  showHeader?: boolean
-  statusItems?: TimelineItemProjection[]
 }) {
-  const { t } = useTranslation('tasks')
-  const status = run?.segmentId === segmentId ? projectedStatus(run) : inferStatus(statusItems)
-  const statusText = t(runStatusKey(status))
-  const duration = run?.segmentId === segmentId ? formatDuration(run) : null
-  const content = <div className="space-y-4">{renderItems(items, onSelectItem)}</div>
-
-  if (!showHeader) {
-    return (
-      <div className="space-y-5" data-run-segment={segmentId}>
-        {content}
-      </div>
-    )
-  }
-
   return (
-    <section
-      aria-label={t('run.label', { status: statusText })}
-      className="space-y-5"
-      data-run-segment={segmentId}
-    >
-      <div className="flex items-center gap-3 text-muted-foreground text-xs">
-        <span className="font-medium text-foreground">{statusText}</span>
-        {duration ? <span>{duration}</span> : null}
-        <span aria-hidden="true" className="h-px flex-1 bg-border" />
-      </div>
-      {content}
-    </section>
+    <div className="space-y-3" data-run-segment={segmentId}>
+      {renderItems(items, onSelectItem)}
+    </div>
   )
-}
-
-function runStatusKey(status: string) {
-  const keys: Record<string, string> = {
-    cancelled: 'run.status.cancelled',
-    completed: 'run.status.completed',
-    failed: 'run.status.failed',
-    interrupted: 'run.status.interrupted',
-    running: 'run.status.running',
-    superseded: 'run.status.superseded',
-    waiting_permission: 'run.status.waitingPermission',
-    yielding: 'run.status.yielding',
-  }
-  return keys[status] ?? 'run.status.running'
-}
-
-function projectedStatus(run: RunProjection) {
-  switch (run.terminalReason) {
-    case 'cancelled':
-      return 'cancelled'
-    case 'superseded':
-      return 'superseded'
-    case 'forced_interruption':
-    case 'interrupted_by_restart':
-      return 'interrupted'
-    case 'failed':
-      return 'failed'
-    case 'completed':
-      return 'completed'
-    default:
-      return run.state
-  }
 }
 
 function renderItems(
   items: TimelineItemProjection[],
-  onSelectItem?: (item: TimelineItemProjection) => void,
+  onSelectItem?: (item: TimelineItemProjection, trigger?: HTMLElement) => void,
 ) {
   const rendered: React.ReactNode[] = []
   let index = 0
@@ -90,6 +32,32 @@ function renderItems(
   while (index < items.length) {
     const item = items[index]
     if (!item) break
+    if (isProjectedToolItem(item)) {
+      const toolItems: ToolTimelineItem[] = []
+      while (items[index] && isProjectedToolItem(items[index] as TimelineItemProjection)) {
+        toolItems.push(items[index] as ToolTimelineItem)
+        index += 1
+      }
+      rendered.push(
+        <ToolActivityGroup items={toolItems} key={`tools:${toolItems[0]?.tool.toolUseId}`} />,
+      )
+      continue
+    }
+    if (isLowValueLifecycleItem(item)) {
+      const lifecycleItems: TimelineItemProjection[] = []
+      while (items[index] && isLowValueLifecycleItem(items[index] as TimelineItemProjection)) {
+        lifecycleItems.push(items[index] as TimelineItemProjection)
+        index += 1
+      }
+      rendered.push(
+        <LifecycleSummary
+          items={lifecycleItems}
+          key={`lifecycle:${lifecycleItems[0]?.id}`}
+          onSelectItem={onSelectItem}
+        />,
+      )
+      continue
+    }
     if (item.kind !== 'assistant_text') {
       rendered.push(<TimelineEvent item={item} key={item.id} onSelect={onSelectItem} />)
       index += 1
@@ -106,14 +74,14 @@ function renderItems(
       index += 1
     }
     rendered.push(
-      <div
-        className="whitespace-pre-wrap text-[15px] leading-7 text-foreground"
-        data-narrative="true"
-        key={narrative[0]?.id}
-      >
+      <div data-narrative="true" key={narrative[0]?.id}>
         {narrative.map((entry) => (
-          <TimelineItem inline item={entry} key={entry.id}>
-            <span data-incomplete={entry.incomplete ? 'true' : undefined}>{entry.summary}</span>
+          <TimelineItem item={entry} key={entry.id}>
+            <div data-incomplete={entry.incomplete ? 'true' : undefined}>
+              <MarkdownMessage className="text-[15px] text-foreground">
+                {entry.summary}
+              </MarkdownMessage>
+            </div>
           </TimelineItem>
         ))}
       </div>,
@@ -122,22 +90,28 @@ function renderItems(
   return rendered
 }
 
-function inferStatus(items: TimelineItemProjection[]) {
-  const finalSummary = items.at(-1)?.summary.toLowerCase() ?? ''
-  if (finalSummary.includes('cancel')) return 'cancelled'
-  if (finalSummary.includes('supersed')) return 'superseded'
-  if (finalSummary.includes('interrupt') || finalSummary.includes('force-stop'))
-    return 'interrupted'
-  if (finalSummary.includes('fail')) return 'failed'
-  if (finalSummary.includes('complete')) return 'completed'
-  return 'running'
+export function LifecycleSummary({
+  items,
+  onSelectItem,
+}: {
+  items: TimelineItemProjection[]
+  onSelectItem?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
+}) {
+  const { t } = useTranslation('tasks')
+  return (
+    <details className="group rounded-md text-muted-foreground text-xs">
+      <summary className="w-fit cursor-pointer select-none rounded-md px-2 py-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {t('timeline.systemEvents', { count: items.length })}
+      </summary>
+      <div className="mt-1 space-y-1 border-border/70 border-l pl-2">
+        {items.map((item) => (
+          <TimelineEvent item={item} key={item.id} onSelect={onSelectItem} />
+        ))}
+      </div>
+    </details>
+  )
 }
 
-function formatDuration(run: RunProjection) {
-  const startedAt = Date.parse(run.startedAt)
-  const endedAt = run.endedAt ? Date.parse(run.endedAt) : Date.now()
-  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return null
-  const seconds = Math.max(0, Math.round((endedAt - startedAt) / 1_000))
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+function isProjectedToolItem(item: TimelineItemProjection): item is ToolTimelineItem {
+  return item.kind === 'tool_activity' && Boolean(item.tool)
 }

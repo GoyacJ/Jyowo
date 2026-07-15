@@ -514,7 +514,7 @@ export function Composer({
         }
       />
 
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+      <div className="mt-1 flex min-w-0 items-center justify-between gap-1.5">
         <ComposerToolbar
           disabled={editorDisabled}
           supportsAttachments={supportsAttachments}
@@ -547,7 +547,7 @@ export function Composer({
           onReferenceKeyCommand={handleReferenceKeyCommand}
           onSelectReference={selectReference}
         />
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {canCancelRun ? (
             <button
               aria-label={t('conversation:composer.cancelRun')}

@@ -159,6 +159,98 @@ describe('AuditPanel', () => {
 
     expect(olderButton).toBeDisabled()
   })
+
+  it('retries a failed audit request', async () => {
+    const loadTaskEvents = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        events: [event(20, 'stored.recovered')],
+        nextBeforeOffset: null,
+        taskId,
+      })
+
+    renderPanel(
+      <AuditPanel
+        client={{ loadTaskEvents }}
+        liveEvents={[]}
+        snapshotOffset={20}
+        taskId={taskId}
+        timeline={[]}
+      />,
+    )
+
+    expect(await screen.findByText('Audit events are unavailable')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('stored.recovered')).toBeInTheDocument()
+    expect(loadTaskEvents).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows localized object details for a selected audit event', async () => {
+    const selected = {
+      ...event(42, 'engine.tool_use_started'),
+      payload: { command: 'pnpm test', tool: 'exec_command' },
+    }
+    const loadTaskEvents = vi.fn().mockResolvedValue({
+      events: [selected],
+      nextBeforeOffset: null,
+      taskId,
+    })
+
+    renderPanel(
+      <AuditPanel
+        client={{ loadTaskEvents }}
+        liveEvents={[]}
+        snapshotOffset={42}
+        target={{
+          kind: 'audit',
+          resourceId: selected.eventId,
+          sourceEventId: selected.eventId,
+          taskId,
+          title: 'Using exec_command',
+        }}
+        taskId={taskId}
+        timeline={[
+          {
+            globalOffset: 42,
+            id: selected.eventId,
+            incomplete: true,
+            kind: 'tool_activity',
+            summary: 'Using exec_command',
+          },
+        ]}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Using exec_command' })).toBeInTheDocument()
+    expect(screen.getByText('In progress')).toBeInTheDocument()
+    expect(screen.getByText('supervisor')).toBeInTheDocument()
+    expect(screen.getByText(/pnpm test/)).toBeInTheDocument()
+    expect(screen.getByText('engine.tool_use_started')).toBeInTheDocument()
+  })
+
+  it('opens event details from the general audit list', async () => {
+    const selected = event(43, 'run.completed')
+    const loadTaskEvents = vi.fn().mockResolvedValue({
+      events: [selected],
+      nextBeforeOffset: null,
+      taskId,
+    })
+
+    renderPanel(
+      <AuditPanel
+        client={{ loadTaskEvents }}
+        liveEvents={[]}
+        snapshotOffset={43}
+        taskId={taskId}
+        timeline={[]}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /run.completed/ }))
+    expect(screen.getByRole('button', { name: 'Back to event list' })).toBeInTheDocument()
+    expect(screen.getByText('Complete')).toBeInTheDocument()
+  })
 })
 
 function renderPanel(ui: React.ReactNode) {

@@ -737,12 +737,56 @@ pub enum TimelineEventKind {
     ToolActivity,
     Command,
     Diff,
+    File,
+    Artifact,
     Image,
     Permission,
     Compaction,
     Subagent,
     Notice,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineToolOperation {
+    Read,
+    Edit,
+    Search,
+    Command,
+    Browse,
+    Generate,
+    Delegate,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineToolStatus {
+    Requested,
+    Running,
+    Completed,
+    Denied,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineToolProjection {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub operation: TimelineToolOperation,
+    pub status: TimelineToolStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -966,6 +1010,8 @@ pub struct TimelineItemProjection {
     pub summary: String,
     pub blob_id: Option<BlobId>,
     pub incomplete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<TimelineToolProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

@@ -459,6 +459,9 @@ pub(crate) fn mcp_safe_connection_error_message(last_error: &str) -> String {
     {
         return "MCP server command was not found.".to_owned();
     }
+    if normalized.contains("permission denied:") {
+        return "MCP server permission was denied.".to_owned();
+    }
     if normalized.contains("permission denied") {
         return "MCP server command could not be executed.".to_owned();
     }

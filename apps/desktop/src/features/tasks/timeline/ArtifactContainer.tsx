@@ -14,7 +14,7 @@ export function ArtifactContainer({
   children: ReactNode
   item: TimelineItemProjection
   label: string
-  onOpen?: () => void
+  onOpen?: (trigger: HTMLButtonElement) => void
   openLabel?: string
 }) {
   const { t } = useTranslation('tasks')
@@ -31,7 +31,7 @@ export function ArtifactContainer({
             <button
               aria-label={openLabel}
               className="rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-muted"
-              onClick={onOpen}
+              onClick={(event) => onOpen(event.currentTarget)}
               type="button"
             >
               {t('timeline.open')}

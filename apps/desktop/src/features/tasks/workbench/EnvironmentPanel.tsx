@@ -1,19 +1,48 @@
 import { useTranslation } from 'react-i18next'
-import type { TaskEventEnvelope, TimelineItemProjection } from '@/generated/daemon-protocol'
+import type {
+  TaskEventEnvelope,
+  TimelineItemProjection,
+  WorkspaceSelection,
+} from '@/generated/daemon-protocol'
+import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
 import { timelineSummary } from '../timeline/timeline-summary'
 
 export function EnvironmentPanel({
   events,
+  target,
   timeline,
+  workspace,
 }: {
   events: TaskEventEnvelope[]
+  target: TaskWorkbenchTarget
   timeline: TimelineItemProjection[]
+  workspace?: WorkspaceSelection | null
 }) {
   const { t } = useTranslation('tasks')
-  const environmentEvents = events.filter((event) => event.eventType.startsWith('workspace.'))
+  const aggregate = target.resourceId === 'all'
+  if (target.resourceId === 'workspace' && workspace) {
+    return (
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 p-4 text-sm">
+        <dt className="text-muted-foreground">{t('workbench.environment.root')}</dt>
+        <dd className="truncate font-mono text-xs" title={workspace.root}>
+          {workspace.root}
+        </dd>
+        <dt className="text-muted-foreground">{t('workbench.environment.mode')}</dt>
+        <dd className="font-mono text-xs">{workspace.mode}</dd>
+      </dl>
+    )
+  }
+  const environmentEvents = events.filter(
+    (event) =>
+      event.eventType.startsWith('workspace.') &&
+      (aggregate || event.eventId === target.sourceEventId || event.eventId === target.resourceId),
+  )
   if (environmentEvents.length > 0) return <EventList events={environmentEvents} />
   const projectedEvents = timeline.filter(
-    (item) => item.kind === 'notice' && item.summary.toLowerCase().includes('workspace'),
+    (item) =>
+      item.kind === 'notice' &&
+      item.summary.toLowerCase().includes('workspace') &&
+      (aggregate || item.id === target.sourceEventId || item.id === target.resourceId),
   )
   if (projectedEvents.length > 0) return <ProjectionList items={projectedEvents} />
   return <p className="p-4 text-muted-foreground text-sm">{t('workbench.empty.environment')}</p>

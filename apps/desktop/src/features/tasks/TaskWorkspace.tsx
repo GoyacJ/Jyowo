@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type {
@@ -9,7 +9,7 @@ import type {
 } from '@/generated/daemon-protocol'
 import type { DaemonClient } from '@/shared/daemon/client'
 import { useUiStore } from '@/shared/state/ui-store'
-import type { TaskWorkbenchPanel } from '@/shared/state/workbench-selection'
+import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
 import { providerSettingsQueryKey } from '@/shared/state/workspace-scope'
 import type {
   ConversationModelCapability,
@@ -21,14 +21,19 @@ import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { PendingPermissionDecision } from './PendingPermissionDecision'
 import { QueuedMessages } from './queue/QueuedMessages'
-import { RunStatusBar } from './RunStatusBar'
 import { normalizeModelConfigId, TaskComposer } from './TaskComposer'
 import { deriveLiveTaskSnapshot, liveTimelineItems } from './task-live-projection'
 import type { TaskConnectionState, TaskSnapshot } from './task-store'
 import { TaskTimeline } from './timeline/TaskTimeline'
+import { timelineSummary } from './timeline/timeline-summary'
 import { useTask } from './use-task'
 import { useTaskCommandExecutor } from './use-task-command-executor'
 import { TaskWorkbench } from './workbench/TaskWorkbench'
+import { TaskWorkbenchSummary } from './workbench/TaskWorkbenchSummary'
+import {
+  isTaskWorkbenchSidebarTarget,
+  taskWorkbenchTargetFromTimelineItem,
+} from './workbench/task-workbench-target'
 
 export const timelineItems = liveTimelineItems
 
@@ -152,10 +157,27 @@ export function TaskWorkspaceView({
   const { t: tTasks } = useTranslation('tasks')
   const { t: tCommon } = useTranslation('common')
   const snapshotTaskId = snapshot?.projection.taskId ?? null
-  const workbenchMode = useUiStore((state) => state.taskWorkbenchMode)
-  const workbenchSelection = useUiStore((state) => state.taskWorkbenchSelection)
-  const setWorkbenchMode = useUiStore((state) => state.setTaskWorkbenchMode)
-  const setWorkbenchSelection = useUiStore((state) => state.setTaskWorkbenchSelection)
+  const openWorkbench = useUiStore((state) => state.openTaskWorkbench)
+  const workbenchSession = useUiStore((state) =>
+    snapshotTaskId ? state.taskWorkbenchByTaskId[snapshotTaskId] : undefined,
+  )
+  const closeWorkbench = useUiStore((state) => state.closeTaskWorkbench)
+  const workspaceContainerRef = useRef<HTMLElement>(null)
+  const readingColumnRef = useRef<HTMLDivElement>(null)
+  const workbenchOpenerRef = useRef<{
+    element: HTMLElement
+    sourceEventId?: string
+    taskId: string
+  } | null>(null)
+  const activeTaskIdRef = useRef(snapshotTaskId)
+  activeTaskIdRef.current = snapshotTaskId
+  const [workspaceLayoutMode, setWorkspaceLayoutMode] = useState<TaskWorkspaceLayoutMode | null>(
+    null,
+  )
+  const [timelineFocusRequest, setTimelineFocusRequest] = useState<{
+    eventId: string
+    nonce: number
+  } | null>(null)
   const projectedStreamVersion = snapshot
     ? events.reduce(
         (version, event) => Math.max(version, event.streamSequence),
@@ -183,11 +205,20 @@ export function TaskWorkspaceView({
     onCommandAccepted: commandAccepted,
     taskId: snapshotTaskId,
   })
-  useEffect(() => {
-    if (workbenchSelection && workbenchSelection.taskId !== snapshotTaskId) {
-      setWorkbenchSelection(null)
-    }
-  }, [setWorkbenchSelection, snapshotTaskId, workbenchSelection])
+
+  useLayoutEffect(() => {
+    const container = workspaceContainerRef.current
+    if (!container) return
+    const update = () =>
+      setWorkspaceLayoutMode(
+        taskWorkspaceLayoutModeForWidth(container.getBoundingClientRect().width),
+      )
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [snapshotTaskId])
 
   if (connectionState === 'protocol_error') {
     return (
@@ -216,31 +247,91 @@ export function TaskWorkspaceView({
   const items = liveSnapshot.timeline
   const queue = liveSnapshot.projection.queue
   const taskId = liveSnapshot.projection.taskId
-  const showWorkbench =
-    workbenchMode !== 'closed' &&
-    workbenchSelection?.taskId === taskId &&
-    client?.loadTaskEvents &&
-    client.readBlob
+  const activeWorkbenchTarget = workbenchSession?.tabs.find(
+    (tab) => tab.id === workbenchSession.activeTabId,
+  )?.target
+  const showWorkbench = Boolean(
+    workbenchSession?.open === true &&
+      workbenchSession.activeTabId !== null &&
+      isTaskWorkbenchSidebarTarget(activeWorkbenchTarget) &&
+      client?.loadTaskEvents &&
+      client.readBlob,
+  )
+  const fullscreenWorkbench = showWorkbench && workspaceLayoutMode === 'fullscreen'
 
-  function selectTimelineItem(item: TimelineItemProjection) {
-    const panel = workbenchPanel(item)
-    if (!panel) return
-    setWorkbenchSelection({
-      blobId: item.blobId ?? undefined,
-      eventId: item.id,
-      panel,
-      segmentId: item.runSegmentId ?? undefined,
-      taskId,
+  function openTarget(target: TaskWorkbenchTarget, trigger?: HTMLElement | null) {
+    if (!isTaskWorkbenchSidebarTarget(target)) return
+    const activeElement =
+      trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
+    workbenchOpenerRef.current =
+      activeElement && readingColumnRef.current?.contains(activeElement)
+        ? {
+            element: activeElement,
+            sourceEventId: target.sourceEventId,
+            taskId: target.taskId,
+          }
+        : null
+    openWorkbench(target)
+  }
+
+  function restoreWorkbenchFocus() {
+    const opener = workbenchOpenerRef.current
+    workbenchOpenerRef.current = null
+    queueMicrotask(() => {
+      if (activeTaskIdRef.current !== taskId) return
+      if (opener?.taskId === taskId && opener.element.isConnected) {
+        opener.element.focus()
+        return
+      }
+      if (opener?.taskId === taskId && opener.sourceEventId) {
+        const event = Array.from(
+          readingColumnRef.current?.querySelectorAll<HTMLElement>('[data-event-id]') ?? [],
+        ).find((element) => element.dataset.eventId === opener.sourceEventId)
+        const eventTrigger = event?.querySelector<HTMLElement>('button')
+        if (eventTrigger) {
+          eventTrigger.focus()
+          return
+        }
+      }
+      readingColumnRef.current?.focus()
     })
-    if (workbenchMode === 'closed') setWorkbenchMode('inspector')
+  }
+
+  function selectTimelineItem(item: TimelineItemProjection, trigger?: HTMLElement) {
+    const target = taskWorkbenchTargetFromTimelineItem(item, taskId, timelineSummary(item, tTasks))
+    if (!target) return
+    openTarget(target, trigger)
   }
 
   return (
-    <section className="task-workspace-container flex h-full min-h-0 w-full flex-col">
-      <div className="task-workspace-layout relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+    <section
+      className="task-workspace-container flex h-full min-h-0 w-full flex-col"
+      ref={workspaceContainerRef}
+    >
+      <div
+        className="task-workspace-layout relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        data-workbench-open={showWorkbench ? 'true' : undefined}
+      >
         <div
-          className="task-reading-column mx-auto flex h-full min-w-0 w-full max-w-[820px] shrink-0 flex-col"
+          aria-hidden={fullscreenWorkbench ? true : undefined}
+          className="task-reading-column relative mx-auto flex h-full min-w-0 w-full max-w-[820px] shrink-0 flex-col"
           data-testid="task-reading-column"
+          inert={fullscreenWorkbench || undefined}
+          onKeyDown={(event) => {
+            if (
+              event.key !== 'Escape' ||
+              event.defaultPrevented ||
+              !showWorkbench ||
+              workspaceLayoutMode !== 'overlay'
+            ) {
+              return
+            }
+            event.preventDefault()
+            closeWorkbench(taskId)
+            restoreWorkbenchFocus()
+          }}
+          ref={readingColumnRef}
+          tabIndex={-1}
         >
           <header className="flex items-start justify-between gap-6 border-border/70 border-b px-1 pb-4">
             <div className="min-w-0">
@@ -255,11 +346,12 @@ export function TaskWorkspaceView({
               {tTasks(connectionStateKey(connectionState))}
             </span>
           </header>
-          <div className="flex min-h-0 flex-1 pt-6">
+          <div className="flex min-h-0 min-w-0 flex-1 pt-6">
             <TaskTimeline
-              currentRun={liveSnapshot.projection.currentRun}
+              focusRequest={timelineFocusRequest}
               items={items}
               onSelectItem={selectTimelineItem}
+              taskId={liveSnapshot.projection.taskId}
             />
           </div>
           {client ? (
@@ -315,33 +407,41 @@ export function TaskWorkspaceView({
             </div>
           ) : null}
         </div>
-        {showWorkbench && client.loadTaskEvents && client.readBlob ? (
+        <TaskWorkbenchSummary
+          events={events}
+          onOpen={(target, trigger) => openTarget(target, trigger)}
+          projection={liveSnapshot.projection}
+          timeline={items}
+        />
+        {showWorkbench && client?.loadTaskEvents && client.readBlob ? (
           <TaskWorkbench
             client={{ loadTaskEvents: client.loadTaskEvents, readBlob: client.readBlob }}
             events={events}
             projection={liveSnapshot.projection}
+            onClosed={() => {
+              restoreWorkbenchFocus()
+            }}
+            onLocateInTimeline={(eventId) =>
+              setTimelineFocusRequest((current) => ({
+                eventId,
+                nonce: (current?.nonce ?? 0) + 1,
+              }))
+            }
             snapshotOffset={snapshot.snapshotOffset}
             timeline={items}
           />
         ) : null}
       </div>
-      <RunStatusBar items={items} projection={liveSnapshot.projection} />
     </section>
   )
 }
 
-function workbenchPanel(item: TimelineItemProjection): TaskWorkbenchPanel | null {
-  if (item.kind === 'diff') return 'changes'
-  if (item.kind === 'command') return 'commands'
-  if (item.kind === 'subagent') return 'agents'
-  if (item.kind === 'image') return 'sources'
-  if (item.kind === 'notice' && item.summary.toLowerCase().startsWith('workspace')) {
-    return 'environment'
-  }
-  if (['compaction', 'error', 'notice', 'permission', 'tool_activity'].includes(item.kind)) {
-    return 'audit'
-  }
-  return null
+type TaskWorkspaceLayoutMode = 'docked' | 'fullscreen' | 'overlay'
+
+export function taskWorkspaceLayoutModeForWidth(width: number): TaskWorkspaceLayoutMode {
+  if (width < 720) return 'fullscreen'
+  if (width < 1040) return 'overlay'
+  return 'docked'
 }
 
 function connectionStateKey(state: TaskConnectionState) {

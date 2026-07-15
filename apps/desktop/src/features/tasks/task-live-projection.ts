@@ -10,6 +10,9 @@ import type {
   TaskState,
   TimelineEventKind,
   TimelineItemProjection,
+  TimelineToolOperation,
+  TimelineToolProjection,
+  TimelineToolStatus,
   TypedUlid,
 } from '@/generated/daemon-protocol'
 
@@ -335,6 +338,10 @@ function projectEngineEvent(
     })
     return
   }
+  if (type.startsWith('tool_use_')) {
+    projectToolTimelineEvent(timeline, envelope, runSegmentId, type, event)
+    return
+  }
   const selected = engineTimelineDescription(type, event)
   if (!selected) return
   timeline.set(envelope.globalOffset, {
@@ -367,16 +374,6 @@ function engineTimelineDescription(
         blobId: typedId(blob?.id),
       }
     }
-    case 'tool_use_requested':
-      return description('tool_activity', `Using ${stringValue(event.tool_name) ?? 'tool'}`, true)
-    case 'tool_use_started':
-      return description('tool_activity', 'Tool started', true)
-    case 'tool_use_denied':
-      return description('tool_activity', 'Tool denied')
-    case 'tool_use_completed':
-      return description('tool_activity', 'Tool completed')
-    case 'tool_use_failed':
-      return description('error', stringValue(record(event.error)?.message) ?? 'Tool failed', true)
     case 'compaction_applied':
       return description('compaction', 'Context compacted')
     case 'unexpected_error':
@@ -384,6 +381,248 @@ function engineTimelineDescription(
     default:
       return null
   }
+}
+
+function projectToolTimelineEvent(
+  timeline: Map<number, TimelineItemProjection>,
+  envelope: TaskEventEnvelope,
+  runSegmentId: TypedUlid,
+  type: string,
+  event: Record<string, unknown>,
+) {
+  const toolUseId = typedId(event.tool_use_id)
+  if (!toolUseId) return
+  if (type === 'tool_use_requested') {
+    const toolName = stringValue(event.tool_name) ?? 'tool'
+    const operation = timelineToolOperation(toolName)
+    const tool: TimelineToolProjection = {
+      command: timelineToolCommand(operation, event.input),
+      operation,
+      status: 'requested',
+      subject: timelineToolSubject(operation, event.input),
+      toolName,
+      toolUseId,
+    }
+    timeline.set(envelope.globalOffset, {
+      globalOffset: envelope.globalOffset,
+      id: envelope.eventId,
+      incomplete: true,
+      kind: 'tool_activity',
+      runSegmentId,
+      semanticGroupId: toolUseId,
+      summary: timelineToolSummary(tool),
+      tool,
+    })
+    return
+  }
+
+  const status = timelineToolStatus(type)
+  if (!status) return
+  const previous = [...timeline.values()]
+    .reverse()
+    .find((item) => item.tool?.toolUseId === toolUseId)
+  const resultSummary =
+    type === 'tool_use_failed'
+      ? boundedToolText(stringValue(record(event.error)?.message) ?? 'Tool failed')
+      : type === 'tool_use_completed'
+        ? toolResultSummary(event.result)
+        : undefined
+  const resultOutput =
+    type === 'tool_use_failed'
+      ? boundedToolPreview(stringValue(record(event.error)?.message) ?? 'Tool failed')
+      : type === 'tool_use_completed'
+        ? toolResultPreview(event.result)
+        : undefined
+  const durationMs = type === 'tool_use_completed' ? numberValue(event.duration_ms) : undefined
+
+  if (!previous?.tool) {
+    const tool: TimelineToolProjection = {
+      durationMs,
+      operation: 'other',
+      resultSummary,
+      status,
+      toolName: 'tool',
+      toolUseId,
+    }
+    timeline.set(envelope.globalOffset, {
+      globalOffset: envelope.globalOffset,
+      id: envelope.eventId,
+      incomplete: status === 'requested' || status === 'running',
+      kind: 'tool_activity',
+      runSegmentId,
+      semanticGroupId: toolUseId,
+      summary: timelineToolSummary(tool),
+      tool,
+    })
+    return
+  }
+
+  previous.tool = {
+    ...previous.tool,
+    durationMs: durationMs ?? previous.tool.durationMs,
+    output:
+      previous.tool.operation === 'command'
+        ? (resultOutput ?? previous.tool.output)
+        : previous.tool.output,
+    resultSummary: resultSummary ?? previous.tool.resultSummary,
+    status,
+  }
+  previous.incomplete = status === 'requested' || status === 'running'
+  previous.summary = timelineToolSummary(previous.tool)
+}
+
+function timelineToolStatus(type: string): TimelineToolStatus | undefined {
+  const statuses: Record<string, TimelineToolStatus> = {
+    tool_use_completed: 'completed',
+    tool_use_denied: 'denied',
+    tool_use_failed: 'failed',
+    tool_use_started: 'running',
+  }
+  return statuses[type]
+}
+
+function timelineToolOperation(toolName: string): TimelineToolOperation {
+  const name = toolName.toLowerCase()
+  if (name.includes('edit') || name.includes('write') || name.includes('patch')) return 'edit'
+  if (name.includes('read') || name.includes('load')) return 'read'
+  if (
+    name.includes('search') ||
+    name.includes('find') ||
+    name.includes('grep') ||
+    name === 'rg' ||
+    name.includes('glob')
+  )
+    return 'search'
+  if (
+    name.includes('exec') ||
+    name.includes('command') ||
+    name.includes('shell') ||
+    name.includes('terminal') ||
+    name === 'bash'
+  )
+    return 'command'
+  if (name.includes('browser') || name.includes('fetch') || name.includes('web')) return 'browse'
+  if (name.includes('image') || name.includes('generate')) return 'generate'
+  if (name.includes('agent') || name.includes('delegate') || name.includes('spawn')) {
+    return 'delegate'
+  }
+  return 'other'
+}
+
+function timelineToolSubject(operation: TimelineToolOperation, input: unknown) {
+  const value = record(input)
+  if (!value) return undefined
+  const keys =
+    operation === 'read' || operation === 'edit'
+      ? ['path', 'file_path', 'filePath', 'filename']
+      : operation === 'generate' || operation === 'delegate'
+        ? ['name', 'target', 'output_path', 'outputPath']
+        : []
+  const subject = keys.map((key) => stringValue(value[key])).find(Boolean)
+  if (!subject) return undefined
+  const parts = subject.replaceAll('\\', '/').split('/').filter(Boolean)
+  return boundedToolText(parts.slice(-2).join('/'))
+}
+
+function timelineToolCommand(operation: TimelineToolOperation, input: unknown) {
+  if (operation !== 'command') return undefined
+  const value = record(input)
+  if (!value) return undefined
+  const command = ['cmd', 'command', 'script']
+    .map((key) => stringValue(value[key]))
+    .find((entry) => entry !== undefined)
+  return command === undefined ? undefined : boundedToolPreview(command)
+}
+
+function timelineToolSummary(tool: TimelineToolProjection) {
+  const actions: Record<TimelineToolStatus, Partial<Record<TimelineToolOperation, string>>> = {
+    completed: {
+      browse: 'Browsed',
+      command: 'Ran command',
+      delegate: 'Delegated',
+      edit: 'Edited',
+      generate: 'Generated',
+      other: 'Used tool',
+      read: 'Read',
+      search: 'Searched',
+    },
+    denied: {},
+    failed: {},
+    requested: {},
+    running: {},
+  }
+  const activeActions: Record<TimelineToolOperation, string> = {
+    browse: 'Browsing',
+    command: 'Running command',
+    delegate: 'Delegating',
+    edit: 'Editing',
+    generate: 'Generating',
+    other: 'Using tool',
+    read: 'Reading',
+    search: 'Searching',
+  }
+  const action =
+    tool.status === 'denied'
+      ? 'Tool denied'
+      : tool.status === 'failed'
+        ? 'Tool failed'
+        : (actions[tool.status][tool.operation] ?? activeActions[tool.operation])
+  const subject = tool.subject ?? (tool.operation === 'other' ? tool.toolName : undefined)
+  return subject ? `${action} ${subject}` : action
+}
+
+function toolResultSummary(value: unknown) {
+  const result = record(value)
+  if (!result) return 'Result received'
+  const text = stringValue(result.text)
+  if (text !== undefined) return `${Math.max(1, text.split(/\r?\n/).length)} lines returned`
+  if ('structured' in result) return 'Structured result'
+  const blob = record(result.blob)
+  if (blob) return stringValue(blob.content_type) ?? 'Blob result'
+  const mixed = Array.isArray(result.mixed) ? result.mixed : null
+  if (mixed) return `${mixed.length} result parts`
+  return 'Result received'
+}
+
+function toolResultPreview(value: unknown) {
+  const result = record(value)
+  if (!result) return undefined
+  const text = stringValue(result.text)
+  if (text !== undefined) return boundedToolPreview(text)
+  if ('structured' in result) {
+    return boundedToolPreview(JSON.stringify(result.structured, null, 2))
+  }
+  const mixed = Array.isArray(result.mixed) ? result.mixed : null
+  if (!mixed) return undefined
+  const parts = mixed
+    .map((part) => toolResultPartPreview(part))
+    .filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? boundedToolPreview(parts.join('\n')) : undefined
+}
+
+function toolResultPartPreview(value: unknown) {
+  const part = record(value)
+  if (!part) return undefined
+  const text = stringValue(part.text)
+  if (text !== undefined) return text
+  if ('value' in part) return JSON.stringify(part.value, null, 2)
+  return (
+    stringValue(part.summary) ??
+    stringValue(part.detail) ??
+    stringValue(part.message) ??
+    stringValue(part.preview) ??
+    stringValue(part.title) ??
+    stringValue(part.caption)
+  )
+}
+
+function boundedToolText(value: string) {
+  return [...value].slice(0, 160).join('')
+}
+
+function boundedToolPreview(value: string) {
+  const chars = [...value]
+  return chars.length > 8_000 ? `${chars.slice(0, 8_000).join('')}…` : value
 }
 
 function taskTimelineDescription(
@@ -498,7 +737,9 @@ function messageContentText(value: unknown) {
 function artifactKind(kind?: string): TimelineEventKind {
   if (kind === 'image' || kind === 'screenshot') return 'image'
   if (kind === 'command' || kind === 'terminal') return 'command'
-  return 'diff'
+  if (kind === 'diff' || kind === 'patch') return 'diff'
+  if (kind === 'file') return 'file'
+  return 'artifact'
 }
 
 function runTerminalSummary(payload: Record<string, unknown>) {

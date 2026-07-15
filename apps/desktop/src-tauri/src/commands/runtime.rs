@@ -31,7 +31,7 @@ use super::validation::*;
 use super::*;
 use crate::storage_layout::{ConfigScope, JyowoHome, RuntimeLayout, RuntimeScope, StorageLayout};
 use async_trait::async_trait;
-use harness_contracts::CapabilityRegistry;
+use harness_contracts::{CapabilityRegistry, DecisionScope, RuleSource};
 use harness_contracts::{KillScope, Redactor, SandboxError, SandboxExitStatus};
 use harness_execution::{
     AuthorizationEventSink, AuthorizationService, ExecutionPreflightRegistry,
@@ -39,7 +39,9 @@ use harness_execution::{
 };
 use harness_journal::InMemoryEventStore;
 use harness_model::{default_account_usage_registry, ProviderAccountUsageRegistry};
-use harness_permission::{NoopDecisionPersistence, PermissionAuthority};
+use harness_permission::{
+    NoopDecisionPersistence, PermissionAuthority, PermissionRule, RuleAction,
+};
 use harness_sandbox::{ContainerLifecycle, DockerSandbox, RoutingSandboxBackend, VolumeMount};
 use harness_tool::ToolNetworkBrokerCap;
 
@@ -84,6 +86,16 @@ fn shared_skill_store_lock(path: PathBuf) -> Arc<tokio::sync::Mutex<()>> {
 type SharedSkillRuntimeRegistry = HashMap<PathBuf, Vec<std::sync::Weak<DesktopSettingsRuntime>>>;
 static SHARED_SKILL_RUNTIMES: std::sync::OnceLock<std::sync::Mutex<SharedSkillRuntimeRegistry>> =
     std::sync::OnceLock::new();
+
+pub(crate) fn desktop_settings_permission_rules() -> Vec<PermissionRule> {
+    vec![PermissionRule {
+        id: "desktop-settings-mcp-transport".to_owned(),
+        priority: 0,
+        scope: DecisionScope::ToolName("mcp_transport".to_owned()),
+        action: RuleAction::Allow,
+        source: RuleSource::Session,
+    }]
+}
 
 fn shared_skill_runtime_registry() -> &'static std::sync::Mutex<SharedSkillRuntimeRegistry> {
     SHARED_SKILL_RUNTIMES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -1176,6 +1188,7 @@ pub(crate) async fn build_desktop_settings_runtime(
     let rule_broker: Arc<dyn harness_permission::PermissionBroker> = Arc::new(
         harness_permission::RuleEngineBroker::builder()
             .with_tenant(TenantId::SINGLE)
+            .with_rules(desktop_settings_permission_rules())
             .build()
             .await
             .map_err(|error| {

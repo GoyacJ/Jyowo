@@ -568,40 +568,64 @@ function TaskRow({
           {compact ? null : <span className="truncate text-[13px]">{task.title}</span>}
         </button>
         {compact ? null : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={t('sidebar.actions', { name: task.title })}
-                className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded opacity-0 hover:bg-background group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:bg-background data-[state=open]:opacity-100"
-                type="button"
-              >
-                <MoreHorizontal aria-hidden="true" className="size-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="right">
-              <DropdownMenuItem onSelect={() => onSetTaskPinned(task, !task.pinned)}>
-                {task.pinned ? (
-                  <PinOff aria-hidden="true" className="size-4" />
-                ) : (
-                  <Pin aria-hidden="true" className="size-4" />
-                )}
-                {task.pinned ? t('sidebar.unpin') : t('sidebar.pin')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
-                <Pencil aria-hidden="true" className="size-4" /> {t('sidebar.rename')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
-                <Archive aria-hidden="true" className="size-4" /> {t('sidebar.archive')}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => setRemoveOpen(true)}
-              >
-                <Trash2 aria-hidden="true" className="size-4" /> {t('sidebar.remove')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <>
+            <button
+              aria-label={`${task.pinned ? t('sidebar.unpin') : t('sidebar.pin')} ${task.title}`}
+              className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+              onClick={() => onSetTaskPinned(task, !task.pinned)}
+              title={task.pinned ? t('sidebar.unpin') : t('sidebar.pin')}
+              type="button"
+            >
+              {task.pinned ? (
+                <PinOff aria-hidden="true" className="size-4" />
+              ) : (
+                <Pin aria-hidden="true" className="size-4" />
+              )}
+            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={t('sidebar.actions', { name: task.title })}
+                  className="flex size-7 shrink-0 items-center justify-center rounded opacity-0 hover:bg-background group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:bg-background data-[state=open]:opacity-100"
+                  type="button"
+                >
+                  <MoreHorizontal aria-hidden="true" className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="right">
+                <DropdownMenuItem onSelect={() => onSetTaskPinned(task, !task.pinned)}>
+                  {task.pinned ? (
+                    <PinOff aria-hidden="true" className="size-4" />
+                  ) : (
+                    <Pin aria-hidden="true" className="size-4" />
+                  )}
+                  {task.pinned ? t('sidebar.unpin') : t('sidebar.pin')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
+                  <Pencil aria-hidden="true" className="size-4" /> {t('sidebar.rename')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
+                  <Archive aria-hidden="true" className="size-4" /> {t('sidebar.archive')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => setRemoveOpen(true)}
+                >
+                  <Trash2 aria-hidden="true" className="size-4" /> {t('sidebar.remove')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <button
+              aria-label={`${t('sidebar.remove')} ${task.title}`}
+              className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+              onClick={() => onRemoveTask(task)}
+              title={t('sidebar.remove')}
+              type="button"
+            >
+              <Trash2 aria-hidden="true" className="size-4" />
+            </button>
+          </>
         )}
       </div>
       <RenameDialog

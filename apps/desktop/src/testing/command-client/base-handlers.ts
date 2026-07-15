@@ -7,7 +7,12 @@ import {
 } from './base'
 import type { TestCommandClientState, TestCommandHandlers } from './state'
 
-type BaseCommandKeys = 'getAppInfo' | 'getRuntimeExecutionStatus' | 'listRuntimeTools'
+type BaseCommandKeys =
+  | 'getAppInfo'
+  | 'getRuntimeExecutionStatus'
+  | 'listRuntimeTools'
+  | 'resetRuntimeTools'
+  | 'setRuntimeToolEnabled'
 
 export function createBaseCommandHandlers(
   state: TestCommandClientState,
@@ -23,7 +28,28 @@ export function createBaseCommandHandlers(
     },
     async listRuntimeTools() {
       await wait(state.options.delayMs)
-      return cloneResponse(state.options.runtimeTools ?? fixtureRuntimeTools)
+      return cloneResponse(state.runtimeTools)
+    },
+    async setRuntimeToolEnabled(request) {
+      await wait(state.options.delayMs)
+      state.runtimeTools = {
+        ...state.runtimeTools,
+        customized: true,
+        generation: state.runtimeTools.generation + 1,
+        tools: state.runtimeTools.tools.map((tool) =>
+          tool.name === request.name ? { ...tool, configuredEnabled: request.enabled } : tool,
+        ),
+      }
+      return cloneResponse(state.runtimeTools)
+    },
+    async resetRuntimeTools() {
+      await wait(state.options.delayMs)
+      state.runtimeTools = {
+        ...cloneResponse(state.options.runtimeTools ?? fixtureRuntimeTools),
+        customized: false,
+        generation: state.runtimeTools.generation + 1,
+      }
+      return cloneResponse(state.runtimeTools)
     },
   }
 }

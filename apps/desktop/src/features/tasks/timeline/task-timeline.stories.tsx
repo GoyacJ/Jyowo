@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { TaskWorkspaceView } from '@/features/tasks/TaskWorkspace'
 import type { TaskSnapshot } from '@/features/tasks/task-store'
 import type {
@@ -8,24 +8,45 @@ import type {
   TaskProjection,
   TimelineItemProjection,
 } from '@/generated/daemon-protocol'
+import { appI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
+import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
+import jyowoLogoUrl from '../../../../src-tauri/icons/jyowo-logo-concept-02.png?url'
 
 const taskId = '01J00000000000000000000001'
 const segmentId = '01J00000000000000000000002'
 const diffBlobId = '01J00000000000000000000003'
+const imageBlobId = '01J00000000000000000000004'
+const fileBlobId = '01J00000000000000000000005'
 
 const storyClient = {
   connect: async () => ({}) as never,
-  readBlob: async () => ({
-    blobId: diffBlobId,
-    bytes: new TextEncoder().encode(
-      'diff --git a/src/recovery.rs b/src/recovery.rs\n+assert_eq!(replayed, committed);',
-    ),
-    contentHash: Array.from({ length: 32 }, () => 1),
-    mediaType: 'text/x-diff',
-    missing: false,
-    size: 87,
-  }),
+  loadTaskEvents: async () => ({ events: [], nextBeforeOffset: null, taskId }),
+  readBlob: async (blobId: string) => {
+    if (blobId === imageBlobId) {
+      const bytes = new Uint8Array(await (await fetch(jyowoLogoUrl)).arrayBuffer())
+      return {
+        blobId,
+        bytes,
+        contentHash: Array.from({ length: 32 }, () => 2),
+        mediaType: 'image/png',
+        missing: false,
+        size: bytes.byteLength,
+      }
+    }
+    const text =
+      blobId === fileBlobId
+        ? '# Recovery report\n\nThe committed projection matches the replayed state.'
+        : 'diff --git a/src/recovery.rs b/src/recovery.rs\n+assert_eq!(replayed, committed);'
+    return {
+      blobId,
+      bytes: new TextEncoder().encode(text),
+      contentHash: Array.from({ length: 32 }, () => 1),
+      mediaType: blobId === fileBlobId ? 'text/markdown' : 'text/x-diff',
+      missing: false,
+      size: text.length,
+    }
+  },
   request: async (request: ClientRequest) => ({
     message: {
       commandId: request.type === 'resolve_permission' ? request.metadata.commandId : taskId,
@@ -85,6 +106,15 @@ export const ActiveStreaming: Story = workspaceStory(
     },
   ),
 )
+
+export const ReferenceProcessFlow: Story = {
+  args: {
+    client: storyClient,
+    connectionState: 'connected',
+    snapshot: referenceProcessSnapshot(),
+  },
+  render: (args) => <ReferenceProcessFixture {...args} />,
+}
 
 export const PermissionWaiting: Story = workspaceStory(
   snapshot(
@@ -169,44 +199,151 @@ export const OpenWorkbench: Story = workspaceStory(
     item(2, 'diff', '2 files changed, 18 insertions', segmentId, false, diffBlobId),
     item(3, 'assistant_text', 'The recovery invariant is covered.', segmentId),
   ]),
-  true,
+  {
+    blobId: diffBlobId,
+    kind: 'diff',
+    resourceId: diffBlobId,
+    sourceEventId: 'event-2',
+    taskId,
+    title: '2 files changed, 18 insertions',
+  },
 )
 
-function workspaceStory(storySnapshot: TaskSnapshot, workbench = false): Story {
+export const ObjectPreviews: Story = workspaceStory(
+  snapshot('completed', [
+    item(1, 'user_message', 'Review the generated assets.', undefined, false, fileBlobId),
+    item(2, 'file', 'recovery-report.md', segmentId, false, fileBlobId),
+    item(3, 'image', 'Jyowo application icon', segmentId, false, imageBlobId),
+    item(4, 'assistant_text', 'The file and image are ready for inspection.', segmentId),
+  ]),
+  {
+    blobId: imageBlobId,
+    kind: 'source',
+    resourceId: imageBlobId,
+    sourceEventId: 'event-3',
+    taskId,
+    title: 'Jyowo application icon',
+  },
+)
+
+export const ScrollFollowing: Story = {
+  args: {
+    client: storyClient,
+    connectionState: 'connected',
+    snapshot: null,
+  },
+  render: () => <ScrollFollowingFixture />,
+}
+
+function workspaceStory(storySnapshot: TaskSnapshot, initialTarget?: TaskWorkbenchTarget): Story {
   return {
     args: {
       client: storyClient,
       connectionState: 'connected',
       snapshot: storySnapshot,
     },
-    render: (args) => <WorkspaceFixture {...args} workbench={workbench} />,
+    render: (args) => <WorkspaceFixture {...args} initialTarget={initialTarget} />,
   }
 }
 
 function WorkspaceFixture({
-  workbench,
+  initialTarget,
   ...props
-}: Parameters<typeof TaskWorkspaceView>[0] & { workbench: boolean }) {
+}: Parameters<typeof TaskWorkspaceView>[0] & { initialTarget?: TaskWorkbenchTarget }) {
   useEffect(() => {
-    uiStore.setState(
-      workbench
-        ? {
-            taskWorkbenchMode: 'inspector',
-            taskWorkbenchSelection: {
-              blobId: diffBlobId,
-              eventId: 'event-2',
-              panel: 'changes',
-              segmentId,
-              taskId,
-            },
-          }
-        : { taskWorkbenchMode: 'closed', taskWorkbenchSelection: null },
-    )
+    uiStore.setState({ taskWorkbenchByTaskId: {} })
+    if (initialTarget) uiStore.getState().openTaskWorkbench(initialTarget)
     return () => {
-      uiStore.setState({ taskWorkbenchMode: 'closed', taskWorkbenchSelection: null })
+      uiStore.setState({ taskWorkbenchByTaskId: {} })
     }
-  }, [workbench])
+  }, [initialTarget])
   return <TaskWorkspaceView {...props} />
+}
+
+function ReferenceProcessFixture(props: Parameters<typeof TaskWorkspaceView>[0]) {
+  useEffect(() => {
+    const previousTheme = uiStore.getState().theme
+    const previousLocale = appI18n.language
+    uiStore.getState().setTheme('dark')
+    void appI18n.changeLanguage('zh-CN')
+    return () => {
+      uiStore.getState().setTheme(previousTheme)
+      void appI18n.changeLanguage(previousLocale)
+    }
+  }, [])
+  return <TaskWorkspaceView {...props} />
+}
+
+function ScrollFollowingFixture() {
+  const [timeline, setTimeline] = useState(() =>
+    Array.from({ length: 32 }, (_, index) =>
+      item(
+        index + 1,
+        index % 2 === 0 ? 'user_message' : 'assistant_text',
+        `History message ${index + 1}. This line is long enough to make the timeline scroll.`,
+      ),
+    ),
+  )
+
+  useEffect(() => () => uiStore.getState().setTheme('system'), [])
+
+  return (
+    <div className="relative h-full">
+      <div className="fixed top-2 left-2 z-50 flex gap-1" data-testid="scroll-story-controls">
+        <button
+          className="rounded border border-border bg-surface px-2 py-1 text-xs"
+          onClick={() =>
+            setTimeline((current) => [
+              ...current,
+              item(
+                (current.at(-1)?.globalOffset ?? 0) + 1,
+                'assistant_text',
+                `New message ${current.length + 1}`,
+              ),
+            ])
+          }
+          type="button"
+        >
+          Append message
+        </button>
+        <button
+          className="rounded border border-border bg-surface px-2 py-1 text-xs"
+          onClick={() =>
+            setTimeline((current) => {
+              const last = current.at(-1)
+              if (!last) return current
+              return [
+                ...current.slice(0, -1),
+                { ...last, incomplete: true, summary: `${last.summary} streamed` },
+              ]
+            })
+          }
+          type="button"
+        >
+          Grow stream
+        </button>
+        <button
+          className="rounded border border-border bg-surface px-2 py-1 text-xs"
+          onClick={() => uiStore.getState().setTheme('light')}
+          type="button"
+        >
+          Light theme
+        </button>
+        <button
+          className="rounded border border-border bg-surface px-2 py-1 text-xs"
+          onClick={() => uiStore.getState().setTheme('dark')}
+          type="button"
+        >
+          Dark theme
+        </button>
+      </div>
+      <TaskWorkspaceView
+        client={storyClient}
+        connectionState="connected"
+        snapshot={snapshot('completed', timeline)}
+      />
+    </div>
+  )
 }
 
 function snapshot(
@@ -230,6 +367,101 @@ function snapshot(
   }
 }
 
+function referenceProcessSnapshot() {
+  return snapshot(
+    'running',
+    [
+      item(1, 'user_message', '修复任务会话的过程展示。'),
+      item(
+        2,
+        'assistant_text',
+        '已开始处理会话区。先核对时间线投影、当前分支和工作区状态。',
+        segmentId,
+      ),
+      toolItem(3, 'read', 'completed', 'read_file', 'timeline/TaskTimeline.tsx', 38),
+      toolItem(
+        4,
+        'command',
+        'completed',
+        'exec_command',
+        undefined,
+        620,
+        'git status --short',
+        ' M apps/desktop/src/features/tasks/timeline/RunSegment.tsx',
+      ),
+      toolItem(
+        5,
+        'command',
+        'completed',
+        'exec_command',
+        undefined,
+        840,
+        'rg -n "tool_activity" apps/desktop/src/features/tasks',
+        "apps/desktop/src/features/tasks/timeline/RunSegment.tsx:31: item.kind === 'tool_activity'",
+      ),
+      item(
+        6,
+        'assistant_text',
+        '现有问题来自生命周期事件占据正文，以及同一次工具调用被拆成多条记录。开始合并投影。',
+        segmentId,
+      ),
+      toolItem(7, 'edit', 'completed', 'apply_patch', 'timeline/RunSegment.tsx', 54),
+      toolItem(8, 'read', 'completed', 'read_file', 'task_projection.rs', 26),
+      toolItem(
+        9,
+        'command',
+        'completed',
+        'exec_command',
+        undefined,
+        1_240,
+        'pnpm -C apps/desktop test TaskTimeline',
+        'Test Files  1 passed (1)\nTests  12 passed (12)',
+      ),
+      item(
+        10,
+        'diff',
+        '4 files changed, 186 insertions, 74 deletions',
+        segmentId,
+        false,
+        diffBlobId,
+      ),
+      item(11, 'image', 'task-context-reference.png', segmentId, false, imageBlobId),
+      item(12, 'file', 'implementation-notes.md', segmentId, false, fileBlobId),
+      item(
+        13,
+        'assistant_text',
+        '工具调用已经按语义聚合。生命周期记录退出正文，运行状态改为单一入口。',
+        segmentId,
+      ),
+      toolItem(14, 'command', 'running', 'exec_command', undefined, undefined, 'pnpm check'),
+    ],
+    {
+      currentRun: {
+        incompleteOutput: false,
+        segmentId,
+        startedAt: new Date(Date.now() - 40_000).toISOString(),
+        state: 'running',
+      },
+      subagents: [
+        {
+          actorId: '01J00000000000000000000006',
+          childTaskId: '01J00000000000000000000007',
+          contextCursor: 3,
+          delegationId: '01J00000000000000000000008',
+          detached: false,
+          parentSegmentId: segmentId,
+          parentTaskId: taskId,
+          segmentId: '01J00000000000000000000009',
+          startedAt: new Date(Date.now() - 18_000).toISOString(),
+          state: 'running',
+          summary: '检查任务上下文视觉一致性',
+        },
+      ],
+      workspace: { mode: 'current', root: '/Users/goya/Repo/Git/Jyowo' },
+    },
+  )
+}
+
 function item(
   globalOffset: number,
   kind: TimelineItemProjection['kind'],
@@ -246,6 +478,31 @@ function item(
     kind,
     runSegmentId,
     summary,
+  }
+}
+
+function toolItem(
+  globalOffset: number,
+  operation: NonNullable<TimelineItemProjection['tool']>['operation'],
+  status: NonNullable<TimelineItemProjection['tool']>['status'],
+  toolName: string,
+  subject?: string,
+  durationMs?: number,
+  command?: string,
+  output?: string,
+): TimelineItemProjection {
+  return {
+    ...item(globalOffset, 'tool_activity', toolName, segmentId, status !== 'completed'),
+    tool: {
+      durationMs,
+      command,
+      operation,
+      output,
+      status,
+      subject,
+      toolName,
+      toolUseId: `tool-${globalOffset}`,
+    },
   }
 }
 

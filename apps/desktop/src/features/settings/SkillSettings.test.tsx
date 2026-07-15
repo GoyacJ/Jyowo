@@ -72,6 +72,8 @@ describe('SkillSettingsPage', () => {
     renderSkillSettingsPage({
       runtimeTools: {
         generation: 7,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'MiniMaxTextToImage',
@@ -92,6 +94,9 @@ describe('SkillSettingsPage', () => {
               operationId: 'minimax.image_generation',
               routeKind: 'imageGeneration',
             },
+            configuredEnabled: true,
+            available: false,
+            unavailableReason: 'HTTP broker is not registered',
           },
         ],
       },
@@ -108,7 +113,7 @@ describe('SkillSettingsPage', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
-    expect(await screen.findByRole('heading', { name: '运行时工具' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
     expect(await screen.findByText('MiniMaxTextToImage')).toBeInTheDocument()
   })
 
@@ -116,6 +121,8 @@ describe('SkillSettingsPage', () => {
     renderSkillSettingsPage({
       runtimeTools: {
         generation: 8,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'FileRead',
@@ -132,6 +139,9 @@ describe('SkillSettingsPage', () => {
             deferPolicy: 'alwaysLoad',
             longRunning: false,
             serviceBinding: null,
+            configuredEnabled: true,
+            available: true,
+            unavailableReason: null,
           },
         ],
       },
@@ -147,6 +157,8 @@ describe('SkillSettingsPage', () => {
     renderSkillSettingsPage({
       runtimeTools: {
         generation: 9,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'custom_tool',
@@ -163,6 +175,9 @@ describe('SkillSettingsPage', () => {
             deferPolicy: 'alwaysLoad',
             longRunning: false,
             serviceBinding: null,
+            configuredEnabled: true,
+            available: true,
+            unavailableReason: null,
           },
         ],
       },

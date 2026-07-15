@@ -68,6 +68,8 @@ pub struct HarnessHealthcheckPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ListRuntimeToolsResponse {
     pub generation: u64,
+    pub scope: SettingsScope,
+    pub customized: bool,
     pub tools: Vec<RuntimeToolSummary>,
 }
 
@@ -88,6 +90,16 @@ pub struct RuntimeToolSummary {
     pub defer_policy: String,
     pub long_running: bool,
     pub service_binding: Option<RuntimeToolServiceBindingSummary>,
+    pub configured_enabled: bool,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SetRuntimeToolEnabledRequest {
+    pub name: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

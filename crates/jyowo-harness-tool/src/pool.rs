@@ -110,6 +110,13 @@ impl ToolPoolFilter {
             intersect_optional_sets(self.group_allowlist.take(), profile_filter.group_allowlist);
         self.group_denylist.extend(profile_filter.group_denylist);
     }
+
+    /// Returns whether this filter admits a descriptor before provider-specific
+    /// restrictions are applied.
+    #[must_use]
+    pub fn allows_descriptor(&self, descriptor: &ToolDescriptor) -> bool {
+        existing_filter_allows(self, descriptor)
+    }
 }
 
 fn intersect_optional_sets<T>(

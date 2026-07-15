@@ -455,6 +455,8 @@ fn default_conversation_system_prompt_uses_agent_runtime_identity() {
         let system = model.requests().await[0].system.clone().unwrap_or_default();
         assert_agent_runtime_identity(&system);
         assert_runtime_context_contract(&system);
+        assert!(system.contains("执行多步骤任务或连续调用工具前"));
+        assert!(system.contains("按用户能够理解的阶段合并进度"));
         assert!(system.contains("<session-addendum>"));
         assert!(system.contains("保留用户提供的附加约束。"));
     });

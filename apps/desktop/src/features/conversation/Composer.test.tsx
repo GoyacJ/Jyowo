@@ -220,6 +220,23 @@ describe('Composer', () => {
     expect(onModelConfigChange).toHaveBeenCalledWith('openai-work')
   })
 
+  it('keeps the empty editor compact and the model selector bounded', () => {
+    render(
+      <Composer
+        modelConfigId="long-model"
+        modelConfigs={[{ id: 'long-model', label: 'A very long provider and model name' }]}
+        onModelConfigChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByPlaceholderText('Ask Jyowo anything about this project…')).toHaveStyle({
+      minHeight: '44px',
+      maxHeight: '160px',
+    })
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveClass('max-w-[180px]')
+  })
+
   it('disables attachments when the selected model only accepts text', () => {
     render(
       <Composer

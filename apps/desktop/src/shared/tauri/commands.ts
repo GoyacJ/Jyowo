@@ -157,6 +157,8 @@ const harnessHealthcheckSchema = z
   })
   .strict()
 
+const settingsScopeSchema = z.enum(['global', 'project'])
+
 const processSandboxStatusSchema = z
   .object({
     backendId: z.string().min(1),
@@ -220,12 +222,23 @@ const runtimeToolSummarySchema = z
     deferPolicy: z.enum(['alwaysLoad', 'autoDefer', 'forceDefer']),
     longRunning: z.boolean(),
     serviceBinding: runtimeToolServiceBindingSchema.nullable(),
+    configuredEnabled: z.boolean(),
+    available: z.boolean(),
+    unavailableReason: z.string().nullable(),
   })
   .strict()
 const listRuntimeToolsResponseSchema = z
   .object({
     generation: z.number().int().nonnegative(),
+    scope: settingsScopeSchema,
+    customized: z.boolean(),
     tools: z.array(runtimeToolSummarySchema),
+  })
+  .strict()
+const setRuntimeToolEnabledRequestSchema = z
+  .object({
+    name: z.string().min(1),
+    enabled: z.boolean(),
   })
   .strict()
 
@@ -1797,8 +1810,6 @@ const providerConfigSchema = z
     providerId: providerIdSchema,
   })
   .strict()
-
-const settingsScopeSchema = z.enum(['global', 'project'])
 
 const listProviderSettingsResponseSchema = z
   .object({
@@ -3871,6 +3882,7 @@ export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema
 export type ToolRuntimeStatus = z.infer<typeof toolRuntimeStatusSchema>
 export type RuntimeToolSummary = z.infer<typeof runtimeToolSummarySchema>
 export type ListRuntimeToolsResponse = z.infer<typeof listRuntimeToolsResponseSchema>
+export type SetRuntimeToolEnabledRequest = z.infer<typeof setRuntimeToolEnabledRequestSchema>
 export type ListConversationsResponse = z.infer<typeof listConversationsResponseSchema>
 export type ListProjectConversationGroupsResponse = z.infer<
   typeof listProjectConversationGroupsResponseSchema
@@ -4138,6 +4150,10 @@ export interface CommandClient {
   getRuntimeExecutionStatus: () => Promise<RuntimeExecutionStatus>
   getModelSettingsPage: () => Promise<ModelSettingsPageResponse>
   listRuntimeTools: () => Promise<ListRuntimeToolsResponse>
+  setRuntimeToolEnabled: (
+    request: SetRuntimeToolEnabledRequest,
+  ) => Promise<ListRuntimeToolsResponse>
+  resetRuntimeTools: () => Promise<ListRuntimeToolsResponse>
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
   refreshModelProviderCatalog: () => Promise<RefreshModelProviderCatalogResponse>
   listOfficialQuotaSnapshots: () => Promise<ListOfficialQuotaSnapshotsResponse>
@@ -4340,6 +4356,15 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     },
     async listRuntimeTools() {
       const command = 'list_runtime_tools'
+      return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command))
+    },
+    async setRuntimeToolEnabled(request) {
+      const command = 'set_runtime_tool_enabled'
+      const args = parseArgs(command, setRuntimeToolEnabledRequestSchema, request)
+      return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command, args))
+    },
+    async resetRuntimeTools() {
+      const command = 'reset_runtime_tools'
       return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command))
     },
     async getModelUsageSummary() {
@@ -5199,6 +5224,19 @@ export function getExecutionSettings(
   request?: GetExecutionSettingsRequest,
 ): Promise<GetExecutionSettingsResponse> {
   return client.getExecutionSettings(request)
+}
+
+export function setRuntimeToolEnabled(
+  request: SetRuntimeToolEnabledRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListRuntimeToolsResponse> {
+  return client.setRuntimeToolEnabled(request)
+}
+
+export function resetRuntimeTools(
+  client: CommandClient = tauriCommandClient,
+): Promise<ListRuntimeToolsResponse> {
+  return client.resetRuntimeTools()
 }
 
 export function setExecutionSettings(

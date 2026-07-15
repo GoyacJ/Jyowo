@@ -792,12 +792,32 @@ export type TimelineEventKind =
   | 'tool_activity'
   | 'command'
   | 'diff'
+  | 'file'
+  | 'artifact'
   | 'image'
   | 'permission'
   | 'compaction'
   | 'subagent'
   | 'notice'
   | 'error'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineToolOperation".
+ */
+export type TimelineToolOperation =
+  | 'read'
+  | 'edit'
+  | 'search'
+  | 'command'
+  | 'browse'
+  | 'generate'
+  | 'delegate'
+  | 'other'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineToolStatus".
+ */
+export type TimelineToolStatus = 'requested' | 'running' | 'completed' | 'denied' | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "EventSourceKind".
@@ -1415,6 +1435,22 @@ export interface TimelineItemProjection {
   runSegmentId?: TypedUlid | null
   semanticGroupId?: string | null
   summary: string
+  tool?: TimelineToolProjection | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineToolProjection".
+ */
+export interface TimelineToolProjection {
+  command?: string | null
+  durationMs?: number | null
+  operation: TimelineToolOperation
+  output?: string | null
+  resultSummary?: string | null
+  status: TimelineToolStatus
+  subject?: string | null
+  toolName: string
+  toolUseId: string
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

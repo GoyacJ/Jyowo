@@ -95,4 +95,62 @@ describe('ui-store', () => {
       nonce: 1,
     })
   })
+
+  it('isolates timeline position, follow mode, indicator, and anchor by task', () => {
+    const store = createUiStore()
+
+    store.getState().setTimelineScrollSession('task-1', {
+      hasNewContent: true,
+      mode: 'paused',
+      newItemCount: 3,
+      scrollTop: 420,
+      showJumpToLatest: true,
+      visibleAnchor: { key: 'block-4', offset: -12, virtualIndex: 4, virtualStart: 960 },
+    })
+    store.getState().setTimelineScrollSession('task-2', {
+      hasNewContent: false,
+      mode: 'following',
+      newItemCount: 0,
+      scrollTop: 900,
+      showJumpToLatest: false,
+      visibleAnchor: null,
+    })
+
+    expect(store.getState().timelineScrollByTaskId['task-1']).toMatchObject({
+      mode: 'paused',
+      newItemCount: 3,
+      scrollTop: 420,
+      visibleAnchor: { key: 'block-4', virtualIndex: 4 },
+    })
+    expect(store.getState().timelineScrollByTaskId['task-2']).toMatchObject({
+      mode: 'following',
+      scrollTop: 900,
+    })
+  })
+
+  it('isolates workbench sessions by task and clamps the shared width preference', () => {
+    const store = createUiStore()
+
+    store.getState().openTaskWorkbench({
+      kind: 'diff',
+      resourceId: 'diff-1',
+      taskId: 'task-1',
+      title: 'First diff',
+    })
+    store.getState().openTaskWorkbench({
+      kind: 'command',
+      resourceId: 'command-1',
+      taskId: 'task-2',
+      title: 'Command',
+    })
+    store.getState().closeTaskWorkbench('task-1')
+    store.getState().setTaskWorkbenchWidth(900)
+
+    expect(store.getState().taskWorkbenchByTaskId['task-1']).toMatchObject({ open: false })
+    expect(store.getState().taskWorkbenchByTaskId['task-2']).toMatchObject({
+      activeTabId: 'command:command-1',
+      open: true,
+    })
+    expect(store.getState().taskWorkbenchWidth).toBe(640)
+  })
 })

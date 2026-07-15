@@ -18,7 +18,12 @@ import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
-import { TaskWorkspace, TaskWorkspaceView, timelineItems } from './TaskWorkspace'
+import {
+  TaskWorkspace,
+  TaskWorkspaceView,
+  taskWorkspaceLayoutModeForWidth,
+  timelineItems,
+} from './TaskWorkspace'
 import type { TaskSnapshot } from './task-store'
 
 const useTask = vi.hoisted(() => vi.fn())
@@ -57,7 +62,14 @@ function renderTaskWorkspace(
 describe('TaskWorkspace', () => {
   beforeEach(() => {
     useTask.mockReset()
-    uiStore.setState({ taskWorkbenchMode: 'closed', taskWorkbenchSelection: null })
+    uiStore.setState({ taskWorkbenchByTaskId: {} })
+  })
+
+  it('uses fullscreen, overlay, and docked modes at the documented boundaries', () => {
+    expect(taskWorkspaceLayoutModeForWidth(719)).toBe('fullscreen')
+    expect(taskWorkspaceLayoutModeForWidth(720)).toBe('overlay')
+    expect(taskWorkspaceLayoutModeForWidth(1039)).toBe('overlay')
+    expect(taskWorkspaceLayoutModeForWidth(1040)).toBe('docked')
   })
 
   it('offers runnable authentication-free providers without an API key', async () => {
@@ -866,7 +878,7 @@ describe('TaskWorkspace', () => {
     ])
   })
 
-  it('opens timeline evidence in the task workbench and clears it when switching tasks', () => {
+  it('opens timeline evidence in a task-scoped workbench session', () => {
     const evidenceSnapshot: TaskSnapshot = {
       ...snapshot,
       timeline: [
@@ -898,14 +910,21 @@ describe('TaskWorkspace', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Changes' }))
-    expect(uiStore.getState().taskWorkbenchSelection).toEqual({
-      blobId: '01J00000000000000000000031',
-      eventId: '01J00000000000000000000032',
-      panel: 'changes',
-      segmentId: '01J00000000000000000000033',
-      taskId: snapshot.projection.taskId,
+    expect(uiStore.getState().taskWorkbenchByTaskId[snapshot.projection.taskId]).toMatchObject({
+      activeTabId: 'diff:01J00000000000000000000031',
+      open: true,
+      previewTabId: 'diff:01J00000000000000000000031',
     })
-    expect(uiStore.getState().taskWorkbenchMode).toBe('inspector')
+    expect(
+      uiStore.getState().taskWorkbenchByTaskId[snapshot.projection.taskId]?.tabs[0]?.target,
+    ).toEqual({
+      blobId: '01J00000000000000000000031',
+      kind: 'diff',
+      resourceId: '01J00000000000000000000031',
+      sourceEventId: '01J00000000000000000000032',
+      taskId: snapshot.projection.taskId,
+      title: '2 files changed',
+    })
 
     act(() => {
       rerender(
@@ -919,7 +938,176 @@ describe('TaskWorkspace', () => {
         />,
       )
     })
-    expect(uiStore.getState().taskWorkbenchSelection).toBeNull()
+    expect(uiStore.getState().taskWorkbenchByTaskId[snapshot.projection.taskId]?.open).toBe(true)
+    expect(uiStore.getState().taskWorkbenchByTaskId['01J00000000000000000000099']).toBeUndefined()
+  })
+
+  it('restores opener focus and locates the active object in the conversation', async () => {
+    const evidenceSnapshot: TaskSnapshot = {
+      ...snapshot,
+      timeline: [
+        {
+          blobId: '01J00000000000000000000031',
+          globalOffset: 3,
+          id: '01J00000000000000000000032',
+          incomplete: false,
+          kind: 'diff',
+          runSegmentId: '01J00000000000000000000033',
+          summary: '2 files changed',
+        },
+      ],
+    }
+    const client = {
+      connect: vi.fn(),
+      loadTaskEvents: vi.fn().mockResolvedValue({
+        events: [],
+        nextBeforeOffset: null,
+        taskId: snapshot.projection.taskId,
+      }),
+      readBlob: vi.fn().mockResolvedValue({
+        blobId: '01J00000000000000000000031',
+        bytes: null,
+        contentHash: Array.from({ length: 32 }, () => 1),
+        mediaType: 'text/plain',
+        missing: true,
+        size: 0,
+      }),
+      request: vi.fn(),
+    }
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    render(
+      <TaskWorkspaceView client={client} connectionState="connected" snapshot={evidenceSnapshot} />,
+    )
+
+    const opener = screen.getByRole('button', { name: 'Open Changes' })
+    opener.focus()
+    fireEvent.click(opener)
+    expect(screen.getByRole('complementary', { name: 'Task workbench' })).toBeInTheDocument()
+    expect(screen.getByTestId('task-reading-column')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByTestId('task-reading-column')).toHaveAttribute('inert')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Locate in conversation' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('timeline-item')).toHaveAttribute('data-located', 'true'),
+    )
+    expect(screen.getByRole('complementary', { name: 'Task workbench' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close task workbench' }))
+    await waitFor(() => expect(opener).toHaveFocus())
+    expect(screen.getByTestId('task-reading-column')).not.toHaveAttribute('aria-hidden')
+    expect(screen.getByTestId('task-reading-column')).not.toHaveAttribute('inert')
+  })
+
+  it('closes an overlay with Escape while focus remains in the conversation', async () => {
+    const geometry = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 600,
+      height: 600,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top: 0,
+      width: 800,
+      x: 0,
+      y: 0,
+    })
+    const evidenceSnapshot: TaskSnapshot = {
+      ...snapshot,
+      timeline: [
+        {
+          blobId: '01J00000000000000000000031',
+          globalOffset: 3,
+          id: '01J00000000000000000000032',
+          incomplete: false,
+          kind: 'diff',
+          summary: '2 files changed',
+        },
+      ],
+    }
+    const client = {
+      connect: vi.fn(),
+      loadTaskEvents: vi.fn().mockResolvedValue({
+        events: [],
+        nextBeforeOffset: null,
+        taskId: snapshot.projection.taskId,
+      }),
+      readBlob: vi.fn().mockResolvedValue({
+        blobId: '01J00000000000000000000031',
+        bytes: null,
+        contentHash: Array.from({ length: 32 }, () => 1),
+        mediaType: 'text/plain',
+        missing: true,
+        size: 0,
+      }),
+      request: vi.fn(),
+    }
+    render(
+      <TaskWorkspaceView client={client} connectionState="connected" snapshot={evidenceSnapshot} />,
+    )
+
+    const opener = screen.getByRole('button', { name: 'Open Changes' })
+    opener.focus()
+    fireEvent.click(opener)
+    expect(screen.getByTestId('task-workbench')).toHaveAttribute('data-layout', 'overlay')
+
+    fireEvent.keyDown(opener, { key: 'Escape' })
+
+    expect(screen.queryByRole('complementary', { name: 'Task workbench' })).not.toBeInTheDocument()
+    await waitFor(() => expect(opener).toHaveFocus())
+    geometry.mockRestore()
+  })
+
+  it('falls back to the conversation region when the opener no longer exists', async () => {
+    const evidenceSnapshot: TaskSnapshot = {
+      ...snapshot,
+      timeline: [
+        {
+          blobId: '01J00000000000000000000031',
+          globalOffset: 3,
+          id: '01J00000000000000000000032',
+          incomplete: false,
+          kind: 'diff',
+          summary: '2 files changed',
+        },
+      ],
+    }
+    const client = {
+      connect: vi.fn(),
+      loadTaskEvents: vi.fn().mockResolvedValue({
+        events: [],
+        nextBeforeOffset: null,
+        taskId: snapshot.projection.taskId,
+      }),
+      readBlob: vi.fn().mockResolvedValue({
+        blobId: '01J00000000000000000000031',
+        bytes: null,
+        contentHash: Array.from({ length: 32 }, () => 1),
+        mediaType: 'text/plain',
+        missing: true,
+        size: 0,
+      }),
+      request: vi.fn(),
+    }
+    const { rerender } = render(
+      <TaskWorkspaceView client={client} connectionState="connected" snapshot={evidenceSnapshot} />,
+    )
+
+    const opener = screen.getByRole('button', { name: 'Open Changes' })
+    fireEvent.click(opener)
+    rerender(
+      <TaskWorkspaceView
+        client={client}
+        connectionState="connected"
+        snapshot={{ ...evidenceSnapshot, timeline: [] }}
+      />,
+    )
+    expect(opener.isConnected).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close task workbench' }))
+
+    await waitFor(() => expect(screen.getByTestId('task-reading-column')).toHaveFocus())
   })
 })
 

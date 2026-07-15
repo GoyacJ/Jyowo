@@ -11,7 +11,7 @@ type ComposerEditorProps = {
   onSubmit: () => void
 }
 
-const minHeight = 64
+const minHeight = 44
 const maxHeight = 160
 
 export function ComposerEditor({

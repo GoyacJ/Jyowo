@@ -337,6 +337,62 @@ describe('deriveLiveTaskSnapshot', () => {
       }),
     ])
   })
+
+  it('preserves file and generated media artifact kinds in the live timeline', () => {
+    const blobId = id(82)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      engineEvent(3, 'artifact_created', {
+        blob_ref: { content_hash: Array(32).fill(1), id: blobId, size: 12 },
+        kind: 'file',
+        title: 'report.md',
+      }),
+      engineEvent(4, 'artifact_created', {
+        blob_ref: { content_hash: Array(32).fill(2), id: id(83), size: 24 },
+        kind: 'video',
+        title: 'demo.mp4',
+      }),
+    ])
+
+    expect(result.timeline).toEqual([
+      expect.objectContaining({ blobId, kind: 'file', summary: 'report.md' }),
+      expect.objectContaining({ kind: 'artifact', summary: 'demo.mp4' }),
+    ])
+  })
+
+  it('updates requested, started, and completed tool events as one timeline item', () => {
+    const toolUseId = id(90)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      engineEvent(3, 'tool_use_requested', {
+        input: { path: '/workspace/src/scheduler.rs' },
+        tool_name: 'read_file',
+        tool_use_id: toolUseId,
+      }),
+      engineEvent(4, 'tool_use_started', { tool_use_id: toolUseId }),
+      engineEvent(5, 'tool_use_completed', {
+        duration_ms: 42,
+        result: { text: 'first\nsecond' },
+        tool_use_id: toolUseId,
+      }),
+    ])
+
+    expect(result.timeline).toEqual([
+      expect.objectContaining({
+        globalOffset: 3,
+        incomplete: false,
+        kind: 'tool_activity',
+        summary: 'Read src/scheduler.rs',
+        tool: {
+          durationMs: 42,
+          operation: 'read',
+          resultSummary: '2 lines returned',
+          status: 'completed',
+          subject: 'src/scheduler.rs',
+          toolName: 'read_file',
+          toolUseId,
+        },
+      }),
+    ])
+  })
 })
 
 const snapshot: TaskSnapshot = {

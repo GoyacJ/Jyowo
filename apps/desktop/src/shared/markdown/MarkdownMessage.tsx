@@ -9,7 +9,7 @@ export type MarkdownMessageProps = {
 }
 
 const markdownComponents: Components = {
-  a({ className, ...props }) {
+  a({ className, node: _node, ...props }) {
     return (
       <a
         className={cn('font-medium text-primary underline-offset-4 hover:underline', className)}
@@ -19,7 +19,7 @@ const markdownComponents: Components = {
       />
     )
   },
-  blockquote({ className, ...props }) {
+  blockquote({ className, node: _node, ...props }) {
     return (
       <blockquote
         className={cn('border-border border-l-2 pl-3 text-muted-foreground', className)}
@@ -27,7 +27,7 @@ const markdownComponents: Components = {
       />
     )
   },
-  code({ className, ...props }) {
+  code({ className, node: _node, ...props }) {
     return (
       <code
         className={cn(
@@ -38,13 +38,25 @@ const markdownComponents: Components = {
       />
     )
   },
-  ol({ className, ...props }) {
+  h1({ className, node: _node, ...props }) {
+    return <h1 className={cn('font-semibold text-2xl tracking-tight', className)} {...props} />
+  },
+  h2({ className, node: _node, ...props }) {
+    return <h2 className={cn('font-semibold text-xl tracking-tight', className)} {...props} />
+  },
+  h3({ className, node: _node, ...props }) {
+    return <h3 className={cn('font-semibold text-lg', className)} {...props} />
+  },
+  h4({ className, node: _node, ...props }) {
+    return <h4 className={cn('font-semibold text-base', className)} {...props} />
+  },
+  ol({ className, node: _node, ...props }) {
     return <ol className={cn('ml-5 list-decimal space-y-1', className)} {...props} />
   },
-  p({ className, ...props }) {
+  p({ className, node: _node, ...props }) {
     return <p className={cn('break-words leading-7', className)} {...props} />
   },
-  pre({ className, ...props }) {
+  pre({ className, node: _node, ...props }) {
     return (
       <pre
         className={cn(
@@ -55,17 +67,17 @@ const markdownComponents: Components = {
       />
     )
   },
-  table({ className, ...props }) {
+  table({ className, node: _node, ...props }) {
     return (
       <div className="overflow-x-auto">
         <table className={cn('w-full border-collapse text-sm', className)} {...props} />
       </div>
     )
   },
-  td({ className, ...props }) {
+  td({ className, node: _node, ...props }) {
     return <td className={cn('border border-border px-3 py-2 align-top', className)} {...props} />
   },
-  th({ className, ...props }) {
+  th({ className, node: _node, ...props }) {
     return (
       <th
         className={cn('border border-border bg-muted px-3 py-2 text-left font-medium', className)}
@@ -73,7 +85,7 @@ const markdownComponents: Components = {
       />
     )
   },
-  ul({ className, ...props }) {
+  ul({ className, node: _node, ...props }) {
     return <ul className={cn('ml-5 list-disc space-y-1', className)} {...props} />
   },
 }

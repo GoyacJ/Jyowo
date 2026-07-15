@@ -54,7 +54,7 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
         conversations: boolean
       }
       expandedProjects: Record<string, boolean>
-      taskWorkbenchMode: 'closed' | 'inspector' | 'collaboration'
+      taskWorkbenchWidth: number
       chatComposerHeight: number
       contextPanelWidth: number
     }>
@@ -68,7 +68,7 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
       conversations: true,
     },
     expandedProjects: {},
-    taskWorkbenchMode: 'closed',
+    taskWorkbenchWidth: 400,
     chatComposerHeight: 160,
     contextPanelWidth: 320,
   })),
@@ -148,7 +148,7 @@ describe('App', () => {
         conversations: true,
       },
       expandedProjects: {},
-      taskWorkbenchMode: 'closed',
+      taskWorkbenchWidth: 400,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -172,7 +172,7 @@ describe('App', () => {
     for (const path of Object.keys(uiStore.getState().expandedProjects)) {
       uiStore.getState().setProjectExpanded(path, false)
     }
-    uiStore.getState().setTaskWorkbenchMode('closed')
+    uiStore.setState({ taskWorkbenchByTaskId: {}, taskWorkbenchWidth: 400 })
     document.documentElement.classList.remove('dark')
     delete document.documentElement.dataset.theme
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
@@ -298,6 +298,8 @@ describe('App', () => {
       providerSettingsList: emptyProviderSettingsList,
       runtimeTools: {
         generation: 3,
+        scope: 'project',
+        customized: false,
         tools: [
           {
             name: 'FileRead',
@@ -314,6 +316,9 @@ describe('App', () => {
             deferPolicy: 'alwaysLoad',
             longRunning: false,
             serviceBinding: null,
+            configuredEnabled: true,
+            available: true,
+            unavailableReason: null,
           },
           {
             name: 'MiniMaxTextToImage',
@@ -334,6 +339,9 @@ describe('App', () => {
               operationId: 'minimax.image_generation',
               routeKind: 'imageGeneration',
             },
+            configuredEnabled: true,
+            available: false,
+            unavailableReason: 'HTTP broker is not registered',
           },
         ],
       },
@@ -355,7 +363,7 @@ describe('App', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Tools' }))
 
-    expect(await screen.findByRole('heading', { name: 'Runtime tools' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Tools' })).toBeInTheDocument()
     expect(await screen.findByText('FileRead')).toBeInTheDocument()
     expect(await screen.findByText('MiniMaxTextToImage')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Model configuration' })).not.toBeInTheDocument()
@@ -420,7 +428,7 @@ describe('App', () => {
         conversations: false,
       },
       expandedProjects: { '/repo/alpha': true },
-      taskWorkbenchMode: 'collaboration',
+      taskWorkbenchWidth: 560,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -440,7 +448,7 @@ describe('App', () => {
         conversations: false,
       })
       expect(uiStore.getState().expandedProjects['/repo/alpha']).toBe(true)
-      expect(uiStore.getState().taskWorkbenchMode).toBe('collaboration')
+      expect(uiStore.getState().taskWorkbenchWidth).toBe(560)
       expect(document.documentElement).toHaveClass('dark')
     })
 
@@ -458,7 +466,7 @@ describe('App', () => {
         conversations: false,
       },
       expandedProjects: { '/repo/alpha': true },
-      taskWorkbenchMode: 'collaboration',
+      taskWorkbenchWidth: 560,
     })
   })
 
@@ -503,7 +511,7 @@ describe('App', () => {
           conversations: true,
         },
         expandedProjects: {},
-        taskWorkbenchMode: 'closed',
+        taskWorkbenchWidth: 400,
         chatComposerHeight: 160,
         contextPanelWidth: 320,
       })

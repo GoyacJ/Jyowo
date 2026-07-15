@@ -49,6 +49,7 @@ import {
   listProviderCapabilityRoutes,
   listProviderProbeSnapshots,
   listProviderSettings,
+  listRuntimeTools,
   listSkillCatalogEntries,
   listSkillCatalogInstallTasks,
   listSkillCatalogSources,
@@ -63,6 +64,7 @@ import {
   reloadPlugin,
   renameProject,
   requestProviderConfigApiKeyReveal,
+  resetRuntimeTools,
   restartMcpServer,
   saveAgentProfile,
   saveBrowserMcpPreset,
@@ -73,6 +75,7 @@ import {
   setMcpServerEnabled,
   setPluginEnabled,
   setProjectPluginsEnabled,
+  setRuntimeToolEnabled,
   setSkillConfigValue,
   setSkillEnabled,
   setSkillSecret,
@@ -294,6 +297,51 @@ describe('CommandClient', () => {
     )
 
     await expect(getAppInfo(client)).rejects.toThrow(TauriCommandPayloadError)
+  })
+
+  it('models runtime tool switches through strict catalog responses', async () => {
+    const response = {
+      customized: true,
+      generation: 2,
+      scope: 'project',
+      tools: [
+        {
+          access: 'readOnly',
+          available: true,
+          category: 'builtin',
+          configuredEnabled: false,
+          deferPolicy: 'alwaysLoad',
+          description: 'Read a file.',
+          displayName: 'File read',
+          executionChannel: 'directAuthorizedRust',
+          group: 'fileSystem',
+          groupLabel: 'File system',
+          longRunning: false,
+          name: 'FileRead',
+          originId: null,
+          originKind: 'builtin',
+          requiredCapabilities: [],
+          serviceBinding: null,
+          unavailableReason: null,
+        },
+      ],
+    }
+    const invoke = vi.fn().mockResolvedValue(response)
+    const client = createInvokeCommandClient(invoke)
+
+    await expect(
+      setRuntimeToolEnabled({ enabled: false, name: 'FileRead' }, client),
+    ).resolves.toEqual(response)
+    expect(invoke).toHaveBeenLastCalledWith('set_runtime_tool_enabled', {
+      enabled: false,
+      name: 'FileRead',
+    })
+
+    await expect(resetRuntimeTools(client)).resolves.toEqual(response)
+    expect(invoke).toHaveBeenLastCalledWith('reset_runtime_tools')
+
+    await expect(listRuntimeTools(client)).resolves.toEqual(response)
+    expect(invoke).toHaveBeenLastCalledWith('list_runtime_tools')
   })
 
   it('formats object-shaped Tauri command errors through their message', () => {

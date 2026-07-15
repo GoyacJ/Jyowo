@@ -1,7 +1,10 @@
 import { load, type Store } from '@tauri-apps/plugin-store'
 
 import { type AppLocale, DEFAULT_APP_LOCALE, isAppLocale } from '@/shared/i18n/locales'
-import type { TaskWorkbenchMode } from '@/shared/state/workbench-selection'
+import {
+  clampTaskWorkbenchWidth,
+  DEFAULT_TASK_WORKBENCH_WIDTH,
+} from '@/shared/state/workbench-selection'
 
 export const UI_PREFERENCES_STORE_PATH = 'ui-preferences.json'
 
@@ -19,7 +22,7 @@ export type UiPreferences = {
   sidebarCollapsed: boolean
   sidebarSections: SidebarSectionsPreference
   expandedProjects: Record<string, boolean>
-  taskWorkbenchMode: TaskWorkbenchMode
+  taskWorkbenchWidth: number
   chatComposerHeight: number
   contextPanelWidth: number
 }
@@ -34,7 +37,7 @@ const UI_PREFERENCES_DEFAULTS: UiPreferences = {
     conversations: true,
   },
   expandedProjects: {},
-  taskWorkbenchMode: 'closed',
+  taskWorkbenchWidth: DEFAULT_TASK_WORKBENCH_WIDTH,
   chatComposerHeight: 160,
   contextPanelWidth: 320,
 }
@@ -59,7 +62,8 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     sidebarCollapsed,
     sidebarSections,
     expandedProjects,
-    taskWorkbenchMode,
+    taskWorkbenchWidth,
+    legacyTaskWorkbenchMode,
     chatComposerHeight,
     contextPanelWidth,
   ] = await Promise.all([
@@ -68,7 +72,8 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     store.get<boolean>('sidebarCollapsed'),
     store.get<SidebarSectionsPreference>('sidebarSections'),
     store.get<Record<string, boolean>>('expandedProjects'),
-    store.get<TaskWorkbenchMode>('taskWorkbenchMode'),
+    store.get<number>('taskWorkbenchWidth'),
+    store.get<string>('taskWorkbenchMode'),
     store.get<number>('chatComposerHeight'),
     store.get<number>('contextPanelWidth'),
   ])
@@ -84,9 +89,10 @@ export async function readUiPreferences(): Promise<UiPreferences> {
       ? sidebarSections
       : { ...UI_PREFERENCES_DEFAULTS.sidebarSections },
     expandedProjects: isExpandedProjectsPreference(expandedProjects) ? expandedProjects : {},
-    taskWorkbenchMode: isTaskWorkbenchMode(taskWorkbenchMode)
-      ? taskWorkbenchMode
-      : UI_PREFERENCES_DEFAULTS.taskWorkbenchMode,
+    taskWorkbenchWidth:
+      typeof taskWorkbenchWidth === 'number' && Number.isFinite(taskWorkbenchWidth)
+        ? clampTaskWorkbenchWidth(taskWorkbenchWidth)
+        : legacyTaskWorkbenchWidth(legacyTaskWorkbenchMode),
     chatComposerHeight:
       typeof chatComposerHeight === 'number'
         ? chatComposerHeight
@@ -114,8 +120,8 @@ function isUiThemePreference(value: unknown): value is UiThemePreference {
   return value === 'system' || value === 'light' || value === 'dark'
 }
 
-function isTaskWorkbenchMode(value: unknown): value is TaskWorkbenchMode {
-  return value === 'closed' || value === 'inspector' || value === 'collaboration'
+function legacyTaskWorkbenchWidth(value: unknown) {
+  return value === 'collaboration' ? 560 : UI_PREFERENCES_DEFAULTS.taskWorkbenchWidth
 }
 
 function isSidebarSectionsPreference(value: unknown): value is SidebarSectionsPreference {

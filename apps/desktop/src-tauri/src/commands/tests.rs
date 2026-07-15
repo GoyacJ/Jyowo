@@ -6,13 +6,20 @@ mod tests {
     use crate::commands::error::runtime_operation_failed;
     use crate::commands::mcp::mcp_stdio_env;
     use crate::commands::plugins::{plugin_package_dir_name, redact_plugin_detail_config_values};
-    use crate::commands::runtime::desktop_cargo_extension_search_paths;
+    use crate::commands::runtime::{
+        desktop_cargo_extension_search_paths, desktop_settings_permission_rules,
+    };
     use crate::commands::skills::{
         emit_skill_catalog_install_progress, get_or_create_skill_catalog_install_task,
         record_skill_catalog_install_task_progress, skill_catalog_install_stage,
     };
     use crate::commands::stores::ensure_plugin_package_dir_name;
-    use harness_contracts::{PluginProductState, PluginSourceKind};
+    use crate::commands::validation::mcp_safe_connection_error_message;
+    use harness_contracts::{
+        ActionPlanHash, Decision, DecisionScope, PermissionSubject, PluginProductState,
+        PluginSourceKind, RequestId, Severity, ToolUseId,
+    };
+    use harness_permission::{PermissionBroker, PermissionContext, PermissionRequest};
     use std::path::Path;
 
     #[test]
@@ -74,6 +81,60 @@ mod tests {
             .expect_err("secret-bearing inherited env names should be rejected");
 
         assert_eq!(error, harness_contracts::PersistedMcpValidationError::Stdio);
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_permission_rules_allow_mcp_transport_without_interactivity() {
+        let broker = harness_permission::RuleEngineBroker::builder()
+            .with_tenant(TenantId::SINGLE)
+            .with_rules(desktop_settings_permission_rules())
+            .build()
+            .await
+            .unwrap();
+        let session_id = SessionId::new();
+        let tool_use_id = ToolUseId::new();
+        let request = PermissionRequest {
+            request_id: RequestId::new(),
+            tenant_id: TenantId::SINGLE,
+            session_id,
+            tool_use_id,
+            tool_name: "mcp_transport".to_owned(),
+            subject: PermissionSubject::Custom {
+                kind: "mcp_transport".to_owned(),
+                payload: serde_json::json!({}),
+            },
+            severity: Severity::Medium,
+            scope_hint: DecisionScope::ToolName("mcp_transport".to_owned()),
+            action_plan_hash: ActionPlanHash::default(),
+            decision_options: Vec::new(),
+            confirmation_expected: None,
+            created_at: Utc::now(),
+        };
+        let context = PermissionContext {
+            permission_mode: PermissionMode::Default,
+            previous_mode: None,
+            session_id,
+            tenant_id: TenantId::SINGLE,
+            run_id: Some(RunId::new()),
+            interactivity: InteractivityLevel::NoInteractive,
+            timeout_policy: None,
+            fallback_policy: FallbackPolicy::AskUser,
+            hook_overrides: Vec::new(),
+        };
+
+        assert_eq!(broker.decide(request, context).await, Decision::AllowOnce);
+    }
+
+    #[test]
+    fn mcp_connection_error_distinguishes_authorization_from_process_permissions() {
+        assert_eq!(
+            mcp_safe_connection_error_message("permission denied: authorization failed: DenyOnce"),
+            "MCP server permission was denied."
+        );
+        assert_eq!(
+            mcp_safe_connection_error_message("transport: Permission denied (os error 13)"),
+            "MCP server command could not be executed."
+        );
     }
 
     #[test]

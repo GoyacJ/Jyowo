@@ -48,7 +48,7 @@ describe('ui-preferences-store', () => {
         conversations: true,
       },
       expandedProjects: {},
-      taskWorkbenchMode: 'closed',
+      taskWorkbenchWidth: 400,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -65,7 +65,7 @@ describe('ui-preferences-store', () => {
           conversations: true,
         },
         expandedProjects: {},
-        taskWorkbenchMode: 'closed',
+        taskWorkbenchWidth: 400,
         chatComposerHeight: 160,
         contextPanelWidth: 320,
       },
@@ -79,7 +79,7 @@ describe('ui-preferences-store', () => {
     storeFixture.state.set('sidebarCollapsed', 'yes')
     storeFixture.state.set('sidebarSections', { pinned: 'yes' })
     storeFixture.state.set('expandedProjects', { '/repo/alpha': 'yes' })
-    storeFixture.state.set('taskWorkbenchMode', 'wide')
+    storeFixture.state.set('taskWorkbenchWidth', 'wide')
     storeFixture.state.set('chatComposerHeight', 'tall')
     storeFixture.state.set('contextPanelWidth', 'wide')
 
@@ -95,7 +95,7 @@ describe('ui-preferences-store', () => {
         conversations: true,
       },
       expandedProjects: {},
-      taskWorkbenchMode: 'closed',
+      taskWorkbenchWidth: 400,
       chatComposerHeight: 160,
       contextPanelWidth: 320,
     })
@@ -114,7 +114,7 @@ describe('ui-preferences-store', () => {
         conversations: false,
       },
       expandedProjects: { '/repo/alpha': true },
-      taskWorkbenchMode: 'collaboration',
+      taskWorkbenchWidth: 520,
       contextPanelWidth: 420,
     })
 
@@ -127,7 +127,7 @@ describe('ui-preferences-store', () => {
       conversations: false,
     })
     expect(storeFixture.set).toHaveBeenCalledWith('expandedProjects', { '/repo/alpha': true })
-    expect(storeFixture.set).toHaveBeenCalledWith('taskWorkbenchMode', 'collaboration')
+    expect(storeFixture.set).toHaveBeenCalledWith('taskWorkbenchWidth', 520)
     expect(storeFixture.set).toHaveBeenCalledWith('contextPanelWidth', 420)
     await expect(readUiPreferences()).resolves.toMatchObject({
       theme: 'dark',
@@ -139,8 +139,17 @@ describe('ui-preferences-store', () => {
         conversations: false,
       },
       expandedProjects: { '/repo/alpha': true },
+      taskWorkbenchWidth: 520,
       contextPanelWidth: 420,
     })
+  })
+
+  it('migrates the legacy collaboration mode to a useful width', async () => {
+    storeFixture.state.set('taskWorkbenchMode', 'collaboration')
+
+    const { readUiPreferences } = await importUiPreferencesStore()
+
+    await expect(readUiPreferences()).resolves.toMatchObject({ taskWorkbenchWidth: 560 })
   })
 
   it('does not expose credential-shaped preferences', async () => {
