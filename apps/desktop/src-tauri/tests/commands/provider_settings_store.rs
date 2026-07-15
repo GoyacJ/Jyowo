@@ -153,11 +153,14 @@ fn desktop_provider_settings_store_ignores_malformed_old_json_and_preserves_file
 fn desktop_provider_settings_store_rejects_symlink_settings_file() {
     let workspace = unique_workspace("provider-settings-symlink-file");
     let external = unique_workspace("provider-settings-external-target");
-    let settings_dir = workspace.join(".jyowo").join("runtime");
-    let settings_path = settings_dir.join("provider-settings.json");
+    let settings_dir = workspace
+        .join(".jyowo-test-home")
+        .join(".jyowo")
+        .join("config");
+    let settings_path = settings_dir.join("provider-profiles.json");
     std::fs::create_dir_all(&settings_dir).unwrap();
     std::fs::create_dir_all(&external).unwrap();
-    std::os::unix::fs::symlink(external.join("provider-settings.json"), &settings_path).unwrap();
+    std::os::unix::fs::symlink(external.join("provider-profiles.json"), &settings_path).unwrap();
     let store = provider_settings_store_for_workspace(&workspace);
 
     let error = store.load_record().unwrap_err();
@@ -183,5 +186,5 @@ fn desktop_provider_settings_store_rejects_symlink_settings_file() {
         .unwrap_err();
 
     assert_eq!(error.code, "RUNTIME_OPERATION_FAILED");
-    assert!(!external.join("provider-settings.json").exists());
+    assert!(!external.join("provider-profiles.json").exists());
 }
