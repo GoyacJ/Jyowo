@@ -19,19 +19,23 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const repoRoot = dirname(dirname(packageRoot))
 const resourceRoot = join(repoRoot, 'apps', 'desktop', 'src-tauri', 'browser-runtime')
 const stagingRoot = join(repoRoot, 'target', 'jyowo-browser-runtime')
-const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+const pnpmCli = process.env.npm_execpath
 
 if (process.versions.node !== expectedNodeVersion) {
   throw new Error(
     `browser runtime packaging requires Node.js ${expectedNodeVersion}; received ${process.versions.node}`,
   )
 }
+if (!pnpmCli) {
+  throw new Error('browser runtime packaging requires npm_execpath from pnpm')
+}
 
 rmSync(stagingRoot, { force: true, recursive: true })
 mkdirSync(dirname(stagingRoot), { recursive: true })
 run(
-  pnpmCommand,
+  process.execPath,
   [
+    pnpmCli,
     '--offline',
     '--config.node-linker=hoisted',
     '--config.inject-workspace-packages=true',
@@ -60,8 +64,9 @@ copyNodeLicense(stagingRoot)
 
 const chromeRoot = join(stagingRoot, 'chrome')
 const browser = run(
-  pnpmCommand,
+  process.execPath,
   [
+    pnpmCli,
     'exec',
     'browsers',
     'install',

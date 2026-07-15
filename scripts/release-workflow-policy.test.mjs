@@ -37,12 +37,9 @@ test('release workflow pins the browser runtime Node.js version', () => {
   assert.deepEqual(setupNodeVersions, ['24.12.0', '24.12.0', '24.12.0'])
 })
 
-test('browser runtime packaging resolves the pnpm Windows command shim', () => {
-  assert.match(
-    browserRuntimePrepare,
-    /process\.platform === 'win32' \? 'pnpm\.cmd' : 'pnpm'/,
-  )
-  assert.match(browserRuntimePrepare, /run\(\s*pnpmCommand,/)
+test('browser runtime packaging executes the pnpm CLI through Node', () => {
+  assert.match(browserRuntimePrepare, /const pnpmCli = process\.env\.npm_execpath/)
+  assert.match(browserRuntimePrepare, /run\(\s*process\.execPath,\s*\[\s*pnpmCli,/)
 })
 
 test('release workflow verifies the published updater manifest after all builds', () => {
