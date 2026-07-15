@@ -127,6 +127,7 @@ test('ci Linux Rust jobs install Tauri system dependencies', () => {
     assert.match(job, /librsvg2-dev/)
     assert.match(job, /patchelf/)
     assert.match(job, /bubblewrap/)
+    assert.match(job, /sudo sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0/)
   }
 })
 

@@ -75,6 +75,9 @@ jobs:
             librsvg2-dev \
             patchelf \
             bubblewrap
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
@@ -125,6 +128,9 @@ jobs:
             librsvg2-dev \
             patchelf \
             bubblewrap
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
