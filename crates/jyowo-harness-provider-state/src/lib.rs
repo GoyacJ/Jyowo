@@ -427,7 +427,7 @@ impl ProviderContinuationStore for FileProviderContinuationStore {
                 drop(temp);
 
                 harness_fs::ensure_no_symlink_components(&self.path).map_err(fs_error)?;
-                fs::rename(&temp_path, &self.path).map_err(io_error)?;
+                std::fs::rename(&temp_path, &self.path).map_err(io_error)?;
                 harness_fs::set_owner_only_if_exists_unix(&self.path).map_err(fs_error)?;
                 harness_fs::sync_directory(runtime_dir).map_err(fs_error)?;
                 Ok(())

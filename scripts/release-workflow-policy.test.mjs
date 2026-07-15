@@ -110,9 +110,18 @@ test('ci pnpm jobs install Node, pnpm, and dependencies', () => {
 })
 
 test('ci rust jobs install Rust and use cache', () => {
-  for (const jobName of ['rust-fast', 'rust', 'desktop-build']) {
+  for (const jobName of ['rust-fast', 'rust', 'windows-release-check', 'desktop-build']) {
     const job = ciJob(jobName)
     assert.match(job, /dtolnay\/rust-toolchain@stable/)
     assert.match(job, /swatinem\/rust-cache@v2/)
   }
+})
+
+test('ci compiles the release product graph on Windows', () => {
+  const job = ciJob('windows-release-check')
+
+  assert.match(job, /runs-on:\s*windows-latest/)
+  assert.match(job, /node-version:\s*24\.12\.0/)
+  assert.match(job, /node scripts\/build-daemon-sidecar\.mjs/)
+  assert.match(job, /cargo check -p jyowo-desktop-shell/)
 })

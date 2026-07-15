@@ -115,6 +115,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:rust
 
+  windows-release-check:
+    name: windows-release-check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.12.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: node scripts/build-daemon-sidecar.mjs
+      - run: cargo check -p jyowo-desktop-shell
+
   desktop-build:
     name: desktop-build
     runs-on: macos-latest
