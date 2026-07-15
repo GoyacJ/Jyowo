@@ -49,7 +49,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0MjI5RDA2N0E4ODVEQ0MKUldUTVhZaDZCcDBpUkp4bW5DKzRiMlVXeEpnQWVrWTZkb3pmYk9ENWEwM0dsL2ExM3I5UGNkelQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0OEVEODRCRTUyREVDQjQKUldTMDdDM2xTOWlPMUtuYWowWEIvNHVhbVByT0hZWGxvbXJ4MlA4Zm5JWkd2YWRZdW9MOVBYQSsK",
       "endpoints": [
         "https://github.com/GoyacJ/Jyowo/releases/latest/download/latest.json"
       ]
