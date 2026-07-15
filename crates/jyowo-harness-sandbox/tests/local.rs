@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -20,6 +20,7 @@ use harness_sandbox::{
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct RecordingSink {
     tx: UnboundedSender<Event>,
@@ -148,6 +149,15 @@ impl EventSink for RecordingSink {
 fn recording_sink() -> (Arc<RecordingSink>, UnboundedReceiver<Event>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     (Arc::new(RecordingSink { tx }), rx)
+}
+
+async fn process_lifecycle_test_guard() -> OwnedSemaphorePermit {
+    static GUARD: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+    Arc::clone(GUARD.get_or_init(|| Arc::new(Semaphore::new(1))))
+        .acquire_owned()
+        .await
+        .expect("process lifecycle test guard should stay open")
 }
 
 fn drain_events(rx: &mut UnboundedReceiver<Event>) -> Vec<Event> {
@@ -931,6 +941,7 @@ async fn local_sandbox_filters_environment_with_passthrough_and_per_exec_keys() 
 
 #[tokio::test]
 async fn local_sandbox_timeout_and_activity_timeout_kill_processes() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("timeouts");
     let (sink, mut rx) = recording_sink();
     let sandbox = LocalSandbox::new(&root);
@@ -984,6 +995,7 @@ fn local_sandbox_exposes_os_isolation_modes_and_capability_shape() {
 
 #[tokio::test]
 async fn local_sandbox_supports_process_and_process_group_kill_scope() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("kill-scope");
     let sandbox = LocalSandbox::new(&root);
     let mut spec = shell_spec("sleep 5");
@@ -1018,6 +1030,7 @@ async fn local_sandbox_supports_process_and_process_group_kill_scope() {
 
 #[tokio::test]
 async fn local_wait_reaps_background_processes_after_the_root_exits() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("background-process-group");
     let sandbox = LocalSandbox::new(&root);
     let mut spec =
@@ -1058,6 +1071,7 @@ async fn local_wait_reaps_background_processes_after_the_root_exits() {
 
 #[tokio::test]
 async fn local_execute_reaps_process_group_when_started_event_is_rejected() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("started-event-rejected");
     let pid_file = root.join("processes.pid");
     let sandbox = LocalSandbox::new(&root);
@@ -1105,6 +1119,7 @@ async fn local_execute_reaps_process_group_when_started_event_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn aborting_failed_execute_handoff_still_kills_the_process_group() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("started-event-cleanup-aborted");
     let pid_file = root.join("processes.pid");
     let entered = Arc::new(Barrier::new(2));
@@ -1165,6 +1180,7 @@ async fn aborting_failed_execute_handoff_still_kills_the_process_group() {
 
 #[tokio::test]
 async fn process_group_kill_can_escalate_after_descendants_ignore_term() {
+    let _guard = process_lifecycle_test_guard().await;
     let root = temp_root("process-group-signal-escalation");
     let sandbox = LocalSandbox::new(&root);
     let mut spec = shell_spec("trap '' TERM; sleep 30 & printf '%s' \"$!\" > background.pid; wait");
