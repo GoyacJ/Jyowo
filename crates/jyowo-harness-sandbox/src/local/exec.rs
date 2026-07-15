@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::future::Future;
-#[cfg(unix)]
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
@@ -16,7 +14,6 @@ use bytes::Bytes;
 use chrono::Utc;
 #[cfg(unix)]
 use command_fds::{CommandFdExt, FdMapping};
-#[cfg(unix)]
 use futures::StreamExt;
 use harness_contracts::{
     BlobMeta, BlobRef, BlobRetention, Event, ExecFingerprint, KillScope, NetworkAccess,
