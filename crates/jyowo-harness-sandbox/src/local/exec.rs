@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::future::Future;
-use std::io::{Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
@@ -14,6 +16,7 @@ use bytes::Bytes;
 use chrono::Utc;
 #[cfg(unix)]
 use command_fds::{CommandFdExt, FdMapping};
+#[cfg(unix)]
 use futures::StreamExt;
 use harness_contracts::{
     BlobMeta, BlobRef, BlobRetention, Event, ExecFingerprint, KillScope, NetworkAccess,
@@ -31,6 +34,7 @@ use tokio_util::io::ReaderStream;
 
 use super::LocalIsolation;
 use super::LocalSandbox;
+#[cfg(unix)]
 use crate::cwd::CwdMarkerLine;
 use crate::{
     backend::{
@@ -301,6 +305,7 @@ fn validate_local_exec(sandbox: &LocalSandbox, spec: &ExecSpec) -> Result<(), Sa
 pub struct LocalActivity {
     pub(crate) child: AsyncMutex<Option<Child>>,
     process_group: AsyncMutex<Option<ProcessGroupKeeper>>,
+    #[cfg(unix)]
     process_group_target: Option<ProcessGroupTarget>,
     spec: ExecSpec,
     ctx: ExecContext,
@@ -401,10 +406,12 @@ impl LocalActivity {
         ctx: ExecContext,
         fingerprint: ExecFingerprint,
     ) -> Self {
+        #[cfg(unix)]
         let process_group_target = process_group.as_ref().map(ProcessGroupKeeper::target);
         Self {
             child: AsyncMutex::new(Some(child)),
             process_group: AsyncMutex::new(process_group),
+            #[cfg(unix)]
             process_group_target,
             spec,
             ctx,
@@ -758,13 +765,16 @@ impl ActivityHandle for LocalActivity {
 
     fn kill_sync(&self, signal: Signal, scope: KillScope) -> Result<(), SandboxError> {
         self.killed_signal.store(signal, Ordering::Relaxed);
-        match (scope, &self.process_group_target) {
-            (KillScope::ProcessGroup, Some(target)) => target.signal_sync(signal),
-            _ => Err(SandboxError::CapabilityMismatch {
-                capability: "synchronous_kill".to_owned(),
-                detail: format!("local activity cannot synchronously kill scope: {scope:?}"),
-            }),
+        #[cfg(unix)]
+        if scope == KillScope::ProcessGroup {
+            if let Some(target) = &self.process_group_target {
+                return target.signal_sync(signal);
+            }
         }
+        Err(SandboxError::CapabilityMismatch {
+            capability: "synchronous_kill".to_owned(),
+            detail: format!("local activity cannot synchronously kill scope: {scope:?}"),
+        })
     }
 
     fn touch(&self) {
@@ -951,13 +961,17 @@ impl LocalActivity {
 }
 
 struct ProcessGroupTargetKillOnDrop {
+    #[cfg(unix)]
     target: Option<ProcessGroupTarget>,
     armed: bool,
 }
 
 impl ProcessGroupTargetKillOnDrop {
     fn new(target: Option<ProcessGroupTarget>) -> Self {
+        #[cfg(not(unix))]
+        let _ = target;
         Self {
+            #[cfg(unix)]
             target,
             armed: true,
         }
@@ -973,6 +987,7 @@ impl Drop for ProcessGroupTargetKillOnDrop {
         if !self.armed {
             return;
         }
+        #[cfg(unix)]
         if let Some(target) = &self.target {
             let _ = target.signal_sync(9);
         }
@@ -1162,11 +1177,15 @@ fn wrapped_command_for_local(
                 .map_err(|error| SandboxError::Message(error.to_string()))?;
         }
     }
+    #[cfg(unix)]
+    let cwd_marker = cwd_marker_reader.map(|(reader, _)| cwd_marker_stream(reader));
+    #[cfg(not(unix))]
+    let cwd_marker = {
+        let _ = cwd_marker_reader;
+        None
+    };
     Ok((
-        WrappedCommand::new(
-            command,
-            cwd_marker_reader.map(|(reader, _)| cwd_marker_stream(reader)),
-        ),
+        WrappedCommand::new(command, cwd_marker),
         secret_environment_writer,
     ))
 }
@@ -1446,10 +1465,14 @@ fn local_synchronous_kill_scopes(isolation: LocalIsolation) -> Vec<KillScope> {
     }
 }
 
+#[cfg(unix)]
 fn local_process_group_supported(isolation: LocalIsolation) -> bool {
-    cfg!(unix)
-        && !matches!(isolation, LocalIsolation::Seatbelt)
-        && ProcessGroupTools::resolve().is_ok()
+    !matches!(isolation, LocalIsolation::Seatbelt) && ProcessGroupTools::resolve().is_ok()
+}
+
+#[cfg(not(unix))]
+fn local_process_group_supported(_isolation: LocalIsolation) -> bool {
+    false
 }
 
 fn local_timeout_kill_scope() -> KillScope {
@@ -1664,6 +1687,8 @@ async fn kill_process_group(child: &mut Child, signal: Signal) -> Result<(), San
             }
         }
     }
+    #[cfg(not(unix))]
+    let _ = signal;
     child.start_kill().map_err(sandbox_error)
 }
 

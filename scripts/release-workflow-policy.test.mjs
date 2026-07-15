@@ -117,6 +117,27 @@ test('ci rust jobs install Rust and use cache', () => {
   }
 })
 
+test('ci Linux Rust jobs install Tauri system dependencies', () => {
+  for (const jobName of ['rust-fast', 'rust']) {
+    const job = ciJob(jobName)
+    assert.match(job, /sudo apt-get update/)
+    assert.match(job, /libwebkit2gtk-4\.1-dev/)
+    assert.match(job, /libgtk-3-dev/)
+    assert.match(job, /libayatana-appindicator3-dev/)
+    assert.match(job, /librsvg2-dev/)
+    assert.match(job, /patchelf/)
+  }
+})
+
+test('ci full desktop build installs Playwright Chromium', () => {
+  const job = ciJob('desktop-build')
+
+  assert.match(
+    job,
+    /pnpm install --frozen-lockfile[\s\S]*pnpm -C apps\/desktop exec playwright install chromium[\s\S]*pnpm check:desktop:full/,
+  )
+})
+
 test('ci compiles the release product graph on Windows', () => {
   const job = ciJob('windows-release-check')
 
