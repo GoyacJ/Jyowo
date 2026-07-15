@@ -605,7 +605,7 @@ async fn bubblewrap_executes_in_a_private_child_of_the_local_sandbox_root() {
         .await
         .expect("bubblewrap must accept the narrowed private workspace root");
 
-    assert_eq!(result.status, SkillScriptStatus::Completed);
+    assert_eq!(result.status, SkillScriptStatus::Succeeded);
     assert_eq!(result.stdout, "ok");
     assert!(!result.stdout.contains("exposed"));
 }
