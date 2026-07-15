@@ -1656,6 +1656,7 @@ fn signal_process_group_sync(
     }
     let status = std::process::Command::new(kill)
         .arg(format!("-{signal}"))
+        .arg("--")
         .arg(format!("-{id}"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
