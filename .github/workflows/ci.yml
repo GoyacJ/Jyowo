@@ -73,7 +73,8 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            bubblewrap
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
@@ -121,7 +122,8 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            bubblewrap
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0

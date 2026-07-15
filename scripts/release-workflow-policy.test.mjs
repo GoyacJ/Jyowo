@@ -126,6 +126,7 @@ test('ci Linux Rust jobs install Tauri system dependencies', () => {
     assert.match(job, /libayatana-appindicator3-dev/)
     assert.match(job, /librsvg2-dev/)
     assert.match(job, /patchelf/)
+    assert.match(job, /bubblewrap/)
   }
 })
 
