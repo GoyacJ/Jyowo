@@ -64,10 +64,14 @@ export function ToolActivityGroup({
       <div className="mt-1.5 ml-[6px] space-y-1 border-border/70 border-l pl-5">
         {items.map((item) => (
           <TimelineItem item={item} key={item.id}>
-            {onSelectItem && isBrowserToolItem(item) ? (
+            {onSelectItem && isOpenableToolItem(item) ? (
               <button
                 aria-label={t('timeline.openPanel', {
-                  panel: t('workbench.targetKind.browser'),
+                  panel: t(
+                    isBrowserToolItem(item)
+                      ? 'workbench.targetKind.browser'
+                      : 'workbench.targetKind.command',
+                  ),
                 })}
                 className="w-full rounded-md px-1 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={(event) => onSelectItem(item, event.currentTarget)}
@@ -126,23 +130,15 @@ function CommandTranscript({ item }: { item: ToolTimelineItem }) {
       <pre className="max-h-64 overflow-auto px-2.5 py-2 font-mono text-[12px] text-foreground/85 leading-5">
         {transcript}
       </pre>
-      <div className="flex items-center justify-end gap-1.5 border-border/70 border-t px-2.5 py-1.5 text-muted-foreground text-xs">
-        <CommandStatusIcon status={item.tool.status} />
-        <span>{t(`timeline.tool.commandStatus.${item.tool.status}`)}</span>
-      </div>
     </section>
   )
 }
 
-function CommandStatusIcon({ status }: { status: TimelineToolStatus }) {
-  const className = 'size-3.5 shrink-0'
-  if (status === 'requested' || status === 'running') {
-    return <LoaderCircle aria-hidden="true" className={`${className} animate-spin`} />
-  }
-  if (status === 'failed' || status === 'denied') {
-    return <CircleAlert aria-hidden="true" className={`${className} text-destructive`} />
-  }
-  return <Check aria-hidden="true" className={className} />
+function isOpenableToolItem(item: ToolTimelineItem) {
+  return (
+    isBrowserToolItem(item) ||
+    (item.tool.operation === 'command' && Boolean(item.tool.command || item.tool.output))
+  )
 }
 
 function groupOperation(items: ToolTimelineItem[]): TimelineToolOperation {

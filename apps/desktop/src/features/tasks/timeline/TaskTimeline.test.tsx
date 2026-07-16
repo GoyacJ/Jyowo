@@ -131,7 +131,8 @@ describe('TaskTimeline', () => {
     expect(media.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it.each(['command', 'terminal'])('does not offer to open %s artifacts', (artifactKind) => {
+  it.each(['command', 'terminal'])('offers to open %s artifacts', (artifactKind) => {
+    const onSelectItem = vi.fn()
     const entry = {
       ...item(37, artifactKind === 'command' ? 'command' : 'artifact', 'Task output'),
       contentBlocks: [
@@ -147,9 +148,10 @@ describe('TaskTimeline', () => {
       ],
     }
 
-    render(<TaskTimeline items={[entry]} onSelectItem={() => undefined} />)
+    render(<TaskTimeline items={[entry]} onSelectItem={onSelectItem} />)
 
-    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Commands' }))
+    expect(onSelectItem).toHaveBeenCalledWith(entry, expect.any(HTMLButtonElement))
   })
 
   it('uses notice levels and tool activities from canonical content blocks', () => {
@@ -498,7 +500,8 @@ describe('TaskTimeline', () => {
       },
     }
 
-    render(<TaskTimeline items={[read, command]} onSelectItem={() => undefined} />)
+    const onSelectItem = vi.fn()
+    render(<TaskTimeline items={[read, command]} onSelectItem={onSelectItem} />)
 
     expect(screen.getByText('Read 1 file · Ran 1 command')).toBeInTheDocument()
     expect(screen.getByText('Read 1 file · Ran 1 command').closest('details')).toHaveAttribute(
@@ -508,7 +511,8 @@ describe('TaskTimeline', () => {
     expect(screen.getByRole('region', { name: 'Command output' })).toHaveTextContent(
       '69 test files passed',
     )
-    expect(screen.queryByRole('button', { name: /Ran command/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Command output' }))
+    expect(onSelectItem).toHaveBeenCalledWith(command, expect.any(HTMLButtonElement))
     expect(screen.getByRole('status')).toHaveTextContent('Task update: Ran command')
   })
 

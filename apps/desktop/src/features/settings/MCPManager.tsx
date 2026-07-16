@@ -844,66 +844,91 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
         </Dialog>
       </div>
 
-      {serversQuery.isError ? <ErrorMessage>{t('mcp.loadError')}</ErrorMessage> : null}
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="min-w-0 space-y-5">
+          {serversQuery.isError ? <ErrorMessage>{t('mcp.loadError')}</ErrorMessage> : null}
 
-      {serversQuery.isLoading ? (
-        <div className="text-muted-foreground text-sm">{t('mcp.loading')}</div>
-      ) : null}
+          {serversQuery.isLoading ? (
+            <div className="text-muted-foreground text-sm">{t('mcp.loading')}</div>
+          ) : null}
 
-      {!serversQuery.isLoading && servers.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
-          {t('mcp.empty')}
+          {!serversQuery.isLoading && servers.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-background px-4 py-6 text-center text-muted-foreground text-sm">
+              {t('mcp.empty')}
+            </div>
+          ) : null}
+
+          {servers.length > 0 ? (
+            <div className="space-y-5">
+              <ServerGroup
+                empty={t('mcp.groupEmpty')}
+                onConfigure={openConfigureDialog}
+                onDelete={(server) => deleteMutation.mutate(server.id)}
+                onOpenPlugin={onOpenPlugin}
+                onRestart={(server) => restartMutation.mutate(server.id)}
+                onToggle={(server, enabled) =>
+                  toggleMutation.mutate({
+                    enabled,
+                    id: server.id,
+                  })
+                }
+                servers={workspaceServers}
+                title={t('mcp.serversGroup')}
+                viewConfigLayer="global"
+              />
+              <ServerGroup
+                empty={t('mcp.pluginsEmpty')}
+                onConfigure={openConfigureDialog}
+                onDelete={(server) => deleteMutation.mutate(server.id)}
+                onOpenPlugin={onOpenPlugin}
+                onRestart={(server) => restartMutation.mutate(server.id)}
+                onToggle={(server, enabled) =>
+                  toggleMutation.mutate({
+                    enabled,
+                    id: server.id,
+                  })
+                }
+                servers={pluginServers}
+                title={t('mcp.pluginsGroup')}
+                viewConfigLayer="global"
+              />
+            </div>
+          ) : null}
         </div>
-      ) : null}
 
-      {servers.length > 0 ? (
-        <div className="space-y-5">
-          <ServerGroup
-            empty={t('mcp.groupEmpty')}
-            onConfigure={openConfigureDialog}
-            onDelete={(server) => deleteMutation.mutate(server.id)}
-            onOpenPlugin={onOpenPlugin}
-            onRestart={(server) => restartMutation.mutate(server.id)}
-            onToggle={(server, enabled) =>
-              toggleMutation.mutate({
-                enabled,
-                id: server.id,
-              })
-            }
-            servers={workspaceServers}
-            title={t('mcp.serversGroup')}
-            viewConfigLayer="global"
-          />
-          <ServerGroup
-            empty={t('mcp.pluginsEmpty')}
-            onConfigure={openConfigureDialog}
-            onDelete={(server) => deleteMutation.mutate(server.id)}
-            onOpenPlugin={onOpenPlugin}
-            onRestart={(server) => restartMutation.mutate(server.id)}
-            onToggle={(server, enabled) =>
-              toggleMutation.mutate({
-                enabled,
-                id: server.id,
-              })
-            }
-            servers={pluginServers}
-            title={t('mcp.pluginsGroup')}
-            viewConfigLayer="global"
-          />
-        </div>
-      ) : null}
-
-      <section className="space-y-3 border-border border-t pt-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Activity className="size-4 text-muted-foreground" />
-            <h3 className="font-semibold text-sm">{t('mcp.diagnostics.title')}</h3>
-            <Badge variant="outline">{t('scope.runtimeDiagnostics')}</Badge>
+        <aside
+          aria-label={t('mcp.diagnostics.title')}
+          className="overflow-hidden rounded-lg border border-border bg-background shadow-sm lg:sticky lg:top-0"
+        >
+          <div className="flex items-center justify-between gap-3 border-border border-b bg-muted/45 px-3.5 py-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-surface text-muted-foreground shadow-sm">
+                <Activity className="size-4" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold text-sm">{t('mcp.diagnostics.title')}</h3>
+                <div className="text-muted-foreground text-xs">{t('scope.runtimeDiagnostics')}</div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <Badge variant="outline">{visibleDiagnostics.length}</Badge>
+              <Button
+                aria-label={t('mcp.diagnostics.clear')}
+                disabled={clearDiagnosticsMutation.isPending || diagnostics.length === 0}
+                onClick={() => clearDiagnosticsMutation.mutate(diagnosticServerId)}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+
+          <div className="grid gap-2 border-border border-b bg-surface px-3 py-3">
             <Select
               aria-label={t('mcp.diagnostics.planeFilter')}
-              className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+              className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
               onChange={(event) =>
                 setDiagnosticPlane(event.target.value as 'all' | 'settings' | 'task')
               }
@@ -915,7 +940,7 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
             </Select>
             <Select
               aria-label={t('mcp.diagnostics.filter')}
-              className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+              className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
               onChange={(event) => setDiagnosticServerId(event.target.value || null)}
               value={diagnosticServerId ?? ''}
             >
@@ -926,44 +951,42 @@ export function MCPManager({ onOpenPlugin }: { onOpenPlugin?: (pluginId: string)
                 </option>
               ))}
             </Select>
-            <Button
-              disabled={clearDiagnosticsMutation.isPending || diagnostics.length === 0}
-              onClick={() => clearDiagnosticsMutation.mutate(diagnosticServerId)}
-              size="sm"
-              type="button"
-              variant="outline"
+          </div>
+
+          {diagnosticsQuery.isError ? (
+            <div className="p-3">
+              <ErrorMessage>{t('mcp.diagnostics.loadError')}</ErrorMessage>
+            </div>
+          ) : null}
+
+          {diagnosticsQuery.isLoading ? (
+            <div className="px-3.5 py-5 text-muted-foreground text-sm">
+              {t('mcp.diagnostics.loading')}
+            </div>
+          ) : null}
+
+          {!diagnosticsQuery.isLoading && visibleDiagnostics.length === 0 ? (
+            <div className="px-4 py-8 text-center text-muted-foreground text-sm">
+              <Activity className="mx-auto mb-2 size-5 opacity-45" />
+              {t('mcp.diagnostics.empty')}
+            </div>
+          ) : null}
+
+          {visibleDiagnostics.length > 0 ? (
+            <div
+              aria-live="polite"
+              className="max-h-[34rem] divide-y divide-border overflow-y-auto"
             >
-              <Trash2 className="size-4" />
-              {t('mcp.diagnostics.clear')}
-            </Button>
-          </div>
-        </div>
-
-        {diagnosticsQuery.isError ? (
-          <ErrorMessage>{t('mcp.diagnostics.loadError')}</ErrorMessage>
-        ) : null}
-
-        {diagnosticsQuery.isLoading ? (
-          <div className="text-muted-foreground text-sm">{t('mcp.diagnostics.loading')}</div>
-        ) : null}
-
-        {!diagnosticsQuery.isLoading && visibleDiagnostics.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border bg-background px-4 py-5 text-center text-muted-foreground text-sm">
-            {t('mcp.diagnostics.empty')}
-          </div>
-        ) : null}
-
-        {visibleDiagnostics.length > 0 ? (
-          <div className="max-h-72 overflow-auto rounded-md border border-border">
-            {visibleDiagnostics
-              .slice()
-              .reverse()
-              .map((event) => (
-                <DiagnosticRow event={event} key={event.id} servers={servers} />
-              ))}
-          </div>
-        ) : null}
-      </section>
+              {visibleDiagnostics
+                .slice()
+                .reverse()
+                .map((event) => (
+                  <DiagnosticRow event={event} key={event.id} servers={servers} />
+                ))}
+            </div>
+          ) : null}
+        </aside>
+      </div>
     </Section>
   )
 }
@@ -1093,20 +1116,32 @@ function DiagnosticRow({
   const server = servers.find((server) => server.id === event.serverId)
 
   return (
-    <div className="grid gap-2 border-border border-b bg-background px-3 py-2 last:border-b-0 md:grid-cols-[8rem_9rem_1fr]">
-      <div className="text-muted-foreground text-xs">{formatDiagnosticTime(event.timestamp)}</div>
-      <div className="flex items-center gap-2">
+    <div className="bg-background px-3.5 py-3 transition-colors hover:bg-muted/35">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <span className="size-1.5 rounded-full bg-current text-muted-foreground" />
+          <span className="text-muted-foreground text-xs">
+            {formatDiagnosticTime(event.timestamp)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Badge variant="outline">{t(`mcp.diagnostics.plane.${event.plane}`)}</Badge>
+        </div>
+      </div>
+      <div className="mt-2 font-medium text-sm leading-5">{event.summary}</div>
+      <div className="mt-1.5 flex min-w-0 items-center gap-2">
         <Badge variant={severityVariant(event.severity)}>
           {t(`mcp.diagnostics.severity.${event.severity}`)}
         </Badge>
-        <Badge variant="outline">{t(`mcp.diagnostics.plane.${event.plane}`)}</Badge>
-      </div>
-      <div className="min-w-0">
-        <div className="truncate font-medium text-sm">{event.summary}</div>
-        <div className="mt-0.5 flex flex-wrap gap-2 text-muted-foreground text-xs">
-          <span>{server?.displayName ?? t('mcp.diagnostics.unknownServer')}</span>
-          <span>{diagnosticEventTypeLabel(event.eventType, t)}</span>
-        </div>
+        <span className="min-w-0 truncate text-muted-foreground text-xs">
+          {server?.displayName ?? t('mcp.diagnostics.unknownServer')}
+        </span>
+        <span aria-hidden="true" className="text-muted-foreground text-xs">
+          ·
+        </span>
+        <span className="shrink-0 text-muted-foreground text-xs">
+          {diagnosticEventTypeLabel(event.eventType, t)}
+        </span>
       </div>
     </div>
   )

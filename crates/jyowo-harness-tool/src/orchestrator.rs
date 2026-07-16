@@ -12,7 +12,10 @@ use harness_contracts::{
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::{AuthorizedToolInput, ToolContext, ToolEvent, ToolJournalAuthority, ToolPool};
+use crate::{
+    validate_tool_runtime_settings, AuthorizedToolInput, ToolContext, ToolEvent,
+    ToolJournalAuthority, ToolPool,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
@@ -150,6 +153,12 @@ impl ToolOrchestrator {
             let mut tool_ctx = ctx.tool_context.clone();
             tool_ctx.tool_use_id = call.tool_use_id;
 
+            if let Some(configured) = tool_ctx.configured_runtime_settings(tool.descriptor()) {
+                validate_tool_runtime_settings(tool.descriptor(), &configured)
+                    .map_err(ToolError::Validation)?;
+            }
+            let runtime_settings = tool_ctx.runtime_settings(tool.descriptor());
+
             validate_input_schema(tool.input_schema(), call.input.raw_input())?;
 
             tool.validate(call.input.raw_input(), &tool_ctx)
@@ -189,17 +198,21 @@ impl ToolOrchestrator {
                 Ok(result)
             };
 
-            match long_running_policy.as_ref() {
-                Some(policy) => {
-                    match tokio::time::timeout(policy.hard_timeout, execute_and_collect).await {
-                        Ok(result) => result,
-                        Err(_elapsed) => {
-                            tool_ctx.interrupt.interrupt();
-                            Err(ToolError::Timeout)
-                        }
+            if tokio::runtime::Handle::try_current().is_ok() {
+                match tokio::time::timeout(
+                    Duration::from_millis(runtime_settings.timeout_ms),
+                    execute_and_collect,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        tool_ctx.interrupt.interrupt();
+                        Err(ToolError::Timeout)
                     }
                 }
-                None => execute_and_collect.await,
+            } else {
+                execute_and_collect.await
             }
         }
         .await;

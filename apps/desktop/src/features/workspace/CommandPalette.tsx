@@ -1,4 +1,4 @@
-import { MessageSquarePlus, Settings } from 'lucide-react'
+import { CalendarClock, MessageSquarePlus, Settings } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -12,7 +12,7 @@ import {
 } from '@/shared/ui/command-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui/dialog'
 
-export type CommandPaletteAction = 'new-conversation' | 'settings'
+export type CommandPaletteAction = 'new-conversation' | 'scheduled-tasks' | 'settings'
 
 type CommandPaletteCommand = {
   action: CommandPaletteAction
@@ -25,6 +25,11 @@ const commands: CommandPaletteCommand[] = [
     action: 'new-conversation',
     icon: MessageSquarePlus,
     labelKey: 'commandPalette.newConversation',
+  },
+  {
+    action: 'scheduled-tasks',
+    icon: CalendarClock,
+    labelKey: 'commandPalette.scheduledTasks',
   },
   { action: 'settings', icon: Settings, labelKey: 'commandPalette.settings' },
 ]

@@ -1,13 +1,12 @@
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
-    AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunRecord,
-    AutomationRunResponse, AutomationRunStatus, AutomationRunsResponse, AutomationSavedResponse,
-    AutomationSchedule, AutomationSpec, AutomationWorkspaceScope, AutomationsResponse,
     ChildAttachment, ClientFrame, ClientRequest, DaemonMemoryItem, DeleteMemoryItemResponse,
     GetMemoryItemResponse, ListMemoryItemsResponse, ListRuntimeToolsResponse, MemoryId,
     MissedRunPolicy, PermissionMode, RuntimeToolServiceBindingSummary, RuntimeToolSummary,
-    SandboxMode, ServerFrame, ServerMessage, SubagentParentProjection, TaskId, ToolProfile,
-    WorkspaceAccess, PROTOCOL_VERSION,
+    ScheduledTaskDeletedResponse, ScheduledTaskEnabledResponse, ScheduledTaskRunRecord,
+    ScheduledTaskRunResponse, ScheduledTaskRunStatus, ScheduledTaskRunsResponse,
+    ScheduledTaskSavedResponse, ScheduledTaskSchedule, ScheduledTaskSpec, ScheduledTasksResponse,
+    ServerFrame, ServerMessage, SubagentParentProjection, TaskId, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -15,34 +14,32 @@ fn workspace_root() -> Option<String> {
     Some("/tmp/project".to_owned())
 }
 
-fn automation() -> AutomationSpec {
-    AutomationSpec {
-        id: "automation-001".to_owned(),
+fn scheduled_task() -> ScheduledTaskSpec {
+    ScheduledTaskSpec {
+        id: "scheduled_task-001".to_owned(),
+        name: "Checks".to_owned(),
         enabled: true,
         prompt: "Run checks".to_owned(),
-        schedule: AutomationSchedule {
+        schedule: ScheduledTaskSchedule {
             interval_minutes: 60,
         },
-        tool_profile: ToolProfile::Coding,
+        workspace_root: Some("/tmp/project".to_owned()),
         permission_mode: PermissionMode::Default,
-        sandbox_mode: SandboxMode::None,
-        workspace_scope: AutomationWorkspaceScope::CurrentWorkspace,
-        workspace_access: WorkspaceAccess::ReadOnly,
         missed_run_policy: MissedRunPolicy::RunOnce,
         created_at: Utc.with_ymd_and_hms(2026, 7, 12, 1, 0, 0).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2026, 7, 12, 1, 0, 0).unwrap(),
     }
 }
 
-fn automation_run() -> AutomationRunRecord {
-    AutomationRunRecord {
-        automation_id: "automation-001".to_owned(),
+fn scheduled_task_run() -> ScheduledTaskRunRecord {
+    ScheduledTaskRunRecord {
+        scheduled_task_id: "scheduled_task-001".to_owned(),
         completed_at: None,
-        id: "automation-run-001".to_owned(),
+        id: "scheduled_task-run-001".to_owned(),
         message: Some("Started".to_owned()),
-        run_id: Some("01J00000000000000000000000".to_owned()),
+        task_id: Some("01J00000000000000000000000".to_owned()),
         started_at: Utc.with_ymd_and_hms(2026, 7, 12, 1, 5, 0).unwrap(),
-        status: AutomationRunStatus::Started,
+        status: ScheduledTaskRunStatus::Started,
     }
 }
 
@@ -126,45 +123,41 @@ fn runtime_and_memory_requests_use_workspace_scoped_camel_case_payloads() {
 }
 
 #[test]
-fn automation_requests_reuse_the_shared_automation_contracts() {
+fn scheduled_task_requests_reuse_the_shared_scheduled_task_contracts() {
     let cases = [
-        request_value(ClientRequest::ListAutomations {
-            workspace_root: workspace_root(),
+        request_value(ClientRequest::ListScheduledTasks),
+        request_value(ClientRequest::SaveScheduledTask {
+            scheduled_task: scheduled_task(),
         }),
-        request_value(ClientRequest::SaveAutomation {
-            workspace_root: workspace_root(),
-            automation: automation(),
-        }),
-        request_value(ClientRequest::SetAutomationEnabled {
-            workspace_root: workspace_root(),
-            automation_id: "automation-001".to_owned(),
+        request_value(ClientRequest::SetScheduledTaskEnabled {
+            scheduled_task_id: "scheduled_task-001".to_owned(),
             enabled: false,
         }),
-        request_value(ClientRequest::DeleteAutomation {
-            workspace_root: workspace_root(),
-            automation_id: "automation-001".to_owned(),
+        request_value(ClientRequest::DeleteScheduledTask {
+            scheduled_task_id: "scheduled_task-001".to_owned(),
         }),
-        request_value(ClientRequest::RunAutomationNow {
-            workspace_root: workspace_root(),
-            automation_id: "automation-001".to_owned(),
+        request_value(ClientRequest::RunScheduledTaskNow {
+            scheduled_task_id: "scheduled_task-001".to_owned(),
         }),
-        request_value(ClientRequest::ListAutomationRuns {
-            workspace_root: workspace_root(),
-            automation_id: None,
+        request_value(ClientRequest::ListScheduledTaskRuns {
+            scheduled_task_id: None,
         }),
     ];
 
-    assert_eq!(cases[0]["request"]["type"], "list_automations");
-    assert_eq!(cases[1]["request"]["automation"]["id"], "automation-001");
-    assert_eq!(cases[2]["request"]["automationId"], "automation-001");
+    assert_eq!(cases[0]["request"]["type"], "list_scheduled_tasks");
+    assert_eq!(
+        cases[1]["request"]["scheduledTask"]["id"],
+        "scheduled_task-001"
+    );
+    assert_eq!(cases[2]["request"]["scheduledTaskId"], "scheduled_task-001");
     assert_eq!(cases[2]["request"]["enabled"], false);
-    assert_eq!(cases[3]["request"]["type"], "delete_automation");
-    assert_eq!(cases[4]["request"]["type"], "run_automation_now");
-    assert_eq!(cases[5]["request"]["type"], "list_automation_runs");
-    assert_eq!(cases[5]["request"]["automationId"], Value::Null);
+    assert_eq!(cases[3]["request"]["type"], "delete_scheduled_task");
+    assert_eq!(cases[4]["request"]["type"], "run_scheduled_task_now");
+    assert_eq!(cases[5]["request"]["type"], "list_scheduled_task_runs");
+    assert_eq!(cases[5]["request"]["scheduled_taskId"], Value::Null);
     assert!(cases
         .iter()
-        .all(|value| value["request"]["workspaceRoot"] == "/tmp/project"));
+        .all(|value| value["request"].get("workspaceRoot").is_none()));
 }
 
 #[test]
@@ -199,23 +192,23 @@ fn runtime_server_responses_are_typed_and_camel_case() {
             item: memory_item(memory_id),
         }),
         ServerMessage::MemoryDeleted(DeleteMemoryItemResponse { memory_id }),
-        ServerMessage::Automations(AutomationsResponse {
-            automations: vec![automation()],
+        ServerMessage::ScheduledTasks(ScheduledTasksResponse {
+            scheduled_tasks: vec![scheduled_task()],
         }),
-        ServerMessage::AutomationSaved(AutomationSavedResponse {
-            automation: automation(),
+        ServerMessage::ScheduledTaskSaved(ScheduledTaskSavedResponse {
+            scheduled_task: scheduled_task(),
         }),
-        ServerMessage::AutomationEnabled(AutomationEnabledResponse {
-            automation: automation(),
+        ServerMessage::ScheduledTaskEnabled(ScheduledTaskEnabledResponse {
+            scheduled_task: scheduled_task(),
         }),
-        ServerMessage::AutomationDeleted(AutomationDeletedResponse {
-            automation_id: "automation-001".to_owned(),
+        ServerMessage::ScheduledTaskDeleted(ScheduledTaskDeletedResponse {
+            scheduled_task_id: "scheduled_task-001".to_owned(),
         }),
-        ServerMessage::AutomationRun(AutomationRunResponse {
-            run: automation_run(),
+        ServerMessage::ScheduledTaskRun(ScheduledTaskRunResponse {
+            run: scheduled_task_run(),
         }),
-        ServerMessage::AutomationRuns(AutomationRunsResponse {
-            runs: vec![automation_run()],
+        ServerMessage::ScheduledTaskRuns(ScheduledTaskRunsResponse {
+            runs: vec![scheduled_task_run()],
         }),
     ];
 
@@ -236,11 +229,14 @@ fn runtime_server_responses_are_typed_and_camel_case() {
         .is_none());
     assert_eq!(values[3]["message"]["memoryId"], memory_id.to_string());
     assert!(values[3]["message"].get("memory_id").is_none());
-    assert_eq!(values[7]["message"]["automationId"], "automation-001");
-    assert!(values[7]["message"].get("automation_id").is_none());
     assert_eq!(
-        values[9]["message"]["runs"][0]["automationId"],
-        "automation-001"
+        values[7]["message"]["scheduledTaskId"],
+        "scheduled_task-001"
+    );
+    assert!(values[7]["message"].get("scheduled_task_id").is_none());
+    assert_eq!(
+        values[9]["message"]["runs"][0]["scheduledTaskId"],
+        "scheduled_task-001"
     );
 }
 

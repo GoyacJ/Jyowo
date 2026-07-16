@@ -15,7 +15,7 @@ use harness_contracts::{
     ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, RedactRules, Redactor,
     SandboxError, SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity,
     TenantId, ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolResult,
-    ToolUseId, UserMessageDelivery, WorkspaceAccess,
+    ToolRuntimeSettings, ToolUseId, UserMessageDelivery, WorkspaceAccess,
 };
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, NetworkPolicySupport,
@@ -31,7 +31,8 @@ use harness_tool::{
     AuthorizedToolCall, AuthorizedToolInput, BuiltinToolset, HttpMethod, InterruptToken,
     NetworkBrokerPreflightRequest, OrchestratorContext, Tool, ToolContext, ToolHttpJsonRequest,
     ToolHttpResponse, ToolNetworkBrokerCap, ToolNetworkBrokerPreflightCap, ToolOrchestrator,
-    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolSearchMode,
+    ToolPool, ToolPoolFilter, ToolPoolModelProfile, ToolRegistry, ToolRuntimeSettingsRegistry,
+    ToolSearchMode, TOOL_RUNTIME_SETTINGS_CAPABILITY,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -527,6 +528,37 @@ async fn web_fetch_fails_closed_by_default_and_uses_injected_backend() {
         matches!(error, ToolError::ResultTooLarge { .. }),
         "oversized web fetch response must fail closed, got {error:?}"
     );
+}
+
+#[tokio::test]
+async fn web_fetch_uses_the_configured_default_response_limit() {
+    let tool = WebFetchTool::default();
+    let mut caps = CapabilityRegistry::default();
+    let broker: Arc<dyn ToolNetworkBrokerCap> = Arc::new(FakeNetworkBroker {
+        expected_url: "https://example.test/configured-limit",
+        content_type: "text/plain",
+        body: Bytes::from_static(b"hello world"),
+    });
+    caps.install(ToolCapability::NetworkBroker, broker);
+    caps.install(
+        ToolCapability::Custom(TOOL_RUNTIME_SETTINGS_CAPABILITY.to_owned()),
+        Arc::new(ToolRuntimeSettingsRegistry::new(BTreeMap::from([(
+            "WebFetch".to_owned(),
+            ToolRuntimeSettings {
+                timeout_ms: 120_000,
+                parameters: json!({ "defaultMaxBytes": 5 }),
+            },
+        )]))),
+    );
+
+    let error = execute_error(
+        &tool,
+        json!({ "url": "https://example.test/configured-limit" }),
+        tool_ctx(caps, None),
+    )
+    .await;
+
+    assert!(matches!(error, ToolError::ResultTooLarge { .. }));
 }
 
 #[tokio::test]

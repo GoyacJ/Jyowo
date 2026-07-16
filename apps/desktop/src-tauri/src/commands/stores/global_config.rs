@@ -979,6 +979,7 @@ mod tests {
         let record = ExecutionDefaultsRecord {
             permission_mode: PermissionMode::Auto,
             tool_profile: ToolProfile::Minimal,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.75,
             subagents_enabled: true,
             agent_teams_enabled: false,

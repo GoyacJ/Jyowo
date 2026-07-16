@@ -19,8 +19,8 @@ use tokio::task::JoinHandle;
 
 use super::IpcError;
 use crate::{
-    AutomationScheduler, AutomationSchedulerError, BrowserService, MemoryService,
-    MemoryServiceError, PermissionDecisionInput, QueueCommand, SkillReferenceCandidateService,
+    BrowserService, MemoryService, MemoryServiceError, PermissionDecisionInput, QueueCommand,
+    ScheduledTaskScheduler, ScheduledTaskSchedulerError, SkillReferenceCandidateService,
     Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
 };
 
@@ -39,7 +39,7 @@ pub struct IpcConnection {
     supervisor: Option<Arc<Supervisor>>,
     skill_reference_candidates: Option<Arc<SkillReferenceCandidateService>>,
     memory_service: Option<Arc<MemoryService>>,
-    automation_scheduler: Option<Arc<AutomationScheduler>>,
+    scheduled_task_scheduler: Option<Arc<ScheduledTaskScheduler>>,
     browser_service: Option<Arc<BrowserService>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
@@ -54,7 +54,7 @@ impl IpcConnection {
             supervisor: None,
             skill_reference_candidates: None,
             memory_service: None,
-            automation_scheduler: None,
+            scheduled_task_scheduler: None,
             browser_service: None,
             client_id: None,
             subscription_offset: None,
@@ -73,7 +73,7 @@ impl IpcConnection {
             supervisor: Some(supervisor),
             skill_reference_candidates: None,
             memory_service: None,
-            automation_scheduler: None,
+            scheduled_task_scheduler: None,
             browser_service: None,
             client_id: None,
             subscription_offset: None,
@@ -96,11 +96,11 @@ impl IpcConnection {
     }
 
     #[must_use]
-    pub fn with_automation_scheduler(
+    pub fn with_scheduled_task_scheduler(
         mut self,
-        automation_scheduler: Arc<AutomationScheduler>,
+        scheduled_task_scheduler: Arc<ScheduledTaskScheduler>,
     ) -> Self {
-        self.automation_scheduler = Some(automation_scheduler);
+        self.scheduled_task_scheduler = Some(scheduled_task_scheduler);
         self
     }
 
@@ -152,11 +152,11 @@ impl IpcConnection {
                 return Ok(vec![server_frame(Some(request_id), message)]);
             }
         }
-        if is_automation_request(&request) && valid_runtime_frame && self.client_id.is_some() {
-            if let Some(automation_scheduler) = self.automation_scheduler.as_ref() {
-                let message = match automation_scheduler.handle(request).await {
+        if is_scheduled_task_request(&request) && valid_runtime_frame && self.client_id.is_some() {
+            if let Some(scheduled_task_scheduler) = self.scheduled_task_scheduler.as_ref() {
+                let message = match scheduled_task_scheduler.handle(request).await {
                     Ok(message) => message,
-                    Err(error) => automation_scheduler_error(error),
+                    Err(error) => scheduled_task_scheduler_error(error),
                 };
                 return Ok(vec![server_frame(Some(request_id), message)]);
             }
@@ -501,12 +501,12 @@ impl IpcConnection {
             | ClientRequest::UpdateMemorySettings { .. }
             | ClientRequest::GetThreadMemorySettings { .. }
             | ClientRequest::UpdateThreadMemorySettings { .. }
-            | ClientRequest::ListAutomations { .. }
-            | ClientRequest::SaveAutomation { .. }
-            | ClientRequest::SetAutomationEnabled { .. }
-            | ClientRequest::DeleteAutomation { .. }
-            | ClientRequest::RunAutomationNow { .. }
-            | ClientRequest::ListAutomationRuns { .. } => protocol_error(
+            | ClientRequest::ListScheduledTasks
+            | ClientRequest::SaveScheduledTask { .. }
+            | ClientRequest::SetScheduledTaskEnabled { .. }
+            | ClientRequest::DeleteScheduledTask { .. }
+            | ClientRequest::RunScheduledTaskNow { .. }
+            | ClientRequest::ListScheduledTaskRuns { .. } => protocol_error(
                 ProtocolErrorCode::InvalidFrame,
                 "runtime request is not implemented",
             ),
@@ -590,32 +590,33 @@ fn memory_service_error(error: MemoryServiceError) -> ServerMessage {
     }
 }
 
-fn is_automation_request(request: &ClientRequest) -> bool {
+fn is_scheduled_task_request(request: &ClientRequest) -> bool {
     matches!(
         request,
-        ClientRequest::ListAutomations { .. }
-            | ClientRequest::SaveAutomation { .. }
-            | ClientRequest::SetAutomationEnabled { .. }
-            | ClientRequest::DeleteAutomation { .. }
-            | ClientRequest::RunAutomationNow { .. }
-            | ClientRequest::ListAutomationRuns { .. }
+        ClientRequest::ListScheduledTasks
+            | ClientRequest::SaveScheduledTask { .. }
+            | ClientRequest::SetScheduledTaskEnabled { .. }
+            | ClientRequest::DeleteScheduledTask { .. }
+            | ClientRequest::RunScheduledTaskNow { .. }
+            | ClientRequest::ListScheduledTaskRuns { .. }
     )
 }
 
-fn automation_scheduler_error(error: AutomationSchedulerError) -> ServerMessage {
+fn scheduled_task_scheduler_error(error: ScheduledTaskSchedulerError) -> ServerMessage {
     match error {
-        AutomationSchedulerError::NotFound => {
-            protocol_error(ProtocolErrorCode::NotFound, "automation not found")
+        ScheduledTaskSchedulerError::NotFound => {
+            protocol_error(ProtocolErrorCode::NotFound, "scheduled task not found")
         }
-        AutomationSchedulerError::InvalidConfiguration => protocol_error(
+        ScheduledTaskSchedulerError::InvalidConfiguration => protocol_error(
             ProtocolErrorCode::InvalidFrame,
-            "automation configuration is invalid",
+            "scheduled task configuration is invalid",
         ),
-        AutomationSchedulerError::Io(_)
-        | AutomationSchedulerError::Json(_)
-        | AutomationSchedulerError::Store(_) => {
-            protocol_error(ProtocolErrorCode::Internal, "automation operation failed")
-        }
+        ScheduledTaskSchedulerError::Io(_)
+        | ScheduledTaskSchedulerError::Json(_)
+        | ScheduledTaskSchedulerError::Store(_) => protocol_error(
+            ProtocolErrorCode::Internal,
+            "scheduled task operation failed",
+        ),
     }
 }
 

@@ -144,10 +144,10 @@ pub use contracts::{
     ProviderSettingsStore, ReferenceCandidatePayload, RefreshModelProviderCatalogResponse,
     RefreshOfficialQuotaRequest, RefreshOfficialQuotaResponse, ReloadPluginRequest,
     RequestProviderConfigApiKeyRevealRequest, RequestProviderConfigApiKeyRevealResponse,
-    RestartMcpServerRequest, RestartMcpServerResponse, RuntimeToolServiceBindingSummary,
-    RuntimeToolSummary, SaveAgentProfileResponse, SaveBrowserMcpPresetRequest,
-    SaveBrowserMcpPresetResponse, SaveMcpServerRequest, SaveMcpServerResponse,
-    SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
+    ResetRuntimeToolConfigRequest, RestartMcpServerRequest, RestartMcpServerResponse,
+    RuntimeToolServiceBindingSummary, RuntimeToolSummary, SaveAgentProfileResponse,
+    SaveBrowserMcpPresetRequest, SaveBrowserMcpPresetResponse, SaveMcpServerRequest,
+    SaveMcpServerResponse, SaveMcpServerTransportConfig, SaveProviderCapabilityRouteRequest,
     SaveProviderCapabilityRouteResponse, SaveProviderSettingsResponse, SetExecutionSettingsRequest,
     SetExecutionSettingsResponse, SetMcpServerEnabledRequest, SetMcpServerEnabledResponse,
     SetPluginEnabledRequest, SetProjectPluginsEnabledRequest, SetProjectPluginsEnabledResponse,
@@ -159,8 +159,9 @@ pub use contracts::{
     SkillPrerequisitePayload, SkillScriptEnvPayload, SkillScriptPayload, SkillStore,
     SkillStoreRecord, SkillSummaryPayload, SubscribeMcpDiagnosticsRequest,
     SubscribeMcpDiagnosticsResponse, UninstallPluginRequest, UnsubscribeMcpDiagnosticsRequest,
-    UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest, ValidatePluginFromPathRequest,
-    ValidateProviderSettingsRequest, ValidateProviderSettingsResponse,
+    UnsubscribeMcpDiagnosticsResponse, UpdatePluginConfigRequest, UpdateRuntimeToolConfigRequest,
+    ValidatePluginFromPathRequest, ValidateProviderSettingsRequest,
+    ValidateProviderSettingsResponse,
 };
 pub use error::CommandErrorPayload;
 pub use mcp::{

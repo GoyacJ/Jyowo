@@ -6,14 +6,14 @@ import type {
 import type { TaskWorkbenchTarget } from '@/shared/state/workbench-selection'
 import { taskWorkbenchTargetFromTimelineItem } from './task-workbench-target'
 
-type TaskWorkbenchSummaryGroup = 'environment' | 'sources' | 'subagents'
+type TaskWorkbenchSummaryGroup = 'activity' | 'environment' | 'sources' | 'subagents'
 
 export type TaskWorkbenchSummaryItem = {
   count?: number
   detail: string
   failedCount?: number
   group: TaskWorkbenchSummaryGroup
-  id: 'artifacts' | 'changes' | 'environment' | 'sources' | 'subagents'
+  id: 'artifacts' | 'audit' | 'changes' | 'commands' | 'environment' | 'sources' | 'subagents'
   runningCount?: number
   status: 'complete' | 'failed' | 'idle' | 'running'
   target?: TaskWorkbenchTarget
@@ -21,13 +21,17 @@ export type TaskWorkbenchSummaryItem = {
 
 export function taskWorkbenchSummaryItems(input: {
   events: TaskEventEnvelope[]
-  labels: { subagents: string }
+  labels: { environment: string; subagents: string }
   projection: TaskProjection
   timeline: TimelineItemProjection[]
 }): TaskWorkbenchSummaryItem[] {
   const { events, labels, projection, timeline } = input
   const items: TaskWorkbenchSummaryItem[] = []
   const changes = timeline.filter((item) => item.kind === 'diff')
+  const commands = timeline.filter(
+    (item) => item.kind === 'command' || item.tool?.operation === 'command',
+  )
+  const errors = timeline.filter((item) => item.kind === 'error')
   const sources = timeline.filter((item) => item.kind === 'image')
   const artifacts = timeline.filter((item) => item.kind === 'artifact' || item.kind === 'file')
 
@@ -56,6 +60,49 @@ export function taskWorkbenchSummaryItems(input: {
       group: 'environment',
       id: 'environment',
       status: 'idle',
+      target: {
+        kind: 'environment',
+        resourceId: projection.workspace ? 'workspace' : (workspaceEvent?.eventId ?? 'all'),
+        sourceEventId: workspaceEvent?.eventId,
+        taskId: projection.taskId,
+        title: labels.environment,
+      },
+    })
+  }
+
+  const latestCommand = commands.at(-1)
+  const commandTarget = latestCommand
+    ? taskWorkbenchTargetFromTimelineItem(latestCommand, projection.taskId)
+    : null
+  if (latestCommand && commandTarget) {
+    const commandStatus = latestCommand.tool?.status
+    items.push({
+      count: commands.length,
+      detail: latestCommand.summary,
+      group: 'activity',
+      id: 'commands',
+      status:
+        commandStatus === 'failed' || commandStatus === 'denied'
+          ? 'failed'
+          : latestCommand.incomplete || commandStatus === 'requested' || commandStatus === 'running'
+            ? 'running'
+            : 'complete',
+      target: commandTarget,
+    })
+  }
+
+  const latestError = errors.at(-1)
+  const auditTarget = latestError
+    ? taskWorkbenchTargetFromTimelineItem(latestError, projection.taskId)
+    : null
+  if (latestError && auditTarget) {
+    items.push({
+      count: errors.length,
+      detail: latestError.summary,
+      group: 'activity',
+      id: 'audit',
+      status: 'failed',
+      target: auditTarget,
     })
   }
 

@@ -1,15 +1,17 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use harness_contracts::{
-    CapabilityRouteKind, DeferPolicy, RuntimeExecutionStatus, ToolDescriptor, ToolGroup,
-    ToolOrigin, ToolProfile,
+    CapabilityRouteKind, DeferPolicy, ExecutionDefaultsRecord, RuntimeExecutionStatus,
+    ToolDescriptor, ToolGroup, ToolOrigin, ToolProfile, ToolRuntimeSettings,
 };
-use harness_tool::ToolPoolFilter;
+use harness_tool::{
+    effective_tool_runtime_settings, validate_tool_runtime_settings, ToolPoolFilter,
+};
 
 use super::{
     CommandErrorPayload, DesktopRuntimeState, ListRuntimeToolsResponse, ManagedDesktopRuntime,
-    RuntimeToolServiceBindingSummary, RuntimeToolSummary, SetRuntimeToolEnabledRequest,
-    SettingsScope,
+    ResetRuntimeToolConfigRequest, RuntimeToolServiceBindingSummary, RuntimeToolSummary,
+    SetRuntimeToolEnabledRequest, SettingsScope, UpdateRuntimeToolConfigRequest,
 };
 
 const EMPTY_TOOL_ALLOWLIST_SENTINEL: &str = "__jyowo_no_runtime_tools__";
@@ -35,7 +37,9 @@ pub fn list_runtime_tools_with_runtime_state(
     let runtime = settings_runtime(state)?;
     let snapshot = runtime.tool_registry().snapshot();
     let generation = snapshot.generation();
-    let (tool_profile, scope, customized) = effective_tool_profile(state)?;
+    let (execution_defaults, scope, profile_customized, configuration_customized) =
+        effective_execution_defaults(state)?;
+    let tool_profile = execution_defaults.tool_profile.clone();
     let filter = ToolPoolFilter::from_profile(&tool_profile);
     let execution_status = runtime.runtime_execution_status();
     let tool_statuses = execution_status
@@ -43,18 +47,35 @@ pub fn list_runtime_tools_with_runtime_state(
         .iter()
         .map(|status| (status.tool_name.as_str(), status))
         .collect::<HashMap<_, _>>();
-    let mut tools = snapshot
+    let mut descriptors = snapshot
         .as_descriptors()
         .into_iter()
+        .cloned()
+        .map(|descriptor| (descriptor.name.clone(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    for descriptor in runtime.runtime_appended_tool_descriptors() {
+        descriptors
+            .entry(descriptor.name.clone())
+            .or_insert(descriptor);
+    }
+    let mut tools = descriptors
+        .values()
         .map(|descriptor| {
             let configured_enabled = filter.allows_descriptor(&descriptor);
-            let (available, unavailable_reason) =
-                runtime_tool_availability(&descriptor, &execution_status, &tool_statuses);
+            let (available, unavailable_reason) = runtime_tool_availability(
+                &descriptor,
+                &execution_defaults,
+                &execution_status,
+                &tool_statuses,
+            );
+            let configured_settings = execution_defaults.tool_settings.get(&descriptor.name);
             runtime_tool_summary_from_descriptor(
                 &descriptor,
                 configured_enabled,
                 available,
                 unavailable_reason,
+                configured_settings,
+                configuration_customized.contains(&descriptor.name),
             )
         })
         .collect::<Vec<_>>();
@@ -69,7 +90,7 @@ pub fn list_runtime_tools_with_runtime_state(
     Ok(ListRuntimeToolsResponse {
         generation,
         scope,
-        customized,
+        customized: profile_customized || !configuration_customized.is_empty(),
         tools,
     })
 }
@@ -87,8 +108,7 @@ pub fn set_runtime_tool_enabled_with_runtime_state(
     request: SetRuntimeToolEnabledRequest,
 ) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
     let runtime = settings_runtime(state)?;
-    let snapshot = runtime.tool_registry().snapshot();
-    let descriptors = snapshot.as_descriptors();
+    let descriptors = runtime_tool_catalog(&runtime);
     if !descriptors
         .iter()
         .any(|descriptor| descriptor.name == request.name)
@@ -99,15 +119,16 @@ pub fn set_runtime_tool_enabled_with_runtime_state(
         )));
     }
 
-    let (profile, _, _) = effective_tool_profile(state)?;
-    let next_profile = tool_profile_with_override(&profile, &descriptors, &request);
+    let (execution_defaults, _, _, _) = effective_execution_defaults(state)?;
+    let next_profile =
+        tool_profile_with_override(&execution_defaults.tool_profile, &descriptors, &request);
     save_tool_profile(state, Some(next_profile))?;
     list_runtime_tools_with_runtime_state(state)
 }
 
 fn tool_profile_with_override(
     profile: &ToolProfile,
-    descriptors: &[&ToolDescriptor],
+    descriptors: &[ToolDescriptor],
     request: &SetRuntimeToolEnabledRequest,
 ) -> ToolProfile {
     if let ToolProfile::Full = profile {
@@ -187,11 +208,97 @@ pub async fn set_runtime_tool_enabled(
     )
 }
 
+pub fn update_runtime_tool_config_with_runtime_state(
+    state: &DesktopRuntimeState,
+    request: UpdateRuntimeToolConfigRequest,
+) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
+    let runtime = settings_runtime(state)?;
+    let descriptors = runtime_tool_catalog(&runtime);
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.name == request.name)
+        .ok_or_else(|| {
+            super::invalid_payload(format!("runtime tool `{}` is not registered", request.name))
+        })?;
+    let settings = ToolRuntimeSettings {
+        timeout_ms: request.timeout_ms,
+        parameters: request.parameters,
+    };
+    validate_tool_runtime_settings(descriptor, &settings).map_err(super::invalid_payload)?;
+    save_tool_settings(state, &request.name, Some(settings))?;
+    list_runtime_tools_with_runtime_state(state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn update_runtime_tool_config(
+    name: String,
+    timeout_ms: u64,
+    parameters: serde_json::Value,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
+    let state = runtime_handle.read().await;
+    let _settings_guard = state.execution_settings_lock.lock().await;
+    update_runtime_tool_config_with_runtime_state(
+        &state,
+        UpdateRuntimeToolConfigRequest {
+            name,
+            timeout_ms,
+            parameters,
+        },
+    )
+}
+
+pub fn reset_runtime_tool_config_with_runtime_state(
+    state: &DesktopRuntimeState,
+    request: ResetRuntimeToolConfigRequest,
+) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
+    let runtime = settings_runtime(state)?;
+    if !runtime_tool_catalog(&runtime)
+        .iter()
+        .any(|descriptor| descriptor.name == request.name)
+    {
+        return Err(super::invalid_payload(format!(
+            "runtime tool `{}` is not registered",
+            request.name
+        )));
+    }
+    save_tool_settings(state, &request.name, None)?;
+    list_runtime_tools_with_runtime_state(state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn reset_runtime_tool_config(
+    name: String,
+    runtime_handle: tauri::State<'_, ManagedDesktopRuntime>,
+) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
+    let state = runtime_handle.read().await;
+    let _settings_guard = state.execution_settings_lock.lock().await;
+    reset_runtime_tool_config_with_runtime_state(&state, ResetRuntimeToolConfigRequest { name })
+}
+
 pub fn reset_runtime_tools_with_runtime_state(
     state: &DesktopRuntimeState,
 ) -> Result<ListRuntimeToolsResponse, CommandErrorPayload> {
     settings_runtime(state)?;
-    save_tool_profile(state, None)?;
+    if let Some(project_store) = &state.project_config_store {
+        let mut overrides = project_store.load_execution_overrides()?;
+        overrides.tool_profile = None;
+        overrides.tool_settings.clear();
+        project_store.save_execution_overrides(&overrides)?;
+    } else {
+        let global_store =
+            state
+                .global_config_store
+                .as_ref()
+                .ok_or_else(|| CommandErrorPayload {
+                    code: "RUNTIME_NOT_READY",
+                    message: "global configuration store is not initialized".to_owned(),
+                })?;
+        let mut defaults = global_store.load_execution_defaults()?;
+        defaults.tool_profile = ToolProfile::Full;
+        defaults.tool_settings.clear();
+        global_store.save_execution_defaults(&defaults)?;
+    }
     list_runtime_tools_with_runtime_state(state)
 }
 
@@ -213,27 +320,57 @@ fn settings_runtime(
     })
 }
 
-fn effective_tool_profile(
+fn effective_execution_defaults(
     state: &DesktopRuntimeState,
-) -> Result<(ToolProfile, SettingsScope, bool), CommandErrorPayload> {
-    let mut profile = state
+) -> Result<
+    (
+        ExecutionDefaultsRecord,
+        SettingsScope,
+        bool,
+        BTreeSet<String>,
+    ),
+    CommandErrorPayload,
+> {
+    let mut defaults = state
         .global_config_store
         .as_ref()
         .map(|store| store.load_execution_defaults())
         .transpose()?
-        .map_or(ToolProfile::Full, |record| record.tool_profile);
+        .unwrap_or_default();
 
     if let Some(project_store) = &state.project_config_store {
         let overrides = project_store.load_execution_overrides()?;
-        let customized = overrides.tool_profile.is_some();
-        if let Some(project_profile) = overrides.tool_profile {
-            profile = project_profile;
+        let profile_customized = overrides.tool_profile.is_some();
+        let configuration_customized = overrides.tool_settings.keys().cloned().collect();
+        if let Some(value) = overrides.tool_profile {
+            defaults.tool_profile = value;
         }
-        return Ok((profile, SettingsScope::Project, customized));
+        defaults.tool_settings.extend(overrides.tool_settings);
+        if let Some(value) = overrides.subagents_enabled {
+            defaults.subagents_enabled = value;
+        }
+        if let Some(value) = overrides.agent_teams_enabled {
+            defaults.agent_teams_enabled = value;
+        }
+        if let Some(value) = overrides.background_agents_enabled {
+            defaults.background_agents_enabled = value;
+        }
+        return Ok((
+            defaults,
+            SettingsScope::Project,
+            profile_customized,
+            configuration_customized,
+        ));
     }
 
-    let customized = profile != ToolProfile::Full;
-    Ok((profile, SettingsScope::Global, customized))
+    let profile_customized = defaults.tool_profile != ToolProfile::Full;
+    let configuration_customized = defaults.tool_settings.keys().cloned().collect();
+    Ok((
+        defaults,
+        SettingsScope::Global,
+        profile_customized,
+        configuration_customized,
+    ))
 }
 
 fn save_tool_profile(
@@ -258,11 +395,84 @@ fn save_tool_profile(
     global_store.save_execution_defaults(&defaults)
 }
 
+fn save_tool_settings(
+    state: &DesktopRuntimeState,
+    name: &str,
+    settings: Option<ToolRuntimeSettings>,
+) -> Result<(), CommandErrorPayload> {
+    if let Some(project_store) = &state.project_config_store {
+        let mut overrides = project_store.load_execution_overrides()?;
+        match settings {
+            Some(settings) => {
+                overrides.tool_settings.insert(name.to_owned(), settings);
+            }
+            None => {
+                overrides.tool_settings.remove(name);
+            }
+        }
+        return project_store.save_execution_overrides(&overrides);
+    }
+
+    let global_store = state
+        .global_config_store
+        .as_ref()
+        .ok_or_else(|| CommandErrorPayload {
+            code: "RUNTIME_NOT_READY",
+            message: "global configuration store is not initialized".to_owned(),
+        })?;
+    let mut defaults = global_store.load_execution_defaults()?;
+    match settings {
+        Some(settings) => {
+            defaults.tool_settings.insert(name.to_owned(), settings);
+        }
+        None => {
+            defaults.tool_settings.remove(name);
+        }
+    }
+    global_store.save_execution_defaults(&defaults)
+}
+
+fn runtime_tool_catalog(
+    runtime: &jyowo_harness_sdk::DesktopSettingsRuntime,
+) -> Vec<ToolDescriptor> {
+    let mut descriptors = runtime
+        .tool_registry()
+        .snapshot()
+        .as_descriptors()
+        .into_iter()
+        .cloned()
+        .map(|descriptor| (descriptor.name.clone(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    for descriptor in runtime.runtime_appended_tool_descriptors() {
+        descriptors
+            .entry(descriptor.name.clone())
+            .or_insert(descriptor);
+    }
+    descriptors.into_values().collect()
+}
+
 fn runtime_tool_availability(
     descriptor: &ToolDescriptor,
+    execution_defaults: &ExecutionDefaultsRecord,
     execution_status: &RuntimeExecutionStatus,
     tool_statuses: &HashMap<&str, &harness_contracts::ToolRuntimeStatus>,
 ) -> (bool, Option<String>) {
+    let enabled = match descriptor.name.as_str() {
+        "agent" => execution_defaults.subagents_enabled,
+        "agent_team" => {
+            execution_defaults.subagents_enabled && execution_defaults.agent_teams_enabled
+        }
+        "background_agent" => {
+            execution_defaults.subagents_enabled && execution_defaults.background_agents_enabled
+        }
+        _ => true,
+    };
+    if !enabled {
+        return (
+            false,
+            Some("Required Agent capability is disabled in execution settings".to_owned()),
+        );
+    }
     if let Some(status) = tool_statuses.get(descriptor.name.as_str()) {
         return (status.available, status.unavailable_reason.clone());
     }
@@ -287,8 +497,12 @@ fn runtime_tool_summary_from_descriptor(
     configured_enabled: bool,
     available: bool,
     unavailable_reason: Option<String>,
+    configured_settings: Option<&ToolRuntimeSettings>,
+    configuration_customized: bool,
 ) -> RuntimeToolSummary {
     let (origin_kind, origin_id) = runtime_tool_origin(&descriptor.origin);
+    let defaults = effective_tool_runtime_settings(descriptor, None);
+    let effective = effective_tool_runtime_settings(descriptor, configured_settings);
 
     RuntimeToolSummary {
         name: descriptor.name.clone(),
@@ -318,6 +532,16 @@ fn runtime_tool_summary_from_descriptor(
         configured_enabled,
         available,
         unavailable_reason,
+        default_timeout_ms: defaults.timeout_ms,
+        timeout_ms: effective.timeout_ms,
+        configuration_schema: descriptor
+            .metadata
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.schema.clone()),
+        default_parameters: defaults.parameters,
+        parameters: effective.parameters,
+        configuration_customized,
     }
 }
 

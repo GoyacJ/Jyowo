@@ -509,6 +509,7 @@ fn resolve_effective_execution_settings_applies_global_defaults() {
         .save_execution_defaults(&ExecutionDefaultsRecord {
             permission_mode: PermissionMode::Auto,
             tool_profile: ToolProfile::Minimal,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.85,
             subagents_enabled: true,
             agent_teams_enabled: false,
@@ -550,6 +551,7 @@ fn resolve_effective_execution_settings_ignores_project_overrides() {
         .save_execution_defaults(&ExecutionDefaultsRecord {
             permission_mode: PermissionMode::Auto,
             tool_profile: ToolProfile::Full,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -562,6 +564,7 @@ fn resolve_effective_execution_settings_ignores_project_overrides() {
             &ExecutionDefaultsRecord {
                 permission_mode: PermissionMode::BypassPermissions,
                 tool_profile: ToolProfile::Coding,
+                tool_settings: Default::default(),
                 context_compression_trigger_ratio: 0.75,
                 subagents_enabled: false,
                 agent_teams_enabled: false,
@@ -598,6 +601,7 @@ fn resolve_effective_execution_settings_ignores_partial_project_override() {
         .save_execution_defaults(&ExecutionDefaultsRecord {
             permission_mode: PermissionMode::BypassPermissions,
             tool_profile: ToolProfile::Minimal,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: true,
             agent_teams_enabled: true,
@@ -641,6 +645,7 @@ fn resolve_effective_execution_settings_run_params_override_all() {
         .save_execution_defaults(&ExecutionDefaultsRecord {
             permission_mode: PermissionMode::Default,
             tool_profile: ToolProfile::Full,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -653,6 +658,7 @@ fn resolve_effective_execution_settings_run_params_override_all() {
             &ExecutionDefaultsRecord {
                 permission_mode: PermissionMode::Auto,
                 tool_profile: ToolProfile::Coding,
+                tool_settings: Default::default(),
                 context_compression_trigger_ratio: 0.8,
                 subagents_enabled: false,
                 agent_teams_enabled: false,
@@ -691,6 +697,7 @@ fn resolve_effective_execution_settings_missing_project_falls_back_to_global() {
         .save_execution_defaults(&ExecutionDefaultsRecord {
             permission_mode: PermissionMode::BypassPermissions,
             tool_profile: ToolProfile::Minimal,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.6,
             subagents_enabled: true,
             agent_teams_enabled: true,

@@ -155,7 +155,7 @@ export function TaskWorkbench({
         <div className="flex min-w-0 items-center gap-2">
           <Button
             aria-label={t('workbench.back')}
-            className="task-workbench-back -ml-1 hidden size-7 shrink-0"
+            className="task-workbench-back -ml-1 hidden size-8 shrink-0"
             onClick={dismissWorkbench}
             size="icon"
             type="button"
@@ -165,9 +165,9 @@ export function TaskWorkbench({
           </Button>
           <TargetIcon className="size-4 shrink-0 text-muted-foreground" kind={activeTarget.kind} />
           <div className="min-w-0">
-            <p className="truncate font-medium text-xs">{activeTarget.title}</p>
+            <p className="truncate font-medium text-xs">{projection.title}</p>
             <p className="truncate text-[10px] text-muted-foreground">
-              {t(`workbench.targetKind.${activeTarget.kind}`)} · {projection.title}
+              {t(`workbench.targetKind.${activeTarget.kind}`)}
             </p>
           </div>
         </div>
@@ -175,7 +175,7 @@ export function TaskWorkbench({
           {activeTarget.sourceEventId && onLocateInTimeline ? (
             <Button
               aria-label={t('workbench.locateInConversation')}
-              className="size-7"
+              className="size-8"
               onClick={() => onLocateInTimeline(activeTarget.sourceEventId as string)}
               size="icon"
               type="button"
@@ -186,7 +186,7 @@ export function TaskWorkbench({
           ) : null}
           <Button
             aria-label={t('workbench.close')}
-            className="task-workbench-close size-7"
+            className="task-workbench-close size-8"
             onClick={dismissWorkbench}
             size="icon"
             type="button"
@@ -240,7 +240,7 @@ export function TaskWorkbench({
         <div className="flex shrink-0 items-center gap-0.5 border-border border-l px-1">
           <button
             aria-label={activeTab.pinned ? t('workbench.unpinTab') : t('workbench.pinTab')}
-            className="rounded p-1 hover:bg-muted"
+            className="grid size-7 place-items-center rounded-md hover:bg-muted"
             onClick={() => setPinned(projection.taskId, activeTab.id, !activeTab.pinned)}
             type="button"
           >
@@ -252,7 +252,7 @@ export function TaskWorkbench({
           </button>
           <button
             aria-label={t('workbench.closeTab', { title: activeTab.target.title })}
-            className="rounded p-1 hover:bg-muted"
+            className="grid size-7 place-items-center rounded-md hover:bg-muted"
             onClick={() => dismissTab(activeTab.id)}
             type="button"
           >

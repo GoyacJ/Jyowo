@@ -1,32 +1,64 @@
 import { describe, expect, it } from 'vitest'
 
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
-import { taskWorkbenchTargetFromTimelineItem } from './task-workbench-target'
+import {
+  isTaskWorkbenchSidebarTarget,
+  taskWorkbenchTargetFromTimelineItem,
+} from './task-workbench-target'
 
 describe('taskWorkbenchTargetFromTimelineItem', () => {
   it.each([
+    'artifact',
+    'audit',
+    'browser',
+    'command',
+    'diff',
+    'environment',
+    'file',
+    'source',
+    'subagent',
+  ] as const)('allows %s targets through the workbench gate', (kind) => {
+    expect(isTaskWorkbenchSidebarTarget({ kind, resourceId: kind, taskId, title: kind })).toBe(true)
+  })
+
+  it.each([
     ['diff', 'diff'],
+    ['command', 'command'],
     ['user_message', 'file'],
     ['file', 'file'],
     ['artifact', 'artifact'],
     ['subagent', 'subagent'],
     ['image', 'source'],
+    ['error', 'audit'],
   ] as const)('maps %s timeline items to %s targets', (itemKind, targetKind) => {
     expect(taskWorkbenchTargetFromTimelineItem(item(itemKind), taskId)).toMatchObject({
       kind: targetKind,
-      resourceId: blobId,
+      resourceId: itemKind === 'error' ? eventId : blobId,
       sourceEventId: eventId,
       taskId,
     })
   })
 
-  it('ignores commands, audit events, workspace notices, and narrative', () => {
-    for (const kind of ['command', 'error', 'notice', 'permission', 'assistant_text'] as const) {
+  it('ignores workspace notices, permissions, and narrative without artifacts', () => {
+    for (const kind of ['notice', 'permission', 'assistant_text'] as const) {
       expect(taskWorkbenchTargetFromTimelineItem(item(kind), taskId)).toBeNull()
     }
     expect(
       taskWorkbenchTargetFromTimelineItem({ ...item('user_message'), blobId: undefined }, taskId),
     ).toBeNull()
+  })
+
+  it('uses a command summary as the preview when no output blob exists', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        { ...item('command', 'cargo test — exit code 1'), blobId: undefined },
+        taskId,
+      ),
+    ).toMatchObject({
+      artifact: { preview: 'cargo test — exit code 1' },
+      kind: 'command',
+      resourceId: eventId,
+    })
   })
 
   it.each(['BrowserUse', 'BrowserDevTools'])('maps %s activity to one task browser', (toolName) => {
@@ -61,6 +93,52 @@ describe('taskWorkbenchTargetFromTimelineItem', () => {
         taskId,
       ),
     ).toBeNull()
+  })
+
+  it('maps command activity to an inline command preview', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('tool_activity'),
+          blobId: undefined,
+          tool: {
+            command: 'pnpm test',
+            operation: 'command',
+            output: '71 tests passed',
+            status: 'completed',
+            toolName: 'exec_command',
+            toolUseId: 'command-tool',
+          },
+        },
+        taskId,
+      ),
+    ).toMatchObject({
+      artifact: { preview: '$ pnpm test\n71 tests passed' },
+      kind: 'command',
+      resourceId: 'command-tool',
+    })
+  })
+
+  it.each(['command', 'terminal'])('maps %s artifacts to command targets', (artifactKind) => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('artifact'),
+          contentBlocks: [
+            {
+              artifact: {
+                artifactKind,
+                blobId,
+                mediaType: 'text/plain',
+                title: 'Shell output',
+              },
+              type: 'artifact',
+            },
+          ],
+        },
+        taskId,
+      ),
+    ).toMatchObject({ kind: 'command', resourceId: blobId })
   })
 
   it('opens an artifact block from an assistant message without a top-level blob', () => {

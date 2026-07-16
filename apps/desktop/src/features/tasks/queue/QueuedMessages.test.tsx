@@ -306,7 +306,7 @@ function acceptedFrame(): ServerFrame {
       taskId,
       type: 'command_accepted',
     },
-    protocolVersion: 5,
+    protocolVersion: 6,
     requestId: 'request-1',
   }
 }
@@ -320,7 +320,7 @@ function rejectedFrame(latestQueueItem: QueueItemProjection): ServerFrame {
       taskId,
       type: 'command_rejected',
     },
-    protocolVersion: 5,
+    protocolVersion: 6,
     requestId: 'request-1',
   }
 }

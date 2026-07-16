@@ -4,11 +4,11 @@ use std::time::{Duration, Instant};
 
 use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
-    AutomationScheduler, BrowserService, IpcServerConfig, LocalIpcServer, MemoryService,
-    PermissionBroker, RecoveryService, RuntimeConfigResolver, RuntimeGuard,
+    BrowserService, IpcServerConfig, LocalIpcServer, MemoryService, PermissionBroker,
+    RecoveryService, RuntimeConfigResolver, RuntimeGuard, ScheduledTaskScheduler,
     SdkRunCoordinatorFactory, SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory,
-    SkillReferenceCandidateService, Supervisor, SupervisorAutomationTaskSubmitter,
-    SupervisorQuotas, WorkspaceSubagentRunnerFactory,
+    SkillReferenceCandidateService, Supervisor, SupervisorQuotas,
+    SupervisorScheduledTaskTaskSubmitter, WorkspaceSubagentRunnerFactory,
 };
 use harness_journal::TaskStore;
 use harness_observability::DefaultRedactor;
@@ -76,15 +76,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         8,
         permissions,
     )?);
-    let automation_scheduler = Arc::new(AutomationScheduler::new(
+    let scheduled_task_scheduler = Arc::new(ScheduledTaskScheduler::new(
         Arc::clone(&store),
         config_root,
-        Arc::new(SupervisorAutomationTaskSubmitter::new(
+        Arc::new(SupervisorScheduledTaskTaskSubmitter::new(
             Arc::clone(&store),
             Arc::clone(&supervisor),
         )),
     ));
-    let _automation_scheduler_task = automation_scheduler.start();
+    let _scheduled_task_scheduler_task = scheduled_task_scheduler.start();
 
     #[cfg(unix)]
     let server = LocalIpcServer::bind_unix_with_runtime_services(
@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&supervisor),
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
-        Arc::clone(&automation_scheduler),
+        Arc::clone(&scheduled_task_scheduler),
         Arc::clone(&browser_service),
     )
     .await?;
@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&supervisor),
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
-        Arc::clone(&automation_scheduler),
+        Arc::clone(&scheduled_task_scheduler),
         Arc::clone(&browser_service),
     )
     .await?;

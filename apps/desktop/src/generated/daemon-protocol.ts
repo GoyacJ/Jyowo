@@ -217,34 +217,28 @@ export type ClientRequest =
       workspaceRoot?: string | null
     }
   | {
-      type: 'list_automations'
-      workspaceRoot?: string | null
+      type: 'list_scheduled_tasks'
     }
   | {
-      automation: AutomationSpec
-      type: 'save_automation'
-      workspaceRoot?: string | null
+      scheduledTask: ScheduledTaskSpec
+      type: 'save_scheduled_task'
     }
   | {
-      automationId: string
       enabled: boolean
-      type: 'set_automation_enabled'
-      workspaceRoot?: string | null
+      scheduledTaskId: string
+      type: 'set_scheduled_task_enabled'
     }
   | {
-      automationId: string
-      type: 'delete_automation'
-      workspaceRoot?: string | null
+      scheduledTaskId: string
+      type: 'delete_scheduled_task'
     }
   | {
-      automationId: string
-      type: 'run_automation_now'
-      workspaceRoot?: string | null
+      scheduledTaskId: string
+      type: 'run_scheduled_task_now'
     }
   | {
-      automationId?: string | null
-      type: 'list_automation_runs'
-      workspaceRoot?: string | null
+      scheduledTaskId?: string | null
+      type: 'list_scheduled_task_runs'
     }
   | {
       command: BrowserCommand
@@ -421,82 +415,6 @@ export type PermissionMode =
   | 'auto'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "SandboxMode".
- */
-export type SandboxMode =
-  | ('none' | 'container' | 'remote')
-  | {
-      os_level: LocalIsolationTag
-    }
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "LocalIsolationTag".
- */
-export type LocalIsolationTag = 'none' | 'bubblewrap' | 'seatbelt' | 'job_object'
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "ToolProfile".
- */
-export type ToolProfile =
-  | ('minimal' | 'coding' | 'full')
-  | {
-      custom: {
-        allowlist?: string[]
-        denylist?: string[]
-        group_allowlist?: ToolGroup[]
-        group_denylist?: ToolGroup[]
-        mcp_included?: boolean
-        plugin_included?: boolean
-      }
-    }
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "ToolGroup".
- */
-export type ToolGroup =
-  | (
-      | 'file_system'
-      | 'search'
-      | 'network'
-      | 'shell'
-      | 'git'
-      | 'worktree'
-      | 'session'
-      | 'artifact'
-      | 'browser'
-      | 'computer'
-      | 'image'
-      | 'notebook'
-      | 'lsp'
-      | 'automation'
-      | 'workflow'
-      | 'agent'
-      | 'coordinator'
-      | 'memory'
-      | 'clarification'
-      | 'meta'
-    )
-  | {
-      custom: string
-    }
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "WorkspaceAccess".
- */
-export type WorkspaceAccess =
-  | ('none' | 'read_only')
-  | {
-      read_write: {
-        allowed_writable_subpaths: string[]
-      }
-    }
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "AutomationWorkspaceScope".
- */
-export type AutomationWorkspaceScope = 'current_workspace'
-/**
- * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "BrowserCommand".
  */
 export type BrowserCommand =
@@ -651,28 +569,28 @@ export type ServerMessage =
       type: 'thread_memory_settings_updated'
     }
   | {
-      automations: AutomationSpec[]
-      type: 'automations'
+      scheduledTasks: ScheduledTaskSpec[]
+      type: 'scheduled_tasks'
     }
   | {
-      automation: AutomationSpec
-      type: 'automation_saved'
+      scheduledTask: ScheduledTaskSpec
+      type: 'scheduled_task_saved'
     }
   | {
-      automation: AutomationSpec
-      type: 'automation_enabled'
+      scheduledTask: ScheduledTaskSpec
+      type: 'scheduled_task_enabled'
     }
   | {
-      automationId: string
-      type: 'automation_deleted'
+      scheduledTaskId: string
+      type: 'scheduled_task_deleted'
     }
   | {
-      run: AutomationRunRecord
-      type: 'automation_run'
+      run: ScheduledTaskRunRecord
+      type: 'scheduled_task_run'
     }
   | {
-      runs: AutomationRunRecord[]
-      type: 'automation_runs'
+      runs: ScheduledTaskRunRecord[]
+      type: 'scheduled_task_runs'
     }
   | {
       currentUrl?: string | null
@@ -1094,9 +1012,9 @@ export type MemoryDropReason =
 export type MemoryProviderTrust = 'built_in' | 'workspace' | 'team' | 'plugin' | 'external'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "AutomationRunStatus".
+ * via the `definition` "ScheduledTaskRunStatus".
  */
-export type AutomationRunStatus = 'started' | 'rejected' | 'failed'
+export type ScheduledTaskRunStatus = 'started' | 'succeeded' | 'failed' | 'cancelled' | 'rejected'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "BrowserSessionStatus".
@@ -1343,27 +1261,25 @@ export interface MemoryThreadSettings {
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "AutomationSpec".
+ * via the `definition` "ScheduledTaskSpec".
  */
-export interface AutomationSpec {
+export interface ScheduledTaskSpec {
   createdAt: string
   enabled?: boolean
   id: string
   missedRunPolicy?: 'skip' | 'run_once'
+  name: string
   permissionMode: PermissionMode
   prompt: string
-  sandboxMode: SandboxMode
-  schedule: AutomationSchedule
-  toolProfile: ToolProfile
+  schedule: ScheduledTaskSchedule
   updatedAt: string
-  workspaceAccess: WorkspaceAccess
-  workspaceScope: AutomationWorkspaceScope
+  workspaceRoot?: string | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "AutomationSchedule".
+ * via the `definition` "ScheduledTaskSchedule".
  */
-export interface AutomationSchedule {
+export interface ScheduledTaskSchedule {
   intervalMinutes: number
 }
 /**
@@ -1837,16 +1753,16 @@ export interface MemoryModelRequestPreviewSection {
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "AutomationRunRecord".
+ * via the `definition` "ScheduledTaskRunRecord".
  */
-export interface AutomationRunRecord {
-  automationId: string
+export interface ScheduledTaskRunRecord {
   completedAt?: string | null
   id: string
   message?: string | null
-  runId?: string | null
+  scheduledTaskId: string
   startedAt: string
-  status: AutomationRunStatus
+  status: ScheduledTaskRunStatus
+  taskId?: string | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

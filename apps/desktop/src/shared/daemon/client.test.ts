@@ -22,7 +22,7 @@ describe('daemon client', () => {
           taskId,
           type: 'command_accepted',
         },
-        protocolVersion: 5,
+        protocolVersion: 6,
         requestId: frame.requestId,
       }
     })
@@ -71,7 +71,7 @@ describe('daemon client', () => {
           taskId,
           type: 'command_rejected',
         },
-        protocolVersion: 5,
+        protocolVersion: 6,
         requestId: frame.requestId,
       }
     })
@@ -88,7 +88,7 @@ describe('daemon client', () => {
       const frame = args?.frame as { requestId: string }
       return {
         requestId: frame.requestId,
-        protocolVersion: 5,
+        protocolVersion: 6,
         message: { type: 'task_list', tasks: [] },
       }
     })
@@ -101,7 +101,7 @@ describe('daemon client', () => {
 
     expect(invoke).toHaveBeenLastCalledWith('daemon_request', {
       frame: {
-        protocolVersion: 5,
+        protocolVersion: 6,
         request: { type: 'list_tasks' },
         requestId: 'request-1',
       },
@@ -129,7 +129,7 @@ describe('daemon client', () => {
     )
 
     const unsubscribe = await client.subscribe(40, onFrame, onProtocolError)
-    listener?.({ protocolVersion: 5, message: { type: 'future_event' } })
+    listener?.({ protocolVersion: 6, message: { type: 'future_event' } })
 
     expect(onFrame).not.toHaveBeenCalled()
     expect(onProtocolError).toHaveBeenCalledOnce()
@@ -181,7 +181,7 @@ describe('daemon client', () => {
   it('reads blobs only through validated blob ids', async () => {
     const invoke = vi.fn(async () => ({
       requestId: null,
-      protocolVersion: 5,
+      protocolVersion: 6,
       message: {
         type: 'blob',
         blobId,
@@ -209,7 +209,7 @@ describe('daemon client', () => {
   it('rejects a blob response for a different blob id', async () => {
     const invoke = vi.fn(async () => ({
       requestId: null,
-      protocolVersion: 5,
+      protocolVersion: 6,
       message: {
         type: 'blob',
         blobId: '00000000000000000000000009',
@@ -228,7 +228,7 @@ describe('daemon client', () => {
   it('stages a local path through Tauri and returns a daemon-owned attachment', async () => {
     const invoke = vi.fn(async () => ({
       requestId: null,
-      protocolVersion: 5,
+      protocolVersion: 6,
       message: {
         type: 'blob',
         blobId,
@@ -363,7 +363,7 @@ describe('daemon client', () => {
   it('rejects a snapshot for a different task', async () => {
     const invoke = vi.fn(async () => ({
       requestId: 'request-1',
-      protocolVersion: 5,
+      protocolVersion: 6,
       message: {
         type: 'task_snapshot',
         projection: {
@@ -389,7 +389,7 @@ describe('daemon client', () => {
       const frame = args?.frame as { request: unknown; requestId: string }
       return {
         requestId: frame.requestId,
-        protocolVersion: 5,
+        protocolVersion: 6,
         message: {
           events: [],
           nextBeforeOffset: 20,
@@ -406,7 +406,7 @@ describe('daemon client', () => {
     })
     expect(invoke).toHaveBeenCalledWith('daemon_request', {
       frame: {
-        protocolVersion: 5,
+        protocolVersion: 6,
         request: {
           beforeGlobalOffset: 42,
           limit: 16,
@@ -429,7 +429,7 @@ function transport(invoke: DaemonTransport['invoke']): DaemonTransport {
 function taskListFrame(): ServerFrame {
   return {
     requestId: null,
-    protocolVersion: 5,
+    protocolVersion: 6,
     message: { type: 'task_list', tasks: [] },
   }
 }

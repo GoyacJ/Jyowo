@@ -87,6 +87,12 @@ pub struct RuntimeToolSummary {
     pub configured_enabled: bool,
     pub available: bool,
     pub unavailable_reason: Option<String>,
+    pub default_timeout_ms: u64,
+    pub timeout_ms: u64,
+    pub configuration_schema: Option<Value>,
+    pub default_parameters: Value,
+    pub parameters: Value,
+    pub configuration_customized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -94,6 +100,20 @@ pub struct RuntimeToolSummary {
 pub struct SetRuntimeToolEnabledRequest {
     pub name: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UpdateRuntimeToolConfigRequest {
+    pub name: String,
+    pub timeout_ms: u64,
+    pub parameters: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResetRuntimeToolConfigRequest {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

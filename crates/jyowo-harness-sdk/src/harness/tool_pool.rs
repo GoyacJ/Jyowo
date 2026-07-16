@@ -1,5 +1,38 @@
 use super::*;
 
+pub(crate) fn runtime_appended_tool_descriptors() -> Vec<ToolDescriptor> {
+    #[allow(unused_mut)]
+    let mut descriptors = Vec::new();
+    #[cfg(feature = "tool-search")]
+    descriptors.push(
+        harness_tool_search::ToolSearchTool::builder()
+            .build()
+            .descriptor()
+            .clone(),
+    );
+    #[cfg(feature = "agents-subagent")]
+    {
+        descriptors.push(harness_subagent::AgentTool::default().descriptor().clone());
+        descriptors.push(background_agent_tool_descriptor());
+    }
+    #[cfg(feature = "agents-team")]
+    descriptors.push(agent_team_tool_descriptor());
+    descriptors
+}
+
+#[cfg(any(
+    feature = "tool-search",
+    feature = "agents-team",
+    feature = "agents-subagent"
+))]
+pub(super) fn runtime_appended_tool_allowed(profile: &ToolProfile, name: &str) -> bool {
+    let filter = ToolPoolFilter::from_profile(profile);
+    runtime_appended_tool_descriptors()
+        .iter()
+        .find(|descriptor| descriptor.name == name)
+        .is_some_and(|descriptor| filter.allows_descriptor(descriptor))
+}
+
 impl Harness {
     pub(super) async fn inject_mcp_tools(
         &self,
@@ -68,8 +101,12 @@ impl Harness {
         tools: &mut ToolPool,
         cap_registry: &mut CapabilityRegistry,
         model_snapshot: &ModelRuntimeSnapshot,
+        tool_profile: &ToolProfile,
     ) {
         if matches!(tool_search, ToolSearchMode::Disabled) {
+            return;
+        }
+        if !runtime_appended_tool_allowed(tool_profile, "tool_search") {
             return;
         }
         if let Some(allowed_tools) = &self.inner.options.tenant_policy.allowed_tools {
@@ -214,8 +251,12 @@ pub(super) fn install_agent_team_tool_for_run(
     tools: &mut ToolPool,
     agent_tool_policy: &harness_contracts::AgentToolPolicy,
     session_snapshot: harness_contracts::AgentTeamToolSessionSnapshot,
+    tool_profile: &ToolProfile,
 ) {
     if agent_tool_policy.agent_team != harness_contracts::AgentUsePolicy::Allowed {
+        return;
+    }
+    if !runtime_appended_tool_allowed(tool_profile, "agent_team") {
         return;
     }
     let capability =
@@ -237,8 +278,12 @@ pub(super) fn install_background_agent_tool_for_run(
     model_config_id: Option<String>,
     permission_mode: harness_contracts::PermissionMode,
     session_snapshot: harness_contracts::BackgroundAgentToolSessionSnapshot,
+    tool_profile: &ToolProfile,
 ) {
     if agent_tool_policy.background_agents != harness_contracts::AgentUsePolicy::Allowed {
+        return;
+    }
+    if !runtime_appended_tool_allowed(tool_profile, "background_agent") {
         return;
     }
     let capability =
@@ -272,64 +317,69 @@ impl BackgroundAgentTool {
         session_snapshot: harness_contracts::BackgroundAgentToolSessionSnapshot,
     ) -> Self {
         Self {
-            descriptor: ToolDescriptor {
-                name: "background_agent".to_owned(),
-                display_name: "Background Agent".to_owned(),
-                description: "Start a durable background agent for a follow-up goal.".to_owned(),
-                category: "builtin".to_owned(),
-                group: ToolGroup::Coordinator,
-                version: "0.1.0".to_owned(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["goal"],
-                    "properties": {
-                        "goal": { "type": "string", "minLength": 1 },
-                        "title": { "type": "string", "minLength": 1 }
-                    },
-                    "additionalProperties": false
-                }),
-                output_schema: Some(json!({
-                    "type": "object",
-                    "required": ["backgroundAgentId", "status", "conversationId", "parentRunId", "title"],
-                    "properties": {
-                        "backgroundAgentId": { "type": "string" },
-                        "status": { "type": "string" },
-                        "conversationId": { "type": "string" },
-                        "parentRunId": { "type": "string" },
-                        "title": { "type": "string" }
-                    },
-                    "additionalProperties": false
-                })),
-                dynamic_schema: false,
-                properties: ToolProperties {
-                    is_concurrency_safe: false,
-                    is_read_only: false,
-                    is_destructive: false,
-                    long_running: None,
-                    defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
-                },
-                trust_level: harness_contracts::TrustLevel::AdminTrusted,
-                required_capabilities: vec![ToolCapability::Custom(
-                    harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
-                )],
-                budget: harness_contracts::ResultBudget {
-                    metric: harness_contracts::BudgetMetric::Chars,
-                    limit: 4_000,
-                    on_overflow: harness_contracts::OverflowAction::Offload,
-                    preview_head_chars: 1_000,
-                    preview_tail_chars: 1_000,
-                },
-                provider_restriction: harness_contracts::ProviderRestriction::All,
-                origin: ToolOrigin::Builtin,
-                search_hint: Some("start durable background agent".to_owned()),
-                service_binding: None,
-                metadata: Default::default(),
-            },
+            descriptor: background_agent_tool_descriptor(),
             agent_tool_policy,
             model_config_id,
             permission_mode,
             session_snapshot,
         }
+    }
+}
+
+#[cfg(feature = "agents-subagent")]
+fn background_agent_tool_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: "background_agent".to_owned(),
+        display_name: "Background Agent".to_owned(),
+        description: "Start a durable background agent for a follow-up goal.".to_owned(),
+        category: "builtin".to_owned(),
+        group: ToolGroup::Coordinator,
+        version: "0.1.0".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["goal"],
+            "properties": {
+                "goal": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+        }),
+        output_schema: Some(json!({
+            "type": "object",
+            "required": ["backgroundAgentId", "status", "conversationId", "parentRunId", "title"],
+            "properties": {
+                "backgroundAgentId": { "type": "string" },
+                "status": { "type": "string" },
+                "conversationId": { "type": "string" },
+                "parentRunId": { "type": "string" },
+                "title": { "type": "string" }
+            },
+            "additionalProperties": false
+        })),
+        dynamic_schema: false,
+        properties: ToolProperties {
+            is_concurrency_safe: false,
+            is_read_only: false,
+            is_destructive: false,
+            long_running: None,
+            defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
+        },
+        trust_level: harness_contracts::TrustLevel::AdminTrusted,
+        required_capabilities: vec![ToolCapability::Custom(
+            harness_contracts::BACKGROUND_AGENT_STARTER_CAPABILITY.to_owned(),
+        )],
+        budget: harness_contracts::ResultBudget {
+            metric: harness_contracts::BudgetMetric::Chars,
+            limit: 4_000,
+            on_overflow: harness_contracts::OverflowAction::Offload,
+            preview_head_chars: 1_000,
+            preview_tail_chars: 1_000,
+        },
+        provider_restriction: harness_contracts::ProviderRestriction::All,
+        origin: ToolOrigin::Builtin,
+        search_hint: Some("start durable background agent".to_owned()),
+        service_binding: None,
+        metadata: Default::default(),
     }
 }
 
@@ -449,74 +499,79 @@ impl AgentTeamTool {
         Self {
             agent_tool_policy,
             session_snapshot,
-            descriptor: ToolDescriptor {
-                name: "agent_team".to_owned(),
-                display_name: "Agent Team".to_owned(),
-                description: "Start one run-scoped agent team for a coordinated goal.".to_owned(),
-                category: "builtin".to_owned(),
-                group: ToolGroup::Coordinator,
-                version: "0.1.0".to_owned(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["goal"],
-                    "properties": {
-                        "goal": { "type": "string", "minLength": 1 },
-                        "topology": {
-                            "type": "string",
-                            "enum": ["coordinator_worker", "peer_to_peer", "role_routed"]
-                        },
-                        "maxTurnsPerGoal": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "default": 4
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-                output_schema: Some(json!({
-                    "type": "object",
-                    "required": ["team_id", "status", "goal", "topology", "leadProfileId", "memberProfileIds", "sharedMemoryPolicy", "maxTurnsPerGoal"],
-                    "properties": {
-                        "team_id": { "type": "string" },
-                        "status": { "type": "string" },
-                        "goal": { "type": "string" },
-                        "topology": { "type": "string" },
-                        "leadProfileId": { "type": "string" },
-                        "memberProfileIds": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
-                        "sharedMemoryPolicy": { "type": "string" },
-                        "maxTurnsPerGoal": { "type": "integer", "minimum": 1 }
-                    },
-                    "additionalProperties": false
-                })),
-                dynamic_schema: false,
-                properties: ToolProperties {
-                    is_concurrency_safe: false,
-                    is_read_only: false,
-                    is_destructive: false,
-                    long_running: None,
-                    defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
-                },
-                trust_level: harness_contracts::TrustLevel::AdminTrusted,
-                required_capabilities: vec![ToolCapability::Custom(
-                    harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
-                )],
-                budget: harness_contracts::ResultBudget {
-                    metric: harness_contracts::BudgetMetric::Chars,
-                    limit: 4_000,
-                    on_overflow: harness_contracts::OverflowAction::Offload,
-                    preview_head_chars: 1_000,
-                    preview_tail_chars: 1_000,
-                },
-                provider_restriction: harness_contracts::ProviderRestriction::All,
-                origin: ToolOrigin::Builtin,
-                search_hint: Some("start coordinated agent team".to_owned()),
-                service_binding: None,
-                metadata: Default::default(),
-            },
+            descriptor: agent_team_tool_descriptor(),
         }
+    }
+}
+
+#[cfg(feature = "agents-team")]
+fn agent_team_tool_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: "agent_team".to_owned(),
+        display_name: "Agent Team".to_owned(),
+        description: "Start one run-scoped agent team for a coordinated goal.".to_owned(),
+        category: "builtin".to_owned(),
+        group: ToolGroup::Coordinator,
+        version: "0.1.0".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["goal"],
+            "properties": {
+                "goal": { "type": "string", "minLength": 1 },
+                "topology": {
+                    "type": "string",
+                    "enum": ["coordinator_worker", "peer_to_peer", "role_routed"]
+                },
+                "maxTurnsPerGoal": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 4
+                }
+            },
+            "additionalProperties": false
+        }),
+        output_schema: Some(json!({
+            "type": "object",
+            "required": ["team_id", "status", "goal", "topology", "leadProfileId", "memberProfileIds", "sharedMemoryPolicy", "maxTurnsPerGoal"],
+            "properties": {
+                "team_id": { "type": "string" },
+                "status": { "type": "string" },
+                "goal": { "type": "string" },
+                "topology": { "type": "string" },
+                "leadProfileId": { "type": "string" },
+                "memberProfileIds": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "sharedMemoryPolicy": { "type": "string" },
+                "maxTurnsPerGoal": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+        })),
+        dynamic_schema: false,
+        properties: ToolProperties {
+            is_concurrency_safe: false,
+            is_read_only: false,
+            is_destructive: false,
+            long_running: None,
+            defer_policy: harness_contracts::DeferPolicy::AlwaysLoad,
+        },
+        trust_level: harness_contracts::TrustLevel::AdminTrusted,
+        required_capabilities: vec![ToolCapability::Custom(
+            harness_contracts::AGENT_TEAM_STARTER_CAPABILITY.to_owned(),
+        )],
+        budget: harness_contracts::ResultBudget {
+            metric: harness_contracts::BudgetMetric::Chars,
+            limit: 4_000,
+            on_overflow: harness_contracts::OverflowAction::Offload,
+            preview_head_chars: 1_000,
+            preview_tail_chars: 1_000,
+        },
+        provider_restriction: harness_contracts::ProviderRestriction::All,
+        origin: ToolOrigin::Builtin,
+        search_hint: Some("start coordinated agent team".to_owned()),
+        service_binding: None,
+        metadata: Default::default(),
     }
 }
 

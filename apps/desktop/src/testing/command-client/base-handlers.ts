@@ -12,7 +12,9 @@ type BaseCommandKeys =
   | 'getRuntimeExecutionStatus'
   | 'listRuntimeTools'
   | 'resetRuntimeTools'
+  | 'resetRuntimeToolConfig'
   | 'setRuntimeToolEnabled'
+  | 'updateRuntimeToolConfig'
 
 export function createBaseCommandHandlers(
   state: TestCommandClientState,
@@ -48,6 +50,43 @@ export function createBaseCommandHandlers(
         ...cloneResponse(state.options.runtimeTools ?? fixtureRuntimeTools),
         customized: false,
         generation: state.runtimeTools.generation + 1,
+      }
+      return cloneResponse(state.runtimeTools)
+    },
+    async updateRuntimeToolConfig(request) {
+      await wait(state.options.delayMs)
+      state.runtimeTools = {
+        ...state.runtimeTools,
+        customized: true,
+        generation: state.runtimeTools.generation + 1,
+        tools: state.runtimeTools.tools.map((tool) =>
+          tool.name === request.name
+            ? {
+                ...tool,
+                configurationCustomized: true,
+                parameters: request.parameters,
+                timeoutMs: request.timeoutMs,
+              }
+            : tool,
+        ),
+      }
+      return cloneResponse(state.runtimeTools)
+    },
+    async resetRuntimeToolConfig(request) {
+      await wait(state.options.delayMs)
+      state.runtimeTools = {
+        ...state.runtimeTools,
+        generation: state.runtimeTools.generation + 1,
+        tools: state.runtimeTools.tools.map((tool) =>
+          tool.name === request.name
+            ? {
+                ...tool,
+                configurationCustomized: false,
+                parameters: tool.defaultParameters,
+                timeoutMs: tool.defaultTimeoutMs,
+              }
+            : tool,
+        ),
       }
       return cloneResponse(state.runtimeTools)
     },

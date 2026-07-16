@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use futures::stream;
 use harness_contracts::{
-    DeferPolicy, ProviderRestriction, ToolActionPlan, ToolDescriptor, ToolError,
-    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
+    DeferPolicy, ProviderRestriction, ToolActionPlan, ToolConfigurationDescriptor, ToolDescriptor,
+    ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolResult, TrustLevel,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -35,6 +35,33 @@ fn rejects_non_canonical_tool_names() {
             descriptor: descriptor("mcp__server__tool"),
         }))
         .expect("canonical MCP tool name should stay valid");
+}
+
+#[test]
+fn rejects_configuration_defaults_that_do_not_match_the_declared_schema() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .build()
+        .unwrap();
+    let mut invalid = descriptor("configurable");
+    invalid.metadata.configuration = Some(ToolConfigurationDescriptor {
+        schema: json!({
+            "type": "object",
+            "required": ["limit"],
+            "properties": { "limit": { "type": "integer", "minimum": 1 } },
+            "additionalProperties": false
+        }),
+        default_parameters: json!({ "limit": 0 }),
+        default_timeout_ms: None,
+    });
+
+    let error = registry
+        .register(Box::new(TestTool {
+            descriptor: invalid,
+        }))
+        .expect_err("invalid configuration defaults must be rejected");
+
+    assert!(matches!(error, RegistrationError::InvalidDescriptor(_)));
 }
 
 struct TestTool {

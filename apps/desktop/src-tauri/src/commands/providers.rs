@@ -1341,9 +1341,10 @@ pub fn set_execution_settings_with_store(
     store: &DesktopExecutionSettingsStore,
     capabilities: Option<&harness_contracts::AgentCapabilities>,
 ) -> Result<SetExecutionSettingsResponse, CommandErrorPayload> {
-    let requested_record = harness_contracts::ExecutionDefaultsRecord {
+    let mut requested_record = harness_contracts::ExecutionDefaultsRecord {
         permission_mode: request.permission_mode,
         tool_profile: request.tool_profile.clone(),
+        tool_settings: Default::default(),
         context_compression_trigger_ratio: request.context_compression_trigger_ratio,
         subagents_enabled: request.subagents_enabled,
         agent_teams_enabled: request.agent_teams_enabled,
@@ -1363,6 +1364,7 @@ pub fn set_execution_settings_with_store(
             "auto permission mode is unavailable in this desktop build".to_owned(),
         ));
     }
+    requested_record.tool_settings = store.load_record()?.tool_settings;
     let record = requested_record;
     store.save_record(&record, capabilities)?;
     let agent_capabilities = if store.is_global_only() {
@@ -1404,6 +1406,7 @@ pub fn resolve_effective_execution_settings(
         let global_defaults = global.load_execution_defaults()?;
         effective.permission_mode = global_defaults.permission_mode;
         effective.tool_profile = global_defaults.tool_profile;
+        effective.tool_settings = global_defaults.tool_settings;
         effective.context_compression_trigger_ratio =
             global_defaults.context_compression_trigger_ratio;
         effective.subagents_enabled = global_defaults.subagents_enabled;
@@ -1432,6 +1435,9 @@ fn apply_execution_overrides(
     if let Some(tool_profile) = &overrides.tool_profile {
         effective.tool_profile = tool_profile.clone();
     }
+    effective
+        .tool_settings
+        .extend(overrides.tool_settings.clone());
     if let Some(context_compression_trigger_ratio) = overrides.context_compression_trigger_ratio {
         effective.context_compression_trigger_ratio = context_compression_trigger_ratio;
     }
@@ -4204,6 +4210,7 @@ mod execution_settings_tests {
         harness_contracts::ExecutionDefaultsRecord {
             permission_mode,
             tool_profile,
+            tool_settings: Default::default(),
             context_compression_trigger_ratio: 0.8,
             subagents_enabled: false,
             agent_teams_enabled: false,

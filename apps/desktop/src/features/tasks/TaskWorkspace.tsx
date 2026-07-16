@@ -342,7 +342,7 @@ export function TaskWorkspaceView({
                 {tTasks(taskStateKey(liveSnapshot.projection.state))}
               </p>
             </div>
-            <span className="mt-1 shrink-0 text-muted-foreground text-xs">
+            <span className="task-workspace-header-status mt-1 shrink-0 text-muted-foreground text-xs">
               {tTasks(connectionStateKey(connectionState))}
             </span>
           </header>
@@ -413,6 +413,7 @@ export function TaskWorkspaceView({
           onOpen={(target, trigger) => openTarget(target, trigger)}
           projection={liveSnapshot.projection}
           timeline={items}
+          mobile={workspaceLayoutMode === 'fullscreen'}
         />
         {showWorkbench && client?.loadTaskEvents && client.readBlob ? (
           <TaskWorkbench

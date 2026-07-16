@@ -17,12 +17,13 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   pickProjectDirectory: vi.fn(),
   selectedTaskId: undefined as string | undefined,
+  pathname: '/',
 }))
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mocks.navigate,
   useRouterState: ({ select }: { select: (state: unknown) => unknown }) =>
-    select({ location: { search: { taskId: mocks.selectedTaskId } } }),
+    select({ location: { pathname: mocks.pathname, search: { taskId: mocks.selectedTaskId } } }),
 }))
 
 vi.mock('@/shared/tauri/react', () => ({
@@ -39,6 +40,7 @@ describe('SidebarNav task navigation', () => {
     mocks.navigate.mockReset().mockResolvedValue(undefined)
     mocks.pickProjectDirectory.mockReset().mockResolvedValue(null)
     mocks.selectedTaskId = undefined
+    mocks.pathname = '/'
     mocks.commandClient = commandClient()
     mocks.daemonClient = daemonClient()
     uiStore.getState().setSidebarSectionExpanded('pinned', true)
@@ -79,6 +81,17 @@ describe('SidebarNav task navigation', () => {
       }),
     )
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' })
+  })
+
+  it('opens and marks the scheduled task page from the fixed sidebar action', async () => {
+    mocks.pathname = '/scheduled-tasks'
+
+    renderSidebar()
+
+    const action = await screen.findByRole('button', { name: 'Open scheduled tasks' })
+    expect(action).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(action)
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/scheduled-tasks' })
   })
 
   it('creates a conversation inside its project workspace', async () => {
@@ -204,7 +217,7 @@ describe('SidebarNav task navigation', () => {
 
     onFrame?.({
       message: { afterOffset: 1, events: [], gap: false, latestOffset: 2, type: 'event_batch' },
-      protocolVersion: 5,
+      protocolVersion: 6,
     })
 
     await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2))
@@ -284,5 +297,5 @@ function acceptedMessage() {
 }
 
 function acceptedFrame() {
-  return { message: acceptedMessage(), protocolVersion: 5 }
+  return { message: acceptedMessage(), protocolVersion: 6 }
 }

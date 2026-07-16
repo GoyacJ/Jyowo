@@ -129,6 +129,9 @@ async fn list_runtime_tools_returns_the_complete_settings_catalog() {
         "skills_invoke",
         "MiniMaxTextToImage",
         "SeedanceTextToVideo",
+        "agent",
+        "agent_team",
+        "background_agent",
     ] {
         assert!(by_name.contains_key(name), "{name} should be exposed");
     }
@@ -202,6 +205,113 @@ async fn runtime_tool_switch_persists_a_project_profile_and_reset_restores_inher
             .unwrap()
             .configured_enabled
     );
+}
+
+#[tokio::test]
+async fn runtime_tool_configuration_persists_and_can_reset_to_descriptor_defaults() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("runtime-tool-configuration");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace.clone())
+        .await
+        .expect("runtime state should initialize");
+
+    let updated = update_runtime_tool_config_with_runtime_state(
+        &state,
+        UpdateRuntimeToolConfigRequest {
+            name: "WebFetch".to_owned(),
+            timeout_ms: 45_000,
+            parameters: json!({ "defaultMaxBytes": 128_000 }),
+        },
+    )
+    .expect("tool configuration should update");
+    let web_fetch = updated
+        .tools
+        .iter()
+        .find(|tool| tool.name == "WebFetch")
+        .unwrap();
+    assert_eq!(web_fetch.default_timeout_ms, 30_000);
+    assert_eq!(web_fetch.timeout_ms, 45_000);
+    assert_eq!(
+        web_fetch.default_parameters,
+        json!({ "defaultMaxBytes": 64_000 })
+    );
+    assert_eq!(web_fetch.parameters, json!({ "defaultMaxBytes": 128_000 }));
+    assert!(web_fetch.configuration_schema.is_some());
+    assert!(web_fetch.configuration_customized);
+    assert!(updated.customized);
+
+    let reloaded = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should reload");
+    let persisted = list_runtime_tools_with_runtime_state(&reloaded).expect("tools should list");
+    let web_fetch = persisted
+        .tools
+        .iter()
+        .find(|tool| tool.name == "WebFetch")
+        .unwrap();
+    assert_eq!(web_fetch.timeout_ms, 45_000);
+    assert_eq!(web_fetch.parameters["defaultMaxBytes"], 128_000);
+
+    let reset = reset_runtime_tool_config_with_runtime_state(
+        &reloaded,
+        ResetRuntimeToolConfigRequest {
+            name: "WebFetch".to_owned(),
+        },
+    )
+    .expect("tool configuration should reset");
+    let web_fetch = reset
+        .tools
+        .iter()
+        .find(|tool| tool.name == "WebFetch")
+        .unwrap();
+    assert_eq!(web_fetch.timeout_ms, 30_000);
+    assert_eq!(web_fetch.parameters, json!({ "defaultMaxBytes": 64_000 }));
+    assert!(!web_fetch.configuration_customized);
+    assert!(!reset.customized);
+}
+
+#[tokio::test]
+async fn runtime_tool_configuration_rejects_invalid_parameters() {
+    let _home_lock = HOME_ENV_LOCK.lock().unwrap();
+    let workspace = unique_workspace("runtime-tool-configuration-invalid");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let state = runtime_state_for_workspace(workspace)
+        .await
+        .expect("runtime state should initialize");
+
+    let schema_error = update_runtime_tool_config_with_runtime_state(
+        &state,
+        UpdateRuntimeToolConfigRequest {
+            name: "WebFetch".to_owned(),
+            timeout_ms: 45_000,
+            parameters: json!({ "defaultMaxBytes": 0 }),
+        },
+    )
+    .expect_err("schema-invalid parameters must be rejected");
+    assert_eq!(schema_error.code, "INVALID_PAYLOAD");
+
+    let shape_error = update_runtime_tool_config_with_runtime_state(
+        &state,
+        UpdateRuntimeToolConfigRequest {
+            name: "WebFetch".to_owned(),
+            timeout_ms: 45_000,
+            parameters: json!("invalid"),
+        },
+    )
+    .expect_err("non-object parameters must be rejected");
+    assert_eq!(shape_error.code, "INVALID_PAYLOAD");
+
+    let undeclared_error = update_runtime_tool_config_with_runtime_state(
+        &state,
+        UpdateRuntimeToolConfigRequest {
+            name: "FileRead".to_owned(),
+            timeout_ms: 45_000,
+            parameters: json!({ "unexpected": true }),
+        },
+    )
+    .expect_err("parameters for a tool without a schema must be rejected");
+    assert_eq!(undeclared_error.code, "INVALID_PAYLOAD");
 }
 
 #[tokio::test]

@@ -176,6 +176,7 @@ fn git_descriptor(name: &str, description: &str) -> ToolDescriptor {
         effects: vec!["reads_git".to_owned()],
         modalities: vec!["text".to_owned()],
         integration_source: ToolIntegrationSource::Builtin,
+        configuration: None,
     };
     descriptor
 }

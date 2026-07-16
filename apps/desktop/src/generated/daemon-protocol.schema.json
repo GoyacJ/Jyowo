@@ -76,136 +76,6 @@
         "memory_id"
       ]
     },
-    "AutomationRunRecord": {
-      "type": "object",
-      "properties": {
-        "automationId": {
-          "type": "string"
-        },
-        "completedAt": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
-        },
-        "id": {
-          "type": "string"
-        },
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "runId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "startedAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "status": {
-          "$ref": "#/$defs/AutomationRunStatus"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "automationId",
-        "id",
-        "startedAt",
-        "status"
-      ]
-    },
-    "AutomationRunStatus": {
-      "type": "string",
-      "enum": [
-        "started",
-        "rejected",
-        "failed"
-      ]
-    },
-    "AutomationSchedule": {
-      "type": "object",
-      "properties": {
-        "intervalMinutes": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "intervalMinutes"
-      ]
-    },
-    "AutomationSpec": {
-      "type": "object",
-      "properties": {
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": false
-        },
-        "id": {
-          "type": "string"
-        },
-        "missedRunPolicy": {
-          "$ref": "#/$defs/MissedRunPolicy",
-          "default": "skip"
-        },
-        "permissionMode": {
-          "$ref": "#/$defs/PermissionMode"
-        },
-        "prompt": {
-          "type": "string"
-        },
-        "sandboxMode": {
-          "$ref": "#/$defs/SandboxMode"
-        },
-        "schedule": {
-          "$ref": "#/$defs/AutomationSchedule"
-        },
-        "toolProfile": {
-          "$ref": "#/$defs/ToolProfile"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "workspaceAccess": {
-          "$ref": "#/$defs/WorkspaceAccess"
-        },
-        "workspaceScope": {
-          "$ref": "#/$defs/AutomationWorkspaceScope"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "prompt",
-        "schedule",
-        "toolProfile",
-        "permissionMode",
-        "sandboxMode",
-        "workspaceScope",
-        "workspaceAccess",
-        "createdAt",
-        "updatedAt"
-      ]
-    },
-    "AutomationWorkspaceScope": {
-      "type": "string",
-      "enum": [
-        "current_workspace"
-      ]
-    },
     "BrowserCommand": {
       "oneOf": [
         {
@@ -1253,13 +1123,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "list_automations"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "list_scheduled_tasks"
             }
           },
           "additionalProperties": false,
@@ -1270,103 +1134,79 @@
         {
           "type": "object",
           "properties": {
-            "automation": {
-              "$ref": "#/$defs/AutomationSpec"
+            "scheduledTask": {
+              "$ref": "#/$defs/ScheduledTaskSpec"
             },
             "type": {
               "type": "string",
-              "const": "save_automation"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "save_scheduled_task"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automation"
+            "scheduledTask"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automationId": {
-              "type": "string"
-            },
             "enabled": {
               "type": "boolean"
             },
+            "scheduledTaskId": {
+              "type": "string"
+            },
             "type": {
               "type": "string",
-              "const": "set_automation_enabled"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "set_scheduled_task_enabled"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automationId",
+            "scheduledTaskId",
             "enabled"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automationId": {
+            "scheduledTaskId": {
               "type": "string"
             },
             "type": {
               "type": "string",
-              "const": "delete_automation"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "delete_scheduled_task"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automationId"
+            "scheduledTaskId"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automationId": {
+            "scheduledTaskId": {
               "type": "string"
             },
             "type": {
               "type": "string",
-              "const": "run_automation_now"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "run_scheduled_task_now"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automationId"
+            "scheduledTaskId"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automationId": {
+            "scheduledTaskId": {
               "type": [
                 "string",
                 "null"
@@ -1374,13 +1214,7 @@
             },
             "type": {
               "type": "string",
-              "const": "list_automation_runs"
-            },
-            "workspaceRoot": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "const": "list_scheduled_task_runs"
             }
           },
           "additionalProperties": false,
@@ -2208,15 +2042,6 @@
       },
       "required": [
         "traces"
-      ]
-    },
-    "LocalIsolationTag": {
-      "type": "string",
-      "enum": [
-        "none",
-        "bubblewrap",
-        "seatbelt",
-        "job_object"
       ]
     },
     "McpServerId": {
@@ -3988,28 +3813,124 @@
         "longRunning"
       ]
     },
-    "SandboxMode": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "none",
-            "container",
-            "remote"
+    "ScheduledTaskRunRecord": {
+      "type": "object",
+      "properties": {
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
           ]
         },
-        {
-          "type": "object",
-          "properties": {
-            "os_level": {
-              "$ref": "#/$defs/LocalIsolationTag"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "os_level"
+        "scheduledTaskId": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "$ref": "#/$defs/ScheduledTaskRunStatus"
+        },
+        "taskId": {
+          "type": [
+            "string",
+            "null"
           ]
         }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scheduledTaskId",
+        "id",
+        "startedAt",
+        "status"
+      ]
+    },
+    "ScheduledTaskRunStatus": {
+      "type": "string",
+      "enum": [
+        "started",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "rejected"
+      ]
+    },
+    "ScheduledTaskSchedule": {
+      "type": "object",
+      "properties": {
+        "intervalMinutes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "intervalMinutes"
+      ]
+    },
+    "ScheduledTaskSpec": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "type": "string"
+        },
+        "missedRunPolicy": {
+          "$ref": "#/$defs/MissedRunPolicy",
+          "default": "skip"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/ScheduledTaskSchedule"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "workspaceRoot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "prompt",
+        "schedule",
+        "permissionMode",
+        "createdAt",
+        "updatedAt"
       ]
     },
     "ServerFrame": {
@@ -4665,83 +4586,83 @@
         {
           "type": "object",
           "properties": {
-            "automations": {
+            "scheduledTasks": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/AutomationSpec"
+                "$ref": "#/$defs/ScheduledTaskSpec"
               }
             },
             "type": {
               "type": "string",
-              "const": "automations"
+              "const": "scheduled_tasks"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automations"
+            "scheduledTasks"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automation": {
-              "$ref": "#/$defs/AutomationSpec"
+            "scheduledTask": {
+              "$ref": "#/$defs/ScheduledTaskSpec"
             },
             "type": {
               "type": "string",
-              "const": "automation_saved"
+              "const": "scheduled_task_saved"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automation"
+            "scheduledTask"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automation": {
-              "$ref": "#/$defs/AutomationSpec"
+            "scheduledTask": {
+              "$ref": "#/$defs/ScheduledTaskSpec"
             },
             "type": {
               "type": "string",
-              "const": "automation_enabled"
+              "const": "scheduled_task_enabled"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automation"
+            "scheduledTask"
           ]
         },
         {
           "type": "object",
           "properties": {
-            "automationId": {
+            "scheduledTaskId": {
               "type": "string"
             },
             "type": {
               "type": "string",
-              "const": "automation_deleted"
+              "const": "scheduled_task_deleted"
             }
           },
           "additionalProperties": false,
           "required": [
             "type",
-            "automationId"
+            "scheduledTaskId"
           ]
         },
         {
           "type": "object",
           "properties": {
             "run": {
-              "$ref": "#/$defs/AutomationRunRecord"
+              "$ref": "#/$defs/ScheduledTaskRunRecord"
             },
             "type": {
               "type": "string",
-              "const": "automation_run"
+              "const": "scheduled_task_run"
             }
           },
           "additionalProperties": false,
@@ -4756,12 +4677,12 @@
             "runs": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/AutomationRunRecord"
+                "$ref": "#/$defs/ScheduledTaskRunRecord"
               }
             },
             "type": {
               "type": "string",
-              "const": "automation_runs"
+              "const": "scheduled_task_runs"
             }
           },
           "additionalProperties": false,
@@ -5645,111 +5566,6 @@
         "failed"
       ]
     },
-    "ToolGroup": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "file_system",
-            "search",
-            "network",
-            "shell",
-            "git",
-            "worktree",
-            "session",
-            "artifact",
-            "browser",
-            "computer",
-            "image",
-            "notebook",
-            "lsp",
-            "automation",
-            "workflow",
-            "agent",
-            "coordinator",
-            "memory",
-            "clarification",
-            "meta"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "custom": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "custom"
-          ]
-        }
-      ]
-    },
-    "ToolProfile": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "minimal",
-            "coding",
-            "full"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "custom": {
-              "type": "object",
-              "properties": {
-                "allowlist": {
-                  "type": "array",
-                  "default": [],
-                  "items": {
-                    "type": "string"
-                  },
-                  "uniqueItems": true
-                },
-                "denylist": {
-                  "type": "array",
-                  "default": [],
-                  "items": {
-                    "type": "string"
-                  },
-                  "uniqueItems": true
-                },
-                "group_allowlist": {
-                  "type": "array",
-                  "default": [],
-                  "items": {
-                    "$ref": "#/$defs/ToolGroup"
-                  }
-                },
-                "group_denylist": {
-                  "type": "array",
-                  "default": [],
-                  "items": {
-                    "$ref": "#/$defs/ToolGroup"
-                  }
-                },
-                "mcp_included": {
-                  "type": "boolean",
-                  "default": false
-                },
-                "plugin_included": {
-                  "type": "boolean",
-                  "default": false
-                }
-              }
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "custom"
-          ]
-        }
-      ]
-    },
     "TypedUlid": {
       "type": "string",
       "format": "ulid"
@@ -5804,40 +5620,6 @@
       },
       "required": [
         "settings"
-      ]
-    },
-    "WorkspaceAccess": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "none",
-            "read_only"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "read_write": {
-              "type": "object",
-              "properties": {
-                "allowed_writable_subpaths": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "allowed_writable_subpaths"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "read_write"
-          ]
-        }
       ]
     },
     "WorkspaceMode": {

@@ -6,7 +6,6 @@
 #![forbid(unsafe_code)]
 
 pub mod announcement;
-pub mod automation;
 pub mod blob;
 pub mod capability;
 pub mod conversation;
@@ -27,12 +26,12 @@ pub mod plugin_product;
 pub mod process_monitor;
 pub mod redactor;
 pub mod runtime_execution_status;
+pub mod scheduled_task;
 pub mod schema_export;
 pub mod tool;
 pub mod tool_profile;
 
 pub use announcement::*;
-pub use automation::*;
 pub use blob::*;
 pub use capability::*;
 pub use conversation::*;
@@ -53,6 +52,7 @@ pub use plugin_product::*;
 pub use process_monitor::*;
 pub use redactor::*;
 pub use runtime_execution_status::*;
+pub use scheduled_task::*;
 pub use schema_export::*;
 pub use tool::*;
 pub use tool_profile::*;

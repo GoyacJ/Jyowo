@@ -5,11 +5,10 @@ import { useTranslation } from 'react-i18next'
 import type { ArtifactViewProps } from '../resource'
 
 export function TextArtifactView({ artifact, resource, surface }: ArtifactViewProps) {
-  const { t } = useTranslation('tasks')
   const text = resource.text ?? artifact.preview
   if (!text) return <EmptyPreview />
   return (
-    <section aria-label={t('workbench.artifact.textPreview', { title: artifact.title })}>
+    <div>
       <pre
         className={`overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 ${
           surface === 'workbench' ? 'min-h-full p-4' : 'max-h-72 rounded-md bg-muted/35 p-3'
@@ -17,7 +16,7 @@ export function TextArtifactView({ artifact, resource, surface }: ArtifactViewPr
       >
         {text}
       </pre>
-    </section>
+    </div>
   )
 }
 

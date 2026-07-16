@@ -465,15 +465,54 @@ fn trust_rank(trust: TrustLevel) -> u8 {
 }
 
 fn validate_descriptor(descriptor: &ToolDescriptor) -> Result<(), RegistrationError> {
+    let mut valid_name = false;
     if let Some((server, tool)) = parse_canonical_mcp_tool_name(&descriptor.name) {
         let canonical = canonical_mcp_tool_name(server, tool)
             .map_err(|error| RegistrationError::InvalidDescriptor(error.to_string()))?;
         if canonical == descriptor.name {
-            return Ok(());
+            valid_name = true;
         }
     }
-    validate_tool_name(&descriptor.name)
-        .map_err(|error| RegistrationError::InvalidDescriptor(error.to_string()))?;
+    if !valid_name {
+        validate_tool_name(&descriptor.name)
+            .map_err(|error| RegistrationError::InvalidDescriptor(error.to_string()))?;
+    }
+    if let Some(configuration) = descriptor.metadata.configuration.as_ref() {
+        if !configuration.schema.is_object() {
+            return Err(RegistrationError::InvalidDescriptor(
+                "tool configuration schema must be a JSON object".to_owned(),
+            ));
+        }
+        if !configuration.default_parameters.is_object() {
+            return Err(RegistrationError::InvalidDescriptor(
+                "tool configuration defaults must be a JSON object".to_owned(),
+            ));
+        }
+        if configuration.default_timeout_ms.is_some_and(|timeout_ms| {
+            !(crate::MIN_TOOL_TIMEOUT_MS..=crate::MAX_TOOL_TIMEOUT_MS).contains(&timeout_ms)
+        }) {
+            return Err(RegistrationError::InvalidDescriptor(format!(
+                "tool default timeout must be between {} and {} milliseconds",
+                crate::MIN_TOOL_TIMEOUT_MS,
+                crate::MAX_TOOL_TIMEOUT_MS
+            )));
+        }
+        let validator = jsonschema::validator_for(&configuration.schema).map_err(|error| {
+            RegistrationError::InvalidDescriptor(format!(
+                "tool configuration schema is invalid: {error}"
+            ))
+        })?;
+        if !validator.is_valid(&configuration.default_parameters) {
+            let message = validator
+                .iter_errors(&configuration.default_parameters)
+                .next()
+                .map_or_else(
+                    || "tool configuration defaults do not match the schema".to_owned(),
+                    |error| error.to_string(),
+                );
+            return Err(RegistrationError::InvalidDescriptor(message));
+        }
+    }
     Ok(())
 }
 

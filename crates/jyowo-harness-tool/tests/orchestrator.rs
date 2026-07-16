@@ -1,5 +1,6 @@
 #![cfg(feature = "builtin-toolset")]
 
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -17,15 +18,16 @@ use harness_contracts::{
     ResourceLimits, SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary,
     SandboxScope, Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
     ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolPoolChangeSource,
-    ToolProperties, ToolResult, ToolUseHeartbeatEvent, ToolUseId, TrustLevel, UiSafeText,
-    WorkspaceAccess,
+    ToolProperties, ToolResult, ToolRuntimeSettings, ToolUseHeartbeatEvent, ToolUseId, TrustLevel,
+    UiSafeText, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
     canonical_action_plan_hash, default_result_budget, AuthorizedTicketSummary, AuthorizedToolCall,
     AuthorizedToolInput, BuiltinToolset, InterruptToken, NoopToolEventEmitter, OrchestratorContext,
     Tool, ToolContext, ToolEvent, ToolEventEmitter, ToolOrchestrator, ToolPool, ToolPoolFilter,
-    ToolPoolModelProfile, ToolRegistry, ToolSearchMode, ValidationError,
+    ToolPoolModelProfile, ToolRegistry, ToolRuntimeSettingsRegistry, ToolSearchMode,
+    ValidationError, TOOL_RUNTIME_SETTINGS_CAPABILITY,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -313,6 +315,37 @@ async fn progress_final_error_unknown_interrupted_and_timeout_paths_are_reported
         )
         .await;
     assert!(matches!(results[0].result, Err(ToolError::Timeout)));
+}
+
+#[tokio::test]
+async fn configured_timeout_overrides_the_descriptor_hard_timeout() {
+    let registry = ToolRegistry::builder()
+        .with_builtin_toolset(BuiltinToolset::Empty)
+        .with_tool(Box::new(test_tool("slow", true, Behavior::Slow)))
+        .build()
+        .unwrap();
+    let mut capabilities = CapabilityRegistry::default();
+    capabilities.install(
+        ToolCapability::Custom(TOOL_RUNTIME_SETTINGS_CAPABILITY.to_owned()),
+        Arc::new(ToolRuntimeSettingsRegistry::new(BTreeMap::from([(
+            "slow".to_owned(),
+            ToolRuntimeSettings {
+                timeout_ms: 1_000,
+                parameters: json!({}),
+            },
+        )]))),
+    );
+    let mut ctx = orchestrator_ctx(pool(&registry).await, vec![Decision::AllowOnce]);
+    ctx.tool_context.cap_registry = Arc::new(capabilities);
+
+    let results = ToolOrchestrator::default()
+        .dispatch(vec![call("slow")], ctx)
+        .await;
+
+    assert!(matches!(
+        results[0].result,
+        Ok(ToolResult::Text(ref text)) if text == "late"
+    ));
 }
 
 #[tokio::test]

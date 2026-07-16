@@ -49,7 +49,7 @@ pub enum ToolIntegrationSource {
     External,
 }
 
-#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDescriptorMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -68,6 +68,8 @@ pub struct ToolDescriptorMetadata {
     pub modalities: Vec<String>,
     #[serde(default)]
     pub integration_source: ToolIntegrationSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ToolConfigurationDescriptor>,
 }
 
 impl ToolDescriptorMetadata {
@@ -80,7 +82,35 @@ impl ToolDescriptorMetadata {
             && self.effects.is_empty()
             && self.modalities.is_empty()
             && self.integration_source == ToolIntegrationSource::Builtin
+            && self.configuration.is_none()
     }
+}
+
+/// Schema and defaults for settings that belong to the tool implementation,
+/// rather than to a single model tool call. Parameters are persisted as plain
+/// JSON and must not contain secrets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ToolConfigurationDescriptor {
+    pub schema: Value,
+    #[serde(default = "empty_json_object")]
+    pub default_parameters: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+}
+
+/// Persisted per-tool execution settings. Missing entries inherit descriptor
+/// defaults, so newly registered tools require no config migration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ToolRuntimeSettings {
+    pub timeout_ms: u64,
+    #[serde(default = "empty_json_object")]
+    pub parameters: Value,
+}
+
+fn empty_json_object() -> Value {
+    Value::Object(Default::default())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

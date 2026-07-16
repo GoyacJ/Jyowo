@@ -91,7 +91,7 @@ function renderPanel(request: Pick<DaemonClient, 'request'>['request']) {
 }
 
 function frame(message: ServerMessage): ServerFrame {
-  return { message, protocolVersion: 5, requestId: 'browser-request' }
+  return { message, protocolVersion: 6, requestId: 'browser-request' }
 }
 
 function session(

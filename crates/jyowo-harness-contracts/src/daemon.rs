@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
-    AutomationDeletedResponse, AutomationEnabledResponse, AutomationRunResponse,
-    AutomationRunsResponse, AutomationSavedResponse, AutomationSpec, AutomationsResponse, BlobId,
+    ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse, BlobId,
     CheckpointId, ClientId, CommandId, ConversationContextReference, EventId,
     GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
     GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
@@ -16,12 +14,14 @@ use crate::{
     ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
     MemoryId, MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode,
     QueueItemId, RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId,
-    RunSegmentId, SessionId, SkillId, SkillSourceKind, SubagentId, TaskId,
-    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
-    UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
+    RunSegmentId, ScheduledTaskDeletedResponse, ScheduledTaskEnabledResponse,
+    ScheduledTaskRunResponse, ScheduledTaskRunsResponse, ScheduledTaskSavedResponse,
+    ScheduledTaskSpec, ScheduledTasksResponse, SessionId, SkillId, SkillSourceKind, SubagentId,
+    TaskId, UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
+    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -163,29 +163,22 @@ pub enum ClientRequest {
         workspace_root: Option<String>,
         request: UpdateThreadMemorySettingsRequest,
     },
-    ListAutomations {
-        workspace_root: Option<String>,
+    ListScheduledTasks,
+    SaveScheduledTask {
+        scheduled_task: ScheduledTaskSpec,
     },
-    SaveAutomation {
-        workspace_root: Option<String>,
-        automation: AutomationSpec,
-    },
-    SetAutomationEnabled {
-        workspace_root: Option<String>,
-        automation_id: String,
+    SetScheduledTaskEnabled {
+        scheduled_task_id: String,
         enabled: bool,
     },
-    DeleteAutomation {
-        workspace_root: Option<String>,
-        automation_id: String,
+    DeleteScheduledTask {
+        scheduled_task_id: String,
     },
-    RunAutomationNow {
-        workspace_root: Option<String>,
-        automation_id: String,
+    RunScheduledTaskNow {
+        scheduled_task_id: String,
     },
-    ListAutomationRuns {
-        workspace_root: Option<String>,
-        automation_id: Option<String>,
+    ListScheduledTaskRuns {
+        scheduled_task_id: Option<String>,
     },
     Browser {
         task_id: TaskId,
@@ -238,12 +231,12 @@ pub enum ServerMessage {
     MemorySettingsUpdated(UpdateMemorySettingsResponse),
     ThreadMemorySettings(GetThreadMemorySettingsResponse),
     ThreadMemorySettingsUpdated(UpdateThreadMemorySettingsResponse),
-    Automations(AutomationsResponse),
-    AutomationSaved(AutomationSavedResponse),
-    AutomationEnabled(AutomationEnabledResponse),
-    AutomationDeleted(AutomationDeletedResponse),
-    AutomationRun(AutomationRunResponse),
-    AutomationRuns(AutomationRunsResponse),
+    ScheduledTasks(ScheduledTasksResponse),
+    ScheduledTaskSaved(ScheduledTaskSavedResponse),
+    ScheduledTaskEnabled(ScheduledTaskEnabledResponse),
+    ScheduledTaskDeleted(ScheduledTaskDeletedResponse),
+    ScheduledTaskRun(ScheduledTaskRunResponse),
+    ScheduledTaskRuns(ScheduledTaskRunsResponse),
     BrowserSession(BrowserSessionState),
     EventBatch(TaskEventBatch),
     Blob(BlobPayload),

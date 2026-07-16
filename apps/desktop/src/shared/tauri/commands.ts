@@ -215,6 +215,12 @@ const runtimeToolSummarySchema = z
     configuredEnabled: z.boolean(),
     available: z.boolean(),
     unavailableReason: z.string().nullable(),
+    defaultTimeoutMs: z.number().int().positive(),
+    timeoutMs: z.number().int().positive(),
+    configurationSchema: z.record(z.string(), z.unknown()).nullable(),
+    defaultParameters: z.record(z.string(), z.unknown()),
+    parameters: z.record(z.string(), z.unknown()),
+    configurationCustomized: z.boolean(),
   })
   .strict()
 const listRuntimeToolsResponseSchema = z
@@ -229,6 +235,18 @@ const setRuntimeToolEnabledRequestSchema = z
   .object({
     name: z.string().min(1),
     enabled: z.boolean(),
+  })
+  .strict()
+const updateRuntimeToolConfigRequestSchema = z
+  .object({
+    name: z.string().min(1),
+    timeoutMs: z.number().int().min(1_000).max(86_400_000),
+    parameters: z.record(z.string(), z.unknown()),
+  })
+  .strict()
+const resetRuntimeToolConfigRequestSchema = z
+  .object({
+    name: z.string().min(1),
   })
   .strict()
 
@@ -2487,6 +2505,8 @@ export type RuntimeExecutionStatus = z.infer<typeof runtimeExecutionStatusSchema
 export type RuntimeToolSummary = z.infer<typeof runtimeToolSummarySchema>
 export type ListRuntimeToolsResponse = z.infer<typeof listRuntimeToolsResponseSchema>
 export type SetRuntimeToolEnabledRequest = z.infer<typeof setRuntimeToolEnabledRequestSchema>
+export type UpdateRuntimeToolConfigRequest = z.infer<typeof updateRuntimeToolConfigRequestSchema>
+export type ResetRuntimeToolConfigRequest = z.infer<typeof resetRuntimeToolConfigRequestSchema>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>
 export type DefaultWorkspaceResponse = z.infer<typeof defaultWorkspaceResponseSchema>
 export type MoveProjectDirection = z.infer<typeof moveProjectRequestSchema>['direction']
@@ -2653,6 +2673,12 @@ export interface CommandClient {
   listRuntimeTools: () => Promise<ListRuntimeToolsResponse>
   setRuntimeToolEnabled: (
     request: SetRuntimeToolEnabledRequest,
+  ) => Promise<ListRuntimeToolsResponse>
+  updateRuntimeToolConfig: (
+    request: UpdateRuntimeToolConfigRequest,
+  ) => Promise<ListRuntimeToolsResponse>
+  resetRuntimeToolConfig: (
+    request: ResetRuntimeToolConfigRequest,
   ) => Promise<ListRuntimeToolsResponse>
   resetRuntimeTools: () => Promise<ListRuntimeToolsResponse>
   getModelUsageSummary: () => Promise<GetModelUsageSummaryResponse>
@@ -2862,6 +2888,16 @@ export function createInvokeCommandClient(invoke: InvokeCommand = tauriInvoke): 
     async setRuntimeToolEnabled(request) {
       const command = 'set_runtime_tool_enabled'
       const args = parseArgs(command, setRuntimeToolEnabledRequestSchema, request)
+      return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command, args))
+    },
+    async updateRuntimeToolConfig(request) {
+      const command = 'update_runtime_tool_config'
+      const args = parseArgs(command, updateRuntimeToolConfigRequestSchema, request)
+      return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command, args))
+    },
+    async resetRuntimeToolConfig(request) {
+      const command = 'reset_runtime_tool_config'
+      const args = parseArgs(command, resetRuntimeToolConfigRequestSchema, request)
       return parsePayload(command, listRuntimeToolsResponseSchema, await invoke(command, args))
     },
     async resetRuntimeTools() {
@@ -3738,6 +3774,20 @@ export function resetRuntimeTools(
   client: CommandClient = tauriCommandClient,
 ): Promise<ListRuntimeToolsResponse> {
   return client.resetRuntimeTools()
+}
+
+export function updateRuntimeToolConfig(
+  request: UpdateRuntimeToolConfigRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListRuntimeToolsResponse> {
+  return client.updateRuntimeToolConfig(request)
+}
+
+export function resetRuntimeToolConfig(
+  request: ResetRuntimeToolConfigRequest,
+  client: CommandClient = tauriCommandClient,
+): Promise<ListRuntimeToolsResponse> {
+  return client.resetRuntimeToolConfig(request)
 }
 
 export function setExecutionSettings(

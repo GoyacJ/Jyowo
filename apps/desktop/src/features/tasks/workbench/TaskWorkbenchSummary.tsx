@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Bot,
   ChevronDown,
   ChevronUp,
@@ -6,8 +7,11 @@ import {
   FileText,
   FolderGit2,
   ImageIcon,
+  PanelRightOpen,
+  SquareTerminal,
+  X,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type {
@@ -26,11 +30,13 @@ export function TaskWorkbenchSummary({
   onOpen,
   projection,
   timeline,
+  mobile = false,
 }: {
   events: TaskEventEnvelope[]
   onOpen: (target: TaskWorkbenchTarget, trigger: HTMLElement) => void
   projection: TaskProjection
   timeline: TimelineItemProjection[]
+  mobile?: boolean
 }) {
   const { t } = useTranslation('tasks')
   const collapsed = useUiStore((state) => state.taskWorkbenchSummaryCollapsed)
@@ -38,12 +44,105 @@ export function TaskWorkbenchSummary({
   const session = useUiStore((state) => state.taskWorkbenchByTaskId[projection.taskId])
   const entries = taskWorkbenchSummaryItems({
     events,
-    labels: { subagents: t('workbench.summary.item.subagents') },
+    labels: {
+      environment: t('workbench.summary.item.environment'),
+      subagents: t('workbench.summary.item.subagents'),
+    },
     projection,
     timeline,
   })
   const activeTarget = session?.tabs.find((tab) => tab.id === session.activeTabId)?.target
   const groups = groupEntries(entries)
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null)
+  const mobileCloseRef = useRef<HTMLButtonElement>(null)
+  const mobileDialogRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    mobileCloseRef.current?.focus()
+  }, [mobileOpen])
+
+  useEffect(() => {
+    if (!mobile) setMobileOpen(false)
+  }, [mobile])
+
+  function closeMobile(restoreFocus = true) {
+    setMobileOpen(false)
+    if (restoreFocus) queueMicrotask(() => mobileTriggerRef.current?.focus())
+  }
+
+  function openEntry(target: TaskWorkbenchTarget, trigger: HTMLElement) {
+    onOpen(target, trigger)
+    if (mobile) closeMobile(false)
+  }
+
+  if (mobile) {
+    return (
+      <>
+        <button
+          aria-controls="task-workbench-mobile-context"
+          aria-expanded={mobileOpen}
+          aria-hidden={mobileOpen ? true : undefined}
+          aria-label={t('workbench.summary.expand')}
+          className="absolute top-0 right-0 z-30 grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => setMobileOpen(true)}
+          ref={mobileTriggerRef}
+          tabIndex={mobileOpen ? -1 : 0}
+          type="button"
+        >
+          <PanelRightOpen aria-hidden="true" className="size-4" />
+        </button>
+        {mobileOpen ? (
+          <div className="absolute inset-0 z-50 flex justify-end bg-background/55 backdrop-blur-sm">
+            <button
+              aria-hidden="true"
+              className="absolute inset-0 cursor-default"
+              onClick={() => closeMobile()}
+              tabIndex={-1}
+              type="button"
+            />
+            <aside
+              aria-label={t('workbench.summary.label')}
+              aria-modal="true"
+              className="relative flex h-full w-[min(88%,22rem)] min-w-0 flex-col border-border border-l bg-surface-raised shadow-2xl"
+              id="task-workbench-mobile-context"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeMobile()
+                  return
+                }
+                if (event.key === 'Tab') trapFocus(event, mobileDialogRef.current)
+              }}
+              ref={mobileDialogRef}
+              role="dialog"
+            >
+              <header className="flex h-12 shrink-0 items-center justify-between border-border border-b px-3">
+                <h2 className="font-medium text-sm">{t('workbench.summary.title')}</h2>
+                <button
+                  aria-label={t('workbench.summary.close')}
+                  className="grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => closeMobile()}
+                  ref={mobileCloseRef}
+                  type="button"
+                >
+                  <X aria-hidden="true" className="size-4" />
+                </button>
+              </header>
+              <SummaryContent
+                activeTarget={activeTarget}
+                entries={entries}
+                groups={groups}
+                onOpen={openEntry}
+                showEnvironmentHeading
+              />
+            </aside>
+          </div>
+        ) : null}
+      </>
+    )
+  }
 
   return (
     <aside
@@ -57,7 +156,7 @@ export function TaskWorkbenchSummary({
         </span>
         <button
           aria-label={collapsed ? t('workbench.summary.expand') : t('workbench.summary.collapse')}
-          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="grid size-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
           onClick={() => setCollapsed(!collapsed)}
           type="button"
         >
@@ -69,42 +168,63 @@ export function TaskWorkbenchSummary({
         </button>
       </header>
       {collapsed ? null : (
-        <div className="task-workbench-summary-content min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-          {entries.length === 0 ? (
-            <p className="px-2 py-3 text-muted-foreground text-xs">
-              {t('workbench.summary.empty')}
-            </p>
-          ) : null}
-          {groups.map(([group, groupItems], index) => (
-            <section
-              className={index > 0 ? 'mt-2 border-border/70 border-t pt-2' : undefined}
-              key={group}
-            >
-              {group !== 'environment' ? (
-                <h3 className="px-2 py-1.5 font-medium text-[11px] text-muted-foreground">
-                  {t(`workbench.summary.group.${group}`)}
-                </h3>
-              ) : null}
-              <div className="space-y-0.5">
-                {groupItems.map((entry) => (
-                  <SummaryRow
-                    active={
-                      activeTarget && entry.target
-                        ? taskWorkbenchTargetKey(activeTarget) ===
-                          taskWorkbenchTargetKey(entry.target)
-                        : false
-                    }
-                    entry={entry}
-                    key={entry.id}
-                    onOpen={onOpen}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
+        <SummaryContent
+          activeTarget={activeTarget}
+          entries={entries}
+          groups={groups}
+          onOpen={openEntry}
+        />
       )}
     </aside>
+  )
+}
+
+function SummaryContent({
+  activeTarget,
+  entries,
+  groups,
+  onOpen,
+  showEnvironmentHeading = false,
+}: {
+  activeTarget?: TaskWorkbenchTarget
+  entries: TaskWorkbenchSummaryItem[]
+  groups: ReturnType<typeof groupEntries>
+  onOpen: (target: TaskWorkbenchTarget, trigger: HTMLElement) => void
+  showEnvironmentHeading?: boolean
+}) {
+  const { t } = useTranslation('tasks')
+  return (
+    <div className="task-workbench-summary-content min-h-0 flex-1 overflow-y-auto px-2 py-3">
+      {entries.length === 0 ? (
+        <p className="px-2 py-3 text-muted-foreground text-xs">{t('workbench.summary.empty')}</p>
+      ) : null}
+      {groups.map(([group, groupItems], index) => (
+        <section
+          className={index > 0 ? 'mt-2 border-border/70 border-t pt-2' : undefined}
+          key={group}
+        >
+          {group !== 'environment' || showEnvironmentHeading ? (
+            <h3 className="px-2 py-1.5 font-medium text-[11px] text-muted-foreground">
+              {t(`workbench.summary.group.${group}`)}
+            </h3>
+          ) : null}
+          <div className="space-y-0.5">
+            {groupItems.map((entry) => (
+              <SummaryRow
+                active={
+                  activeTarget && entry.target
+                    ? taskWorkbenchTargetKey(activeTarget) === taskWorkbenchTargetKey(entry.target)
+                    : false
+                }
+                entry={entry}
+                key={entry.id}
+                onOpen={onOpen}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
   )
 }
 
@@ -136,6 +256,9 @@ function SummaryRow({
       >
         {summaryMeta(entry, t)}
       </span>
+      {entry.id === 'commands' && entry.status !== 'complete' ? (
+        <span className="sr-only">{statusLabel(entry.status, t)}</span>
+      ) : null}
     </SummaryRowContainer>
   )
 }
@@ -196,6 +319,20 @@ function SummaryIcon({ entry }: { entry: TaskWorkbenchSummaryItem }) {
       </span>
     )
   }
+  if (entry.id === 'commands') {
+    return (
+      <span className={className}>
+        <SquareTerminal aria-hidden="true" className={iconClassName} />
+      </span>
+    )
+  }
+  if (entry.id === 'audit') {
+    return (
+      <span className={className}>
+        <AlertTriangle aria-hidden="true" className={iconClassName} />
+      </span>
+    )
+  }
   if (entry.id === 'subagents') {
     return (
       <span className={className}>
@@ -211,7 +348,7 @@ function SummaryIcon({ entry }: { entry: TaskWorkbenchSummaryItem }) {
 }
 
 function groupEntries(entries: TaskWorkbenchSummaryItem[]) {
-  const order = ['environment', 'sources', 'subagents'] as const
+  const order = ['environment', 'activity', 'sources', 'subagents'] as const
   return order
     .map((group) => [group, entries.filter((entry) => entry.group === group)] as const)
     .filter(([, groupEntries]) => groupEntries.length > 0)
@@ -255,6 +392,7 @@ function summaryMeta(
       .filter(Boolean)
       .join(' · ')
   }
+  if (entry.id === 'commands') return entry.count ?? ''
   return [entry.count, statusLabel(entry.status, t)]
     .filter((value) => value !== undefined && value !== '')
     .join(' · ')
@@ -277,4 +415,21 @@ function changeStats(detail: string) {
   const insertions = detail.match(/(\d[\d,]*)\s+insertions?/i)?.[1]
   const deletions = detail.match(/(\d[\d,]*)\s+deletions?/i)?.[1]
   return insertions && deletions ? { deletions, insertions } : null
+}
+
+function trapFocus(event: React.KeyboardEvent<HTMLElement>, container: HTMLElement | null) {
+  if (!container) return
+  const focusable = Array.from(
+    container.querySelectorAll<HTMLElement>('button:not([disabled]), [href], [tabindex="0"]'),
+  )
+  const first = focusable.at(0)
+  const last = focusable.at(-1)
+  if (!first || !last) return
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }

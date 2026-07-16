@@ -38,15 +38,14 @@ use harness_contracts::{
     ProviderCapabilityRouteSettings, RedactPatternSet, RedactRules, RedactScope, Redactor,
     RejectionReason, RunId, RunModelSnapshot, RunScopedProcessRegistryCap, RuntimeExecutionStatus,
     SessionError, SessionId, SkillContextAssembledEvent, SkillContextError,
-    SkillContextPreparedEvent, SkillId, TenantId, ToolCapability, ToolProfile, ToolRuntimeStatus,
-    ToolSearchMode, TrustLevel, TurnInput, WorkspaceAccess, RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
+    SkillContextPreparedEvent, SkillId, TenantId, ToolCapability, ToolDescriptor, ToolProfile,
+    ToolRuntimeStatus, ToolSearchMode, TrustLevel, TurnInput, WorkspaceAccess,
+    RUN_SCOPED_PROCESS_REGISTRY_CAPABILITY,
 };
 #[cfg(feature = "stream-permission")]
 use harness_contracts::{PermissionOptionId, RequestId};
 #[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
-use harness_contracts::{
-    ToolDescriptor, ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult,
-};
+use harness_contracts::{ToolError, ToolGroup, ToolOrigin, ToolProperties, ToolResult};
 use harness_engine::{
     CancellationToken, Engine, EngineRunner, InterruptCause, RunContext, RunControlHandle,
     SessionHandle,
@@ -111,12 +110,18 @@ use harness_skill::{
     SkillRegistryUpdateError, SkillRenderPolicy, SkillRenderer, SkillSource, SkillSourceConfig,
     SkillThreatEventScope, SkillValidator,
 };
+#[cfg(any(
+    feature = "tool-search",
+    feature = "agents-team",
+    feature = "agents-subagent"
+))]
+use harness_tool::Tool;
 use harness_tool::{
     DefaultRunScopedProcessRegistry, SchemaResolverContext, ToolPool, ToolPoolFilter,
     ToolPoolModelProfile, ToolRegistry, ToolRegistrySnapshot,
 };
 #[cfg(any(feature = "agents-team", feature = "agents-subagent"))]
-use harness_tool::{PermissionCheck, Tool, ToolContext, ToolEvent, ToolStream, ValidationError};
+use harness_tool::{PermissionCheck, ToolContext, ToolEvent, ToolStream, ValidationError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -165,6 +170,7 @@ mod sampling;
 mod session_runtime;
 mod skills;
 mod tool_pool;
+pub(crate) use tool_pool::runtime_appended_tool_descriptors;
 mod types;
 mod workspace;
 

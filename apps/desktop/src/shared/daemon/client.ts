@@ -3,7 +3,6 @@ import { listen as tauriListen } from '@tauri-apps/api/event'
 
 import type {
   ApproveMemoryCandidateRequest,
-  AutomationSpec,
   ClientRequest,
   ExportMemoryItemsRequest,
   GetMemoryRecallTraceRequest,
@@ -13,6 +12,7 @@ import type {
   ListMemoryRecallTracesRequest,
   MergeMemoryCandidateRequest,
   RejectMemoryCandidateRequest,
+  ScheduledTaskSpec,
   ServerFrame,
   ServerMessage,
   TypedUlid,
@@ -57,30 +57,23 @@ export interface DaemonClient {
   loadTask: (taskId: TypedUlid) => Promise<TaskSnapshot>
   loadTaskEvents: (taskId: TypedUlid, beforeGlobalOffset?: number) => Promise<TaskEventPage>
   listTasks: () => Promise<Extract<ServerMessage, { type: 'task_list' }>>
-  listAutomations: (
-    workspaceRoot?: string,
-  ) => Promise<Extract<ServerMessage, { type: 'automations' }>>
-  saveAutomation: (
-    workspaceRoot: string | undefined,
-    automation: AutomationSpec,
-  ) => Promise<Extract<ServerMessage, { type: 'automation_saved' }>>
-  setAutomationEnabled: (
-    workspaceRoot: string | undefined,
-    automationId: string,
+  listScheduledTasks: () => Promise<Extract<ServerMessage, { type: 'scheduled_tasks' }>>
+  saveScheduledTask: (
+    scheduledTask: ScheduledTaskSpec,
+  ) => Promise<Extract<ServerMessage, { type: 'scheduled_task_saved' }>>
+  setScheduledTaskEnabled: (
+    scheduledTaskId: string,
     enabled: boolean,
-  ) => Promise<Extract<ServerMessage, { type: 'automation_enabled' }>>
-  deleteAutomation: (
-    workspaceRoot: string | undefined,
-    automationId: string,
-  ) => Promise<Extract<ServerMessage, { type: 'automation_deleted' }>>
-  runAutomationNow: (
-    workspaceRoot: string | undefined,
-    automationId: string,
-  ) => Promise<Extract<ServerMessage, { type: 'automation_run' }>>
-  listAutomationRuns: (
-    workspaceRoot: string | undefined,
-    automationId?: string,
-  ) => Promise<Extract<ServerMessage, { type: 'automation_runs' }>>
+  ) => Promise<Extract<ServerMessage, { type: 'scheduled_task_enabled' }>>
+  deleteScheduledTask: (
+    scheduledTaskId: string,
+  ) => Promise<Extract<ServerMessage, { type: 'scheduled_task_deleted' }>>
+  runScheduledTaskNow: (
+    scheduledTaskId: string,
+  ) => Promise<Extract<ServerMessage, { type: 'scheduled_task_run' }>>
+  listScheduledTaskRuns: (
+    scheduledTaskId?: string,
+  ) => Promise<Extract<ServerMessage, { type: 'scheduled_task_runs' }>>
   listMemoryItems: (
     workspaceRoot?: string,
   ) => Promise<Extract<ServerMessage, { type: 'memory_items' }>>
@@ -239,40 +232,37 @@ export function createDaemonClient(
       }
       return frame.message
     },
-    async listAutomations(workspaceRoot) {
+    async listScheduledTasks() {
+      return expectDaemonMessage(await request({ type: 'list_scheduled_tasks' }), 'scheduled_tasks')
+    },
+    async saveScheduledTask(scheduledTask) {
       return expectDaemonMessage(
-        await request({ type: 'list_automations', workspaceRoot }),
-        'automations',
+        await request({ scheduledTask, type: 'save_scheduled_task' }),
+        'scheduled_task_saved',
       )
     },
-    async saveAutomation(workspaceRoot, automation) {
+    async setScheduledTaskEnabled(scheduledTaskId, enabled) {
       return expectDaemonMessage(
-        await request({ automation, type: 'save_automation', workspaceRoot }),
-        'automation_saved',
+        await request({ enabled, scheduledTaskId, type: 'set_scheduled_task_enabled' }),
+        'scheduled_task_enabled',
       )
     },
-    async setAutomationEnabled(workspaceRoot, automationId, enabled) {
+    async deleteScheduledTask(scheduledTaskId) {
       return expectDaemonMessage(
-        await request({ automationId, enabled, type: 'set_automation_enabled', workspaceRoot }),
-        'automation_enabled',
+        await request({ scheduledTaskId, type: 'delete_scheduled_task' }),
+        'scheduled_task_deleted',
       )
     },
-    async deleteAutomation(workspaceRoot, automationId) {
+    async runScheduledTaskNow(scheduledTaskId) {
       return expectDaemonMessage(
-        await request({ automationId, type: 'delete_automation', workspaceRoot }),
-        'automation_deleted',
+        await request({ scheduledTaskId, type: 'run_scheduled_task_now' }),
+        'scheduled_task_run',
       )
     },
-    async runAutomationNow(workspaceRoot, automationId) {
+    async listScheduledTaskRuns(scheduledTaskId) {
       return expectDaemonMessage(
-        await request({ automationId, type: 'run_automation_now', workspaceRoot }),
-        'automation_run',
-      )
-    },
-    async listAutomationRuns(workspaceRoot, automationId) {
-      return expectDaemonMessage(
-        await request({ automationId, type: 'list_automation_runs', workspaceRoot }),
-        'automation_runs',
+        await request({ scheduledTaskId, type: 'list_scheduled_task_runs' }),
+        'scheduled_task_runs',
       )
     },
     async listMemoryItems(workspaceRoot) {

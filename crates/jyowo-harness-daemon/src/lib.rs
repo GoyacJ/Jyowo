@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 
 mod agent_starters;
-mod automation;
 mod browser_service;
 mod checkpoint;
 mod ipc;
@@ -16,6 +15,7 @@ mod recovery;
 mod reference_candidates;
 mod run_coordinator;
 mod runtime_config;
+mod scheduled_task;
 mod sdk_run_factory;
 mod subagent;
 mod supervisor;
@@ -23,7 +23,6 @@ mod task_actor;
 mod workspace;
 
 pub use agent_starters::*;
-pub use automation::*;
 pub use browser_service::*;
 pub use checkpoint::*;
 pub use ipc::*;
@@ -36,6 +35,7 @@ pub use recovery::*;
 pub use reference_candidates::*;
 pub use run_coordinator::*;
 pub use runtime_config::*;
+pub use scheduled_task::*;
 pub use sdk_run_factory::*;
 pub use subagent::*;
 pub use supervisor::*;

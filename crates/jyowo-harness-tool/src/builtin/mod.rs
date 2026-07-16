@@ -141,9 +141,9 @@ pub use zhipu::{
 
 use harness_contracts::{
     ActionResource, BudgetMetric, DeferPolicy, LongRunningPolicy, NetworkAccess, OverflowAction,
-    ProviderRestriction, ResultBudget, ToolActionPlan, ToolCapability, ToolDescriptor, ToolError,
-    ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties, ToolServiceBinding, TrustLevel,
-    WorkspaceAccess,
+    ProviderRestriction, ResultBudget, ToolActionPlan, ToolCapability, ToolConfigurationDescriptor,
+    ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolProperties,
+    ToolServiceBinding, TrustLevel, WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use serde_json::{json, Value};
@@ -246,6 +246,20 @@ pub(super) fn with_result_budget(
     budget: ResultBudget,
 ) -> ToolDescriptor {
     descriptor.budget = budget;
+    descriptor
+}
+
+pub(super) fn with_configuration(
+    mut descriptor: ToolDescriptor,
+    schema: Value,
+    default_parameters: Value,
+    default_timeout_ms: Option<u64>,
+) -> ToolDescriptor {
+    descriptor.metadata.configuration = Some(ToolConfigurationDescriptor {
+        schema,
+        default_parameters,
+        default_timeout_ms,
+    });
     descriptor
 }
 

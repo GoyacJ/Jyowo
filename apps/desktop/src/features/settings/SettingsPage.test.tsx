@@ -52,10 +52,7 @@ function renderSettingsPage(options: TestCommandClientOptions = {}, commandClien
   })
 
   function Wrapper({ children }: { children: ReactNode }) {
-    const daemonClient = {
-      listAutomationRuns: vi.fn(async () => ({ runs: [], type: 'automation_runs' as const })),
-      listAutomations: vi.fn(async () => ({ automations: [], type: 'automations' as const })),
-    } as unknown as DaemonClient
+    const daemonClient = {} as DaemonClient
     return (
       <CommandClientProvider
         client={
@@ -125,7 +122,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '通用' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tab', { name: '技能' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '工具' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '自动化' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '自动化' })).not.toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'MCP' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '插件' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '模型' })).toBeInTheDocument()
@@ -142,10 +139,6 @@ describe('SettingsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '工具' }))
 
     expect(await screen.findByRole('heading', { name: '工具' })).toBeInTheDocument()
-
-    fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
-
-    expect(await screen.findByRole('heading', { name: '自动化任务' })).toBeInTheDocument()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
 
@@ -179,11 +172,11 @@ describe('SettingsPage', () => {
   it('writes selected settings tab to route search', async () => {
     renderSettingsPage()
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: '自动化' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'MCP' }))
 
-    expect(await screen.findByRole('heading', { name: '自动化任务' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'MCP 服务器' })).toBeInTheDocument()
     expect(routerSpy.navigate).toHaveBeenCalledWith({
-      search: { tab: 'automations' },
+      search: { tab: 'mcp' },
       to: '/settings',
     })
   })
@@ -213,6 +206,12 @@ describe('SettingsPage', () => {
             configuredEnabled: true,
             available: true,
             unavailableReason: null,
+            defaultTimeoutMs: 120000,
+            timeoutMs: 120000,
+            configurationSchema: null,
+            defaultParameters: {},
+            parameters: {},
+            configurationCustomized: false,
           },
         ],
       },
@@ -283,6 +282,12 @@ describe('SettingsPage', () => {
             configuredEnabled: true,
             available: true,
             unavailableReason: null,
+            defaultTimeoutMs: 120000,
+            timeoutMs: 120000,
+            configurationSchema: null,
+            defaultParameters: {},
+            parameters: {},
+            configurationCustomized: false,
           },
         ],
       },

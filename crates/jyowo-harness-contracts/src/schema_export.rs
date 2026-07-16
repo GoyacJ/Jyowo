@@ -323,26 +323,34 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
     insert_schema!(schemas, "process_read_result", ProcessReadResult);
     insert_schema!(schemas, "process_stop_result", ProcessStopResult);
     insert_schema!(schemas, "diagnostic_item", DiagnosticItem);
-    insert_schema!(schemas, "automation_spec", AutomationSpec);
-    insert_schema!(schemas, "automation_run_record", AutomationRunRecord);
-    insert_schema!(schemas, "automations_response", AutomationsResponse);
+    insert_schema!(schemas, "scheduled_task_spec", ScheduledTaskSpec);
+    insert_schema!(schemas, "scheduled_task_run_record", ScheduledTaskRunRecord);
+    insert_schema!(schemas, "scheduled_tasks_response", ScheduledTasksResponse);
     insert_schema!(
         schemas,
-        "automation_saved_response",
-        AutomationSavedResponse
+        "scheduled_task_saved_response",
+        ScheduledTaskSavedResponse
     );
     insert_schema!(
         schemas,
-        "automation_enabled_response",
-        AutomationEnabledResponse
+        "scheduled_task_enabled_response",
+        ScheduledTaskEnabledResponse
     );
     insert_schema!(
         schemas,
-        "automation_deleted_response",
-        AutomationDeletedResponse
+        "scheduled_task_deleted_response",
+        ScheduledTaskDeletedResponse
     );
-    insert_schema!(schemas, "automation_run_response", AutomationRunResponse);
-    insert_schema!(schemas, "automation_runs_response", AutomationRunsResponse);
+    insert_schema!(
+        schemas,
+        "scheduled_task_run_response",
+        ScheduledTaskRunResponse
+    );
+    insert_schema!(
+        schemas,
+        "scheduled_task_runs_response",
+        ScheduledTaskRunsResponse
+    );
     insert_schema!(
         schemas,
         "list_runtime_tools_response",

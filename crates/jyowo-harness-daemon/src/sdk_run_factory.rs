@@ -199,6 +199,14 @@ fn apply_runtime_snapshot<M, S, SB>(
         .with_capability::<dyn harness_contracts::ProviderCredentialResolverCap>(
             harness_contracts::ToolCapability::ProviderCredentialResolver,
             Arc::clone(&snapshot.provider_credential_resolver),
+        )
+        .with_capability::<harness_tool::ToolRuntimeSettingsRegistry>(
+            harness_contracts::ToolCapability::Custom(
+                harness_tool::TOOL_RUNTIME_SETTINGS_CAPABILITY.to_owned(),
+            ),
+            Arc::new(harness_tool::ToolRuntimeSettingsRegistry::new(
+                snapshot.execution_defaults.tool_settings.clone(),
+            )),
         );
     Ok(match provider_continuation_store {
         Some(store) => builder.with_provider_continuation_store_arc(store),

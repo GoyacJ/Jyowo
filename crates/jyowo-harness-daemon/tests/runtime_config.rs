@@ -13,7 +13,7 @@ use harness_contracts::{
     ProviderProfileConversationCapability, ProviderProfileDefinition,
     ProviderProfileModelDescriptor, ProviderProfileModelLifecycle, ProviderSecretEntry,
     ProviderSecretsRecord, ProviderSelectionRecord, SkillId, SkillSelectionRecord, SkillStatus,
-    ToolProfile, TrustLevel,
+    ToolProfile, ToolRuntimeSettings, TrustLevel,
 };
 use harness_daemon::{RuntimeConfigError, RuntimeConfigResolver, SkillReferenceCandidateService};
 use harness_plugin::{
@@ -300,6 +300,22 @@ fn project_settings_merge_over_global_runtime_configuration() {
         &ExecutionDefaultsRecord {
             permission_mode: PermissionMode::Default,
             tool_profile: ToolProfile::Full,
+            tool_settings: BTreeMap::from([
+                (
+                    "FileRead".to_owned(),
+                    ToolRuntimeSettings {
+                        timeout_ms: 25_000,
+                        parameters: serde_json::json!({}),
+                    },
+                ),
+                (
+                    "WebFetch".to_owned(),
+                    ToolRuntimeSettings {
+                        timeout_ms: 30_000,
+                        parameters: serde_json::json!({ "defaultMaxBytes": 64_000 }),
+                    },
+                ),
+            ]),
             context_compression_trigger_ratio: 0.7,
             subagents_enabled: true,
             agent_teams_enabled: false,
@@ -316,6 +332,13 @@ fn project_settings_merge_over_global_runtime_configuration() {
         "execution-overrides.json",
         &ExecutionOverridesRecord {
             permission_mode: Some(PermissionMode::Plan),
+            tool_settings: BTreeMap::from([(
+                "WebFetch".to_owned(),
+                ToolRuntimeSettings {
+                    timeout_ms: 45_000,
+                    parameters: serde_json::json!({ "defaultMaxBytes": 128_000 }),
+                },
+            )]),
             context_compression_trigger_ratio: Some(0.9),
             ..ExecutionOverridesRecord::default()
         },
@@ -345,6 +368,18 @@ fn project_settings_merge_over_global_runtime_configuration() {
         PermissionMode::Plan
     );
     assert_eq!(snapshot.execution_defaults.tool_profile, ToolProfile::Full);
+    assert_eq!(
+        snapshot.execution_defaults.tool_settings["FileRead"].timeout_ms,
+        25_000
+    );
+    assert_eq!(
+        snapshot.execution_defaults.tool_settings["WebFetch"].timeout_ms,
+        45_000
+    );
+    assert_eq!(
+        snapshot.execution_defaults.tool_settings["WebFetch"].parameters,
+        serde_json::json!({ "defaultMaxBytes": 128_000 })
+    );
     assert_eq!(
         snapshot
             .execution_defaults

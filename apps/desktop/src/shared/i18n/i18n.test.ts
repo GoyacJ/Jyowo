@@ -43,9 +43,11 @@ describe('i18n', () => {
     expect(i18n.t('shell:sections.projects')).toBe('项目')
     expect(i18n.t('shell:sections.conversations')).toBe('会话')
     expect(i18n.t('shell:sidebar.emptyTitle')).toBe('选择一个会话')
+    expect(i18n.t('conversation:composer.inputLabel')).toBe('消息输入框')
 
     void i18n.changeLanguage('en-US')
     expect(i18n.t('shell:actions.newConversation')).toBe('New conversation')
     expect(i18n.t('shell:sidebar.emptyTitle')).toBe('Choose a conversation')
+    expect(i18n.t('conversation:composer.inputLabel')).toBe('Message input')
   })
 })

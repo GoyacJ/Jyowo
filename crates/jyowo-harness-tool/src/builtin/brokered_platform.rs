@@ -453,6 +453,7 @@ impl BrokeredPlatformTool {
             effects: vec![effect.to_owned()],
             modalities: vec!["text".to_owned()],
             integration_source: ToolIntegrationSource::Brokered,
+            configuration: None,
         };
         Self {
             descriptor,

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ScheduledTasksRouteImport } from './routes/scheduled-tasks'
 import { Route as MemoryRouteImport } from './routes/memory'
 import { Route as BackgroundAgentsRouteImport } from './routes/background-agents'
 import { Route as IndexRouteImport } from './routes/index'
@@ -25,6 +26,13 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any).lazy(() => import('./routes/settings.lazy').then((d) => d.Route))
+const ScheduledTasksRoute = ScheduledTasksRouteImport.update({
+  id: '/scheduled-tasks',
+  path: '/scheduled-tasks',
+  getParentRoute: () => rootRouteImport,
+} as any).lazy(() =>
+  import('./routes/scheduled-tasks.lazy').then((d) => d.Route),
+)
 const MemoryRoute = MemoryRouteImport.update({
   id: '/memory',
   path: '/memory',
@@ -47,6 +55,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/background-agents': typeof BackgroundAgentsRoute
   '/memory': typeof MemoryRoute
+  '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
 }
@@ -54,6 +63,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/background-agents': typeof BackgroundAgentsRoute
   '/memory': typeof MemoryRoute
+  '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
 }
@@ -62,19 +72,33 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/background-agents': typeof BackgroundAgentsRoute
   '/memory': typeof MemoryRoute
+  '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/background-agents' | '/memory' | '/settings' | '/skills'
+  fullPaths:
+    | '/'
+    | '/background-agents'
+    | '/memory'
+    | '/scheduled-tasks'
+    | '/settings'
+    | '/skills'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/background-agents' | '/memory' | '/settings' | '/skills'
+  to:
+    | '/'
+    | '/background-agents'
+    | '/memory'
+    | '/scheduled-tasks'
+    | '/settings'
+    | '/skills'
   id:
     | '__root__'
     | '/'
     | '/background-agents'
     | '/memory'
+    | '/scheduled-tasks'
     | '/settings'
     | '/skills'
   fileRoutesById: FileRoutesById
@@ -83,6 +107,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BackgroundAgentsRoute: typeof BackgroundAgentsRoute
   MemoryRoute: typeof MemoryRoute
+  ScheduledTasksRoute: typeof ScheduledTasksRoute
   SettingsRoute: typeof SettingsRoute
   SkillsRoute: typeof SkillsRoute
 }
@@ -101,6 +126,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scheduled-tasks': {
+      id: '/scheduled-tasks'
+      path: '/scheduled-tasks'
+      fullPath: '/scheduled-tasks'
+      preLoaderRoute: typeof ScheduledTasksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/memory': {
@@ -131,6 +163,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BackgroundAgentsRoute: BackgroundAgentsRoute,
   MemoryRoute: MemoryRoute,
+  ScheduledTasksRoute: ScheduledTasksRoute,
   SettingsRoute: SettingsRoute,
   SkillsRoute: SkillsRoute,
 }

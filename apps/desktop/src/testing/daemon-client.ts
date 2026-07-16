@@ -369,7 +369,7 @@ function usage() {
 }
 
 function frame(message: ServerFrame['message']): ServerFrame {
-  return { message, protocolVersion: 5 }
+  return { message, protocolVersion: 6 }
 }
 
 function errorFrame(code: 'invalid_frame' | 'not_found', message: string) {

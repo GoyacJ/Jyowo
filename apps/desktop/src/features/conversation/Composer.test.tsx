@@ -58,6 +58,8 @@ describe('Composer', () => {
 
     render(<Composer modelConfigId="provider-config-001" onSubmit={onSubmit} />)
 
+    expect(screen.getByRole('textbox', { name: 'Message input' })).toBeInTheDocument()
+
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Continue the setup' },
     })

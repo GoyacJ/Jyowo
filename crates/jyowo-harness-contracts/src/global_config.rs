@@ -191,6 +191,8 @@ pub struct ExecutionDefaultsRecord {
     pub permission_mode: crate::PermissionMode,
     #[serde(default = "default_tool_profile_full")]
     pub tool_profile: crate::ToolProfile,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_settings: BTreeMap<String, crate::ToolRuntimeSettings>,
     #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
     #[serde(default)]
@@ -218,6 +220,7 @@ impl Default for ExecutionDefaultsRecord {
         Self {
             permission_mode: crate::PermissionMode::Default,
             tool_profile: crate::ToolProfile::Full,
+            tool_settings: BTreeMap::new(),
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
             subagents_enabled: false,
             agent_teams_enabled: false,
@@ -269,6 +272,8 @@ pub struct ExecutionOverridesRecord {
     pub permission_mode: Option<crate::PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_profile: Option<crate::ToolProfile>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_settings: BTreeMap<String, crate::ToolRuntimeSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_compression_trigger_ratio: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +289,7 @@ impl From<ExecutionDefaultsRecord> for ExecutionOverridesRecord {
         Self {
             permission_mode: Some(record.permission_mode),
             tool_profile: Some(record.tool_profile),
+            tool_settings: record.tool_settings,
             context_compression_trigger_ratio: Some(record.context_compression_trigger_ratio),
             subagents_enabled: Some(record.subagents_enabled),
             agent_teams_enabled: Some(record.agent_teams_enabled),
@@ -781,6 +787,7 @@ mod tests {
         let defaults = ExecutionDefaultsRecord::default();
         assert_eq!(defaults.permission_mode, crate::PermissionMode::Default);
         assert_eq!(defaults.tool_profile, crate::ToolProfile::Full);
+        assert!(defaults.tool_settings.is_empty());
         assert!((defaults.context_compression_trigger_ratio - 0.8).abs() < f32::EPSILON);
         assert!(!defaults.subagents_enabled);
         assert!(!defaults.agent_teams_enabled);
@@ -792,6 +799,13 @@ mod tests {
         let record = ExecutionDefaultsRecord {
             permission_mode: crate::PermissionMode::Auto,
             tool_profile: crate::ToolProfile::Minimal,
+            tool_settings: BTreeMap::from([(
+                "WebFetch".to_owned(),
+                crate::ToolRuntimeSettings {
+                    timeout_ms: 45_000,
+                    parameters: serde_json::json!({ "defaultMaxBytes": 128_000 }),
+                },
+            )]),
             context_compression_trigger_ratio: 0.75,
             subagents_enabled: true,
             agent_teams_enabled: false,
@@ -801,10 +815,22 @@ mod tests {
         let parsed: ExecutionDefaultsRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.permission_mode, crate::PermissionMode::Auto);
         assert_eq!(parsed.tool_profile, crate::ToolProfile::Minimal);
+        assert_eq!(parsed.tool_settings, record.tool_settings);
         assert!((parsed.context_compression_trigger_ratio - 0.75).abs() < f32::EPSILON);
         assert!(parsed.subagents_enabled);
         assert!(!parsed.agent_teams_enabled);
         assert!(parsed.background_agents_enabled);
+    }
+
+    #[test]
+    fn execution_defaults_without_tool_settings_remain_compatible() {
+        let parsed: ExecutionDefaultsRecord = serde_json::from_value(serde_json::json!({
+            "permissionMode": "default",
+            "toolProfile": "full"
+        }))
+        .expect("legacy execution defaults should deserialize");
+
+        assert!(parsed.tool_settings.is_empty());
     }
 
     #[test]

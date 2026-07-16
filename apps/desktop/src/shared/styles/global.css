@@ -346,6 +346,10 @@ select {
   .task-workbench-panel .task-workbench-close {
     display: none;
   }
+
+  .task-workspace-header-status {
+    margin-right: 2.5rem;
+  }
 }
 
 @container task-workspace (max-width: 519px) {

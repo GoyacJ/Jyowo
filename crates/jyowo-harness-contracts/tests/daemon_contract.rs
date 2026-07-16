@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[test]
 fn daemon_protocol_exports_one_versioned_schema() {
-    assert_eq!(PROTOCOL_VERSION, 5);
+    assert_eq!(PROTOCOL_VERSION, 6);
 
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let text = serde_json::to_string(&value).expect("render daemon schema");
@@ -34,12 +34,12 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "get_memory_item",
         "delete_memory_item",
         "get_model_request_preview",
-        "list_automations",
-        "save_automation",
-        "set_automation_enabled",
-        "delete_automation",
-        "run_automation_now",
-        "list_automation_runs",
+        "list_scheduled_tasks",
+        "save_scheduled_task",
+        "set_scheduled_task_enabled",
+        "delete_scheduled_task",
+        "run_scheduled_task_now",
+        "list_scheduled_task_runs",
         "detached",
     ] {
         assert!(text.contains(required), "missing {required}");

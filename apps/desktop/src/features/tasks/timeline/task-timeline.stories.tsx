@@ -56,7 +56,7 @@ const storyClient = {
       taskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 5,
+    protocolVersion: 6,
   }),
 }
 

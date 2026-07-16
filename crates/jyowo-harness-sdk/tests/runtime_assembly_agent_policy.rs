@@ -294,3 +294,93 @@ fn tenant_allowed_tools_filter_applies_to_runtime_agent_tools() {
         assert!(!tool_names.contains(&"background_agent"));
     });
 }
+
+#[cfg(all(feature = "agents-subagent", feature = "agents-team"))]
+#[test]
+fn tool_profile_denylist_applies_to_runtime_agent_tools() {
+    block_on(async {
+        let workspace = unique_workspace("sdk-agent-runtime-tools-profile-denylist");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let model = Arc::new(TestModelProvider::default().with_events(vec![
+            ModelStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: ContentDelta::Text("ready".to_owned()),
+            },
+            ModelStreamEvent::MessageStop,
+        ]));
+
+        let harness = Harness::builder()
+            .with_workspace_root(&workspace)
+            .with_model_arc(model.clone())
+            .with_store(InMemoryEventStore::new(Arc::new(NoopRedactor)))
+            .with_sandbox(NoopSandbox::new())
+            .with_capability::<dyn harness_contracts::AgentTeamStarterCap>(
+                ToolCapability::Custom("jyowo.agent_team.starter".to_owned()),
+                Arc::new(CapturingAgentTeamStarter::default()),
+            )
+            .with_capability::<dyn harness_contracts::BackgroundAgentStarterCap>(
+                ToolCapability::Custom("jyowo.background_agent.starter".to_owned()),
+                Arc::new(NoopBackgroundAgentStarter),
+            )
+            .build()
+            .await
+            .expect("harness should build");
+
+        let options = SessionOptions::new(&workspace).with_tool_profile(ToolProfile::Custom {
+            allowlist: BTreeSet::new(),
+            denylist: [
+                "agent".to_owned(),
+                "agent_team".to_owned(),
+                "background_agent".to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+            group_allowlist: Vec::new(),
+            group_denylist: Vec::new(),
+            mcp_included: true,
+            plugin_included: true,
+        });
+        harness
+            .open_or_create_conversation_session(options.clone())
+            .await
+            .expect("conversation session should open");
+        harness
+            .submit_conversation_turn(conversation_turn_request(
+                options,
+                ConversationTurnInput::ask("review in parallel"),
+                None,
+                None,
+                Some(harness_contracts::AgentToolPolicy {
+                    subagents: harness_contracts::AgentUsePolicy::Allowed,
+                    agent_team: harness_contracts::AgentUsePolicy::Allowed,
+                    team_config: Some(harness_contracts::AgentTeamRunConfig {
+                        topology: harness_contracts::AgentTeamTopology::CoordinatorWorker,
+                        lead_profile_id: "reviewer".to_owned(),
+                        member_profile_ids: vec!["worker".to_owned()],
+                        max_turns_per_goal: 2,
+                        shared_memory_policy:
+                            harness_contracts::AgentTeamSharedMemoryPolicy::SummariesOnly,
+                    }),
+                    background_agents: harness_contracts::AgentUsePolicy::Allowed,
+                    workspace_isolation: harness_contracts::AgentWorkspaceIsolationMode::ReadOnly,
+                    max_depth: 2,
+                    max_concurrent_subagents: 2,
+                    max_team_members: 4,
+                }),
+            ))
+            .await
+            .expect("turn should run");
+
+        let requests = model.requests().await;
+        let tool_names: Vec<_> = requests[0]
+            .tools
+            .as_ref()
+            .expect("run should expose tools")
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert!(!tool_names.contains(&"agent"));
+        assert!(!tool_names.contains(&"agent_team"));
+        assert!(!tool_names.contains(&"background_agent"));
+    });
+}

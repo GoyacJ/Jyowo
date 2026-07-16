@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nextProvider } from 'react-i18next'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -70,6 +70,46 @@ describe('TaskWorkbenchSummary', () => {
 
     expect(screen.getByRole('button', { name: /1 running · 1\/3 failed/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /historical issue/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps task context available in a keyboard-accessible narrow-screen drawer', async () => {
+    const onOpen = vi.fn()
+    render(
+      <TaskWorkbenchSummary
+        events={[]}
+        mobile
+        onOpen={onOpen}
+        projection={{
+          ...projection,
+          workspace: { mode: 'current', root: '/repo/Jyowo' },
+        }}
+        timeline={timeline}
+      />,
+      {
+        wrapper: ({ children }) => (
+          <I18nextProvider i18n={createAppI18n('en-US')}>{children}</I18nextProvider>
+        ),
+      },
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Expand task context' })
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', { name: 'Task context' })
+    expect(dialog).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close task context' })).toHaveFocus()
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(trigger).toHaveFocus())
+    expect(screen.queryByRole('dialog', { name: 'Task context' })).not.toBeInTheDocument()
+
+    fireEvent.click(trigger)
+    const environment = screen.getByRole('button', { name: /Local workspace/ })
+    fireEvent.click(environment)
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'environment', resourceId: 'workspace' }),
+      environment,
+    )
+    expect(screen.queryByRole('dialog', { name: 'Task context' })).not.toBeInTheDocument()
   })
 })
 

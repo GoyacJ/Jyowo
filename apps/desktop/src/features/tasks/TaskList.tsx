@@ -3,6 +3,7 @@ import {
   Archive,
   ArrowDown,
   ArrowUp,
+  CalendarClock,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -94,6 +95,7 @@ export function TaskList({
   onRemoveTask,
   onRenameProject,
   onRenameTask,
+  onOpenScheduledTasks,
   onSelectTask,
   onSetTaskArchived,
   onSetTaskPinned,
@@ -101,6 +103,7 @@ export function TaskList({
   onToggleSection,
   projects,
   sections,
+  scheduledTasksActive = false,
   tasks,
 }: {
   activeTaskId?: TypedUlid
@@ -116,6 +119,7 @@ export function TaskList({
   onRemoveTask: (task: TaskProjection) => MaybePromise
   onRenameProject: (path: string, name: string) => MaybePromise
   onRenameTask: (task: TaskProjection, title: string) => MaybePromise
+  onOpenScheduledTasks: () => void
   onSelectTask: (taskId: TypedUlid) => void
   onSetTaskArchived: (task: TaskProjection, archived: boolean) => MaybePromise
   onSetTaskPinned: (task: TaskProjection, pinned: boolean) => MaybePromise
@@ -123,6 +127,7 @@ export function TaskList({
   onToggleSection: (section: SidebarSection, expanded: boolean) => void
   projects: Project[]
   sections: SidebarSections
+  scheduledTasksActive?: boolean
   tasks: TaskProjection[]
 }) {
   const { t } = useTranslation('shell')
@@ -130,7 +135,7 @@ export function TaskList({
 
   return (
     <nav aria-label={t('sidebar.navigationLabel')} className="flex min-h-0 flex-1 flex-col">
-      <div className="px-2 pb-2">
+      <div className="space-y-1 px-2 pb-2">
         <button
           aria-label={t('actions.newConversation')}
           className={cn(
@@ -149,6 +154,22 @@ export function TaskList({
           {compact ? null : (
             <span>{creating ? t('conversations.loading') : t('actions.newConversation')}</span>
           )}
+        </button>
+        <button
+          aria-current={scheduledTasksActive ? 'page' : undefined}
+          aria-label={t('actions.openScheduledTasks')}
+          className={cn(
+            'flex h-9 w-full items-center rounded-md text-sm transition-colors hover:bg-row-muted',
+            scheduledTasksActive
+              ? 'bg-row-muted font-medium text-foreground'
+              : 'text-muted-foreground',
+            compact ? 'justify-center px-0' : 'gap-2 px-2.5',
+          )}
+          onClick={onOpenScheduledTasks}
+          type="button"
+        >
+          <CalendarClock aria-hidden="true" className="size-4" />
+          {compact ? null : <span>{t('nav.scheduledTasks')}</span>}
         </button>
       </div>
 

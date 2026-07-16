@@ -264,32 +264,32 @@ CREATE TABLE IF NOT EXISTS blob_store_config (
     canonical_root TEXT
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS automation_scope (
+CREATE TABLE IF NOT EXISTS scheduled_task_scope (
     scope_key TEXT PRIMARY KEY,
     workspace_root TEXT
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS automation_schedule_state (
+CREATE TABLE IF NOT EXISTS scheduled_task_schedule_state (
     scope_key TEXT NOT NULL,
-    automation_id TEXT NOT NULL,
+    scheduled_task_id TEXT NOT NULL,
     cursor_at TEXT NOT NULL,
     next_due_at TEXT NOT NULL,
     active_task_id TEXT,
-    PRIMARY KEY(scope_key, automation_id),
-    FOREIGN KEY(scope_key) REFERENCES automation_scope(scope_key) ON DELETE CASCADE
+    PRIMARY KEY(scope_key, scheduled_task_id),
+    FOREIGN KEY(scope_key) REFERENCES scheduled_task_scope(scope_key) ON DELETE CASCADE
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS automation_run (
+CREATE TABLE IF NOT EXISTS scheduled_task_run (
     scope_key TEXT NOT NULL,
     run_id TEXT PRIMARY KEY,
-    automation_id TEXT NOT NULL,
+    scheduled_task_id TEXT NOT NULL,
     started_at TEXT NOT NULL,
     record_json TEXT NOT NULL,
-    FOREIGN KEY(scope_key) REFERENCES automation_scope(scope_key) ON DELETE CASCADE
+    FOREIGN KEY(scope_key) REFERENCES scheduled_task_scope(scope_key) ON DELETE CASCADE
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_automation_run_scope_started
-    ON automation_run(scope_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_task_run_scope_started
+    ON scheduled_task_run(scope_key, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS workspace_leases (
     workspace_lease_id TEXT PRIMARY KEY,

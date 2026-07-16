@@ -239,6 +239,7 @@ impl GitTool {
             effects: vec![operation.effect().to_owned()],
             modalities: vec!["text".to_owned()],
             integration_source: ToolIntegrationSource::Builtin,
+            configuration: None,
         };
         Self {
             descriptor,

@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -102,5 +102,84 @@ describe('RuntimeToolsSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: '高风险' }))
     expect(screen.getByText('Bash')).toBeInTheDocument()
     expect(screen.queryByText('File read')).not.toBeInTheDocument()
+  })
+
+  it('collapses and expands each tool group independently', async () => {
+    renderTools()
+
+    const fileSystemGroup = await screen.findByRole('button', { name: /文件系统/ })
+    const shellGroup = screen.getByRole('button', { name: /Shell/ })
+    expect(fileSystemGroup).toHaveAttribute('aria-expanded', 'true')
+    expect(shellGroup).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(fileSystemGroup)
+
+    expect(fileSystemGroup).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('File read')).not.toBeVisible()
+    expect(screen.getByText('Bash')).toBeVisible()
+
+    fireEvent.click(fileSystemGroup)
+    expect(screen.getByText('File read')).toBeVisible()
+  })
+
+  it('saves schema-backed parameters and timeout, then resets the tool configuration', async () => {
+    const webFetch = {
+      ...fixtureRuntimeTools.tools[0],
+      name: 'WebFetch',
+      displayName: 'Web fetch',
+      description: 'Fetch text content from an HTTP URL.',
+      group: 'network',
+      groupLabel: 'Network',
+      executionChannel: 'httpBroker' as const,
+      configurationSchema: {
+        type: 'object',
+        properties: {
+          defaultMaxBytes: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 10_485_760,
+          },
+        },
+        additionalProperties: false,
+      },
+      defaultParameters: { defaultMaxBytes: 64_000 },
+      parameters: { defaultMaxBytes: 64_000 },
+    }
+    const { client } = renderTools({
+      ...fixtureRuntimeTools,
+      tools: [webFetch],
+    })
+    const updateConfig = vi.spyOn(client, 'updateRuntimeToolConfig')
+    const resetConfig = vi.spyOn(client, 'resetRuntimeToolConfig')
+
+    fireEvent.click(await screen.findByRole('button', { name: '配置 Web fetch' }))
+    const dialog = screen.getByRole('dialog', { name: '配置 Web fetch' })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /执行超时/ }), {
+      target: { value: '45' },
+    })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /默认响应上限/ }), {
+      target: { value: '128000' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存配置' }))
+
+    await waitFor(() => {
+      expect(updateConfig).toHaveBeenCalledWith({
+        name: 'WebFetch',
+        timeoutMs: 45_000,
+        parameters: { defaultMaxBytes: 128_000 },
+      })
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: '配置 Web fetch' }))
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '恢复此工具默认值',
+      }),
+    )
+
+    await waitFor(() => {
+      expect(resetConfig).toHaveBeenCalledWith({ name: 'WebFetch' })
+    })
   })
 })

@@ -1410,6 +1410,7 @@ fn merge_execution_overrides(
     if let Some(value) = overrides.tool_profile {
         defaults.tool_profile = value;
     }
+    defaults.tool_settings.extend(overrides.tool_settings);
     if let Some(value) = overrides.context_compression_trigger_ratio {
         defaults.context_compression_trigger_ratio = value;
     }

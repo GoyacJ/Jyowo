@@ -105,6 +105,45 @@ describe('TaskWorkbench', () => {
     ).toBeInTheDocument()
   })
 
+  it('renders command, environment, and focused audit targets through the shared gate', async () => {
+    const readBlob = vi.fn()
+    openTarget(
+      target('command', 'pnpm test', {
+        artifact: {
+          artifactKind: 'command',
+          mediaType: 'text/plain',
+          preview: '$ pnpm test\n106 tests passed',
+        },
+        blobId: undefined,
+        resourceId: 'tool-command',
+      }),
+    )
+    render(
+      <TaskWorkbench
+        client={workbenchClient(readBlob, events)}
+        events={events}
+        projection={projection}
+        timeline={historicalTimeline}
+      />,
+    )
+
+    expect(await screen.findByText(/106 tests passed/)).toBeInTheDocument()
+    expect(readBlob).not.toHaveBeenCalled()
+
+    act(() => openTarget(target('environment', 'Local workspace', { resourceId: 'workspace' })))
+    expect(screen.getByText('/workspace/recovery')).toBeInTheDocument()
+
+    act(() =>
+      openTarget(
+        target('audit', 'Workspace acquired', {
+          resourceId: events[0]?.eventId,
+          sourceEventId: events[0]?.eventId,
+        }),
+      ),
+    )
+    expect(await screen.findByText('workspace.acquired')).toBeInTheDocument()
+  })
+
   it('renders a preview-only source through the artifact renderer', async () => {
     const readBlob = vi.fn().mockResolvedValue(blob('preview source', 'text/plain'))
     render(
@@ -176,7 +215,8 @@ describe('TaskWorkbench', () => {
     )
 
     expect(screen.getByRole('complementary', { name: '任务工作台' })).toBeInTheDocument()
-    expect(screen.getByText(/子智能体 · Repair scheduler/)).toBeInTheDocument()
+    expect(screen.getByText('Repair scheduler')).toBeInTheDocument()
+    expect(screen.getAllByText('子智能体')).toHaveLength(2)
     expect(screen.getByText('运行中')).toBeInTheDocument()
     expect(screen.queryByText('running')).not.toBeInTheDocument()
   })

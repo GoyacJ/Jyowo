@@ -64,6 +64,7 @@ import {
   reloadPlugin,
   renameProject,
   requestProviderConfigApiKeyReveal,
+  resetRuntimeToolConfig,
   resetRuntimeTools,
   restartMcpServer,
   saveAgentProfile,
@@ -85,6 +86,7 @@ import {
   uninstallPlugin,
   unsubscribeMcpDiagnostics,
   updatePluginConfig,
+  updateRuntimeToolConfig,
   validatePluginFromPath,
   validateProviderSettings,
 } from './commands'
@@ -323,6 +325,12 @@ describe('CommandClient', () => {
           requiredCapabilities: [],
           serviceBinding: null,
           unavailableReason: null,
+          defaultTimeoutMs: 120_000,
+          timeoutMs: 45_000,
+          configurationSchema: null,
+          defaultParameters: {},
+          parameters: {},
+          configurationCustomized: true,
         },
       ],
     }
@@ -342,6 +350,18 @@ describe('CommandClient', () => {
 
     await expect(listRuntimeTools(client)).resolves.toEqual(response)
     expect(invoke).toHaveBeenLastCalledWith('list_runtime_tools')
+
+    await expect(
+      updateRuntimeToolConfig({ name: 'FileRead', timeoutMs: 45_000, parameters: {} }, client),
+    ).resolves.toEqual(response)
+    expect(invoke).toHaveBeenLastCalledWith('update_runtime_tool_config', {
+      name: 'FileRead',
+      timeoutMs: 45_000,
+      parameters: {},
+    })
+
+    await expect(resetRuntimeToolConfig({ name: 'FileRead' }, client)).resolves.toEqual(response)
+    expect(invoke).toHaveBeenLastCalledWith('reset_runtime_tool_config', { name: 'FileRead' })
   })
 
   it('formats object-shaped Tauri command errors through their message', () => {

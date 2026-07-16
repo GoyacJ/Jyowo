@@ -92,14 +92,13 @@ function ContentBlockView({
     const kind = block.artifact.artifactKind ?? item.kind
     const canOpen = Boolean(
       onSelect &&
-        kind !== 'command' &&
-        kind !== 'terminal' &&
-        (block.artifact.blobId ||
+        (item.kind === 'command' ||
+          block.artifact.blobId ||
           block.artifact.presentation?.previewBlobId ||
           block.artifact.preview),
     )
     const surface = block.artifact.presentation?.preferredSurface === 'inline' ? 'inline' : 'card'
-    const useLegacySummary = ['command', 'diff'].includes(kind)
+    const useLegacySummary = ['command', 'diff', 'terminal'].includes(kind)
     return (
       <ArtifactContainer
         item={selectionItem}
@@ -138,9 +137,20 @@ function ContentBlockView({
         {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
       </div>
     )
-    return onSelect && isBrowserToolItem(toolItem) ? (
+    const canOpen =
+      onSelect &&
+      (isBrowserToolItem(toolItem) ||
+        (toolItem.tool?.operation === 'command' &&
+          Boolean(toolItem.tool.command || toolItem.tool.output)))
+    return canOpen && onSelect ? (
       <button
-        aria-label={t('timeline.openPanel', { panel: t('workbench.targetKind.browser') })}
+        aria-label={t('timeline.openPanel', {
+          panel: t(
+            isBrowserToolItem(toolItem)
+              ? 'workbench.targetKind.browser'
+              : 'workbench.targetKind.command',
+          ),
+        })}
         className="w-full rounded-md text-left hover:bg-muted/60"
         onClick={(event) => onSelect(toolItem, event.currentTarget)}
         type="button"
@@ -153,10 +163,10 @@ function ContentBlockView({
   }
 
   const text = block.text === item.summary ? timelineSummary(item, t) : block.text
-  return (
+  const notice = (
     <div
       className={`flex items-start gap-2.5 py-1 text-sm leading-5 ${
-        block.level === 'error' ? 'text-destructive' : 'text-muted-foreground'
+        block.level === 'error' ? 'text-red-700 dark:text-red-400' : 'text-muted-foreground'
       }`}
       data-notice-level={block.level}
     >
@@ -164,6 +174,18 @@ function ContentBlockView({
       <span>{text}</span>
       {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
     </div>
+  )
+  return onSelect && item.kind === 'error' ? (
+    <button
+      aria-label={t('timeline.openPanel', { panel: t('workbench.targetKind.audit') })}
+      className="w-full rounded-md text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={(event) => onSelect(item, event.currentTarget)}
+      type="button"
+    >
+      {notice}
+    </button>
+  ) : (
+    notice
   )
 }
 
@@ -232,7 +254,7 @@ function contentBlockKey(block: ContentBlock, index: number) {
 }
 
 function artifactLabelKey(kind: string) {
-  if (kind === 'command') return 'timeline.command'
+  if (kind === 'command' || kind === 'terminal') return 'timeline.command'
   if (kind === 'diff') return 'timeline.changes'
   if (kind === 'image' || kind === 'screenshot') return 'timeline.image'
   if (kind === 'file') return 'workbench.targetKind.file'
@@ -241,7 +263,7 @@ function artifactLabelKey(kind: string) {
 
 function artifactWorkbenchLabelKey(kind: string) {
   if (kind === 'diff') return 'workbench.tabs.changes'
-  if (kind === 'command') return 'workbench.tabs.commands'
+  if (kind === 'command' || kind === 'terminal') return 'workbench.tabs.commands'
   if (kind === 'file') return 'workbench.targetKind.file'
   if (kind === 'image' || kind === 'screenshot') return 'workbench.tabs.sources'
   return 'workbench.targetKind.artifact'
@@ -249,7 +271,9 @@ function artifactWorkbenchLabelKey(kind: string) {
 
 function ArtifactIcon({ kind }: { kind: string }) {
   const className = 'mt-1 size-4 shrink-0 text-muted-foreground'
-  if (kind === 'command') return <SquareTerminal aria-hidden="true" className={className} />
+  if (kind === 'command' || kind === 'terminal') {
+    return <SquareTerminal aria-hidden="true" className={className} />
+  }
   if (kind === 'diff') return <FileDiff aria-hidden="true" className={className} />
   if (kind === 'image' || kind === 'screenshot') {
     return <ImageIcon aria-hidden="true" className={className} />

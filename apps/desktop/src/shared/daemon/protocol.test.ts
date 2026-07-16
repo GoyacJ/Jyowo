@@ -6,7 +6,7 @@ import { parseClientFrame, parseServerFrame } from './protocol'
 
 const completeSubmitMessageFrame: ClientFrame = {
   requestId: 'req-typed-command',
-  protocolVersion: 5,
+  protocolVersion: 6,
   request: {
     type: 'submit_message',
     metadata: {
@@ -44,7 +44,7 @@ describe('daemon protocol validation', () => {
   it('accepts a generated event batch frame', () => {
     const frame = parseServerFrame({
       requestId: null,
-      protocolVersion: 5,
+      protocolVersion: 6,
       message: {
         type: 'event_batch',
         afterOffset: 40,
@@ -111,7 +111,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseServerFrame({
         requestId: null,
-        protocolVersion: 5,
+        protocolVersion: 6,
         message: { type: 'future_event' },
       }),
     ).toThrow('Invalid daemon server frame')
@@ -130,7 +130,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 5,
+        protocolVersion: 6,
         request: {
           type: 'read_blob',
           blobId: '00000000000000000000000001',
@@ -144,7 +144,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 5,
+        protocolVersion: 6,
         request: {
           type: 'read_blob',
           blobId: '/tmp/secret',
@@ -157,7 +157,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseClientFrame({
         requestId: 'req-1',
-        protocolVersion: 5,
+        protocolVersion: 6,
         request: {
           type: 'read_blob',
           blobId: '80000000000000000000000000',
@@ -170,7 +170,7 @@ describe('daemon protocol validation', () => {
     expect(() =>
       parseServerFrame({
         requestId: null,
-        protocolVersion: 5,
+        protocolVersion: 6,
         message: {
           type: 'event_batch',
           afterOffset: 40,
@@ -214,7 +214,7 @@ describe('daemon protocol validation', () => {
 function eventBatchFrame(recordedAt: string) {
   return {
     requestId: null,
-    protocolVersion: 5,
+    protocolVersion: 6,
     message: {
       type: 'event_batch',
       afterOffset: 40,

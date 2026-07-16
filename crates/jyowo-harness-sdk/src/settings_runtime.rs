@@ -60,6 +60,14 @@ impl DesktopSettingsRuntime {
         self.inner.tool_registry()
     }
 
+    /// Descriptors for tools appended while a run is assembled. They are part
+    /// of the user-facing catalog even though they do not live in the shared
+    /// registry because their implementations require run-scoped state.
+    #[must_use]
+    pub fn runtime_appended_tool_descriptors(&self) -> Vec<harness_contracts::ToolDescriptor> {
+        crate::harness::runtime_appended_tool_descriptors()
+    }
+
     #[must_use]
     pub fn skill_registry(&self) -> &harness_skill::SkillRegistry {
         self.inner.skill_registry()

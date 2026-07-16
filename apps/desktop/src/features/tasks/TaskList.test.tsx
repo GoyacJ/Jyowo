@@ -99,6 +99,23 @@ describe('TaskList', () => {
     expect(onCreateConversation).toHaveBeenCalledWith('/repo/alpha')
   })
 
+  it('opens scheduled tasks directly below new conversation', () => {
+    const onOpenScheduledTasks = vi.fn()
+    renderTaskList({ onOpenScheduledTasks })
+
+    const actions = screen.getAllByRole('button')
+    const newConversationIndex = actions.findIndex(
+      (button) => button.getAttribute('aria-label') === 'New conversation',
+    )
+    const scheduledTasksIndex = actions.findIndex(
+      (button) => button.getAttribute('aria-label') === 'Open scheduled tasks',
+    )
+
+    expect(scheduledTasksIndex).toBe(newConversationIndex + 1)
+    fireEvent.click(screen.getByRole('button', { name: 'Open scheduled tasks' }))
+    expect(onOpenScheduledTasks).toHaveBeenCalledOnce()
+  })
+
   it('exposes project addition from the projects section', () => {
     const onAddProject = vi.fn()
     renderTaskList({ onAddProject })
@@ -232,6 +249,7 @@ function renderTaskList(overrides: TaskListOverrides = {}, locale: 'en-US' | 'zh
         onAddProject={vi.fn()}
         onCreateConversation={vi.fn()}
         onMoveProject={vi.fn()}
+        onOpenScheduledTasks={vi.fn()}
         onRemoveProject={vi.fn()}
         onRemoveTask={vi.fn()}
         onRenameProject={vi.fn()}

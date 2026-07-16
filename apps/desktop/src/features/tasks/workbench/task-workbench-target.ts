@@ -11,7 +11,6 @@ export function taskWorkbenchTargetFromTimelineItem(
   const artifact = artifactBlock ? normalizeArtifactDescriptor(artifactBlock.artifact) : undefined
   if (artifact && (artifact.blobId || artifact.presentation?.previewBlobId || artifact.preview)) {
     const artifactKind = artifact.artifactKind ?? 'artifact'
-    if (artifactKind === 'command' || artifactKind === 'terminal') return null
     const kind = artifactTargetKind(artifactKind)
     return {
       artifact: {
@@ -47,11 +46,47 @@ export function taskWorkbenchTargetFromTimelineItem(
   }
 
   if (item.kind === 'diff' && item.blobId) return { ...shared, kind: 'diff' }
+  if (item.kind === 'command') {
+    return {
+      ...shared,
+      artifact: item.blobId
+        ? undefined
+        : {
+            artifactKind: 'command',
+            mediaType: 'text/plain',
+            preview: item.summary,
+          },
+      kind: 'command',
+    }
+  }
   if (item.kind === 'user_message' && item.blobId) return { ...shared, kind: 'file' }
   if (item.kind === 'file' && item.blobId) return { ...shared, kind: 'file' }
   if (item.kind === 'artifact' && item.blobId) return { ...shared, kind: 'artifact' }
   if (item.kind === 'subagent') return { ...shared, kind: 'subagent' }
   if (item.kind === 'image' && item.blobId) return { ...shared, kind: 'source' }
+  if (item.kind === 'error') {
+    return { ...shared, blobId: undefined, kind: 'audit', resourceId: item.id }
+  }
+  if (
+    item.kind === 'tool_activity' &&
+    item.tool?.operation === 'command' &&
+    (item.tool.command || item.tool.output)
+  ) {
+    const preview = [item.tool.command ? `$ ${item.tool.command}` : null, item.tool.output]
+      .filter(Boolean)
+      .join('\n')
+    return {
+      ...shared,
+      artifact: {
+        artifactKind: 'command',
+        mediaType: 'text/plain',
+        preview,
+      },
+      blobId: undefined,
+      kind: 'command',
+      resourceId: item.tool.toolUseId,
+    }
+  }
   if (
     item.kind === 'tool_activity' &&
     ['BrowserUse', 'BrowserDevTools'].includes(item.tool?.toolName ?? '')
@@ -62,6 +97,7 @@ export function taskWorkbenchTargetFromTimelineItem(
 }
 
 function artifactTargetKind(artifactKind: string): TaskWorkbenchTarget['kind'] {
+  if (artifactKind === 'command' || artifactKind === 'terminal') return 'command'
   if (artifactKind === 'diff' || artifactKind === 'patch') return 'diff'
   if (artifactKind === 'file') return 'file'
   if (artifactKind === 'image' || artifactKind === 'screenshot') return 'source'
@@ -72,6 +108,17 @@ export function isTaskWorkbenchSidebarTarget(
   target: TaskWorkbenchTarget | null | undefined,
 ): target is TaskWorkbenchTarget {
   return Boolean(
-    target && ['artifact', 'browser', 'diff', 'file', 'source', 'subagent'].includes(target.kind),
+    target &&
+      [
+        'artifact',
+        'audit',
+        'browser',
+        'command',
+        'diff',
+        'environment',
+        'file',
+        'source',
+        'subagent',
+      ].includes(target.kind),
   )
 }

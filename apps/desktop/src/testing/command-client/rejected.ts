@@ -17,6 +17,8 @@ export function createRejectedTestCommandClient(error: unknown): CommandClient {
     getProviderConfigApiKey: () => Promise.reject(error),
     getRuntimeExecutionStatus: () => Promise.reject(error),
     listRuntimeTools: () => Promise.reject(error),
+    updateRuntimeToolConfig: () => Promise.reject(error),
+    resetRuntimeToolConfig: () => Promise.reject(error),
     resetRuntimeTools: () => Promise.reject(error),
     setRuntimeToolEnabled: () => Promise.reject(error),
     getSkillCatalogEntry: () => Promise.reject(error),

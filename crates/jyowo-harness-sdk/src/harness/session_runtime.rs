@@ -661,6 +661,7 @@ impl Harness {
             &mut tools,
             &mut cap_registry,
             &model_snapshot,
+            &run_options.tool_profile,
         );
         #[cfg(feature = "agents-team")]
         if let Some(agent_tool_policy) = run_options.agent_tool_policy.as_ref() {
@@ -684,6 +685,7 @@ impl Harness {
                     &mut tools,
                     agent_tool_policy,
                     session_snapshot,
+                    &run_options.tool_profile,
                 );
             }
         }
@@ -709,6 +711,7 @@ impl Harness {
                     run_options.model_config_id.clone(),
                     run_options.permission_mode,
                     session_snapshot,
+                    &run_options.tool_profile,
                 );
             }
         }
@@ -739,6 +742,9 @@ impl Harness {
         let subagent_tool_enabled = super::tool_pool::subagent_tool_should_be_enabled(
             harness_has_subagent_runner,
             run_options.agent_tool_policy.as_ref(),
+        ) && super::tool_pool::runtime_appended_tool_allowed(
+            &run_options.tool_profile,
+            "agent",
         );
         #[cfg(not(feature = "agents-subagent"))]
         let subagent_tool_enabled = false;

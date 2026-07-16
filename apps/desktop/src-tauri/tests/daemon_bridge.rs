@@ -741,8 +741,10 @@ fn active_tauri_handler_keeps_settings_queries_outside_the_legacy_task_boundary(
     for command in [
         "commands::get_runtime_execution_status",
         "commands::list_runtime_tools",
+        "commands::reset_runtime_tool_config",
         "commands::reset_runtime_tools",
         "commands::set_runtime_tool_enabled",
+        "commands::update_runtime_tool_config",
     ] {
         assert!(
             source.contains(command),

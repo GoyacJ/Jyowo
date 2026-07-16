@@ -46,6 +46,7 @@ fn tool_descriptor_is_contract_surface() {
             effects: vec!["reads_files".to_owned()],
             modalities: vec!["text".to_owned()],
             integration_source: ToolIntegrationSource::Builtin,
+            configuration: None,
         },
     };
 

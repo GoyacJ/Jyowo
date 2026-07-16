@@ -43,6 +43,9 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   const activeTaskId = useRouterState({
     select: (state) => state.location.search.taskId,
   }) as TypedUlid | undefined
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
   const isCompact = compact || sidebarCollapsed
 
   const workspacesQuery = useQuery({
@@ -192,6 +195,10 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
       if (root) createTask.mutate(root)
       return
     }
+    if (action === 'scheduled-tasks') {
+      void navigate({ to: '/scheduled-tasks' })
+      return
+    }
     void navigate({ to: '/settings' })
   }
 
@@ -240,6 +247,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         onAddProject={() => addProject.mutate()}
         onCreateConversation={(root) => createTask.mutate(root)}
         onMoveProject={(path, direction) => moveProject.mutate({ direction, path })}
+        onOpenScheduledTasks={() => void navigate({ to: '/scheduled-tasks' })}
         onRemoveProject={(path) => removeProject.mutate(path)}
         onRemoveTask={removeTask}
         onRenameProject={(path, name) => renameProject.mutate({ name, path })}
@@ -251,6 +259,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         onToggleSection={setSidebarSectionExpanded}
         projects={workspacesQuery.data?.projects ?? []}
         sections={sidebarSections}
+        scheduledTasksActive={pathname === '/scheduled-tasks'}
         tasks={tasksQuery.data?.tasks ?? []}
       />
 

@@ -12,7 +12,7 @@ describe('taskWorkbenchSummaryItems', () => {
   it('derives only available task context with stable targets and statuses', () => {
     const items = taskWorkbenchSummaryItems({
       events,
-      labels: { subagents: '子智能体' },
+      labels: { environment: '本地工作区', subagents: '子智能体' },
       projection,
       timeline,
     })
@@ -20,6 +20,8 @@ describe('taskWorkbenchSummaryItems', () => {
     expect(items.map((item) => item.id)).toEqual([
       'changes',
       'environment',
+      'commands',
+      'audit',
       'sources',
       'artifacts',
       'subagents',
@@ -37,14 +39,26 @@ describe('taskWorkbenchSummaryItems', () => {
       count: 2,
       target: { kind: 'artifact', resourceId: 'artifact-blob' },
     })
-    expect(items.find((item) => item.id === 'environment')?.target).toBeUndefined()
+    expect(items.find((item) => item.id === 'environment')?.target).toMatchObject({
+      kind: 'environment',
+      resourceId: 'workspace',
+      title: '本地工作区',
+    })
+    expect(items.find((item) => item.id === 'commands')).toMatchObject({
+      status: 'running',
+      target: { kind: 'command', resourceId: 'command-blob' },
+    })
+    expect(items.find((item) => item.id === 'audit')).toMatchObject({
+      status: 'failed',
+      target: { kind: 'audit', resourceId: 'error-event' },
+    })
   })
 
   it('does not create placeholder rows for absent context', () => {
     expect(
       taskWorkbenchSummaryItems({
         events: [],
-        labels: { subagents: '子智能体' },
+        labels: { environment: '本地工作区', subagents: '子智能体' },
         projection: { ...projection, subagents: [], workspace: null },
         timeline: [],
       }),
@@ -54,7 +68,7 @@ describe('taskWorkbenchSummaryItems', () => {
   it('uses the supplied localized subagent label when no summary is available', () => {
     const items = taskWorkbenchSummaryItems({
       events: [],
-      labels: { subagents: '子智能体' },
+      labels: { environment: '本地工作区', subagents: '子智能体' },
       projection: {
         ...projection,
         subagents: projection.subagents?.map((subagent) => ({ ...subagent, summary: undefined })),
@@ -81,7 +95,7 @@ describe('taskWorkbenchSummaryItems', () => {
     ]
     const items = taskWorkbenchSummaryItems({
       events: [],
-      labels: { subagents: '子智能体' },
+      labels: { environment: '本地工作区', subagents: '子智能体' },
       projection: { ...projection, subagents },
       timeline: [],
     })
@@ -94,16 +108,19 @@ describe('taskWorkbenchSummaryItems', () => {
     })
   })
 
-  it('keeps errors out of the file and agent context rail', () => {
+  it('exposes errors as focused audit targets without mixing them into file context', () => {
     const items = taskWorkbenchSummaryItems({
       events: [],
-      labels: { subagents: 'Subagents' },
+      labels: { environment: 'Local workspace', subagents: 'Subagents' },
       projection: { ...projection, state: 'completed' },
       timeline: [item(1, 'error', 'Historical failure', 'old-error')],
     })
 
-    expect(items.map((item) => item.id)).toEqual(['environment', 'subagents'])
-    expect(items.some((item) => item.detail === 'Historical failure')).toBe(false)
+    expect(items.map((item) => item.id)).toEqual(['environment', 'audit', 'subagents'])
+    expect(items.find((item) => item.id === 'audit')).toMatchObject({
+      detail: 'Historical failure',
+      target: { kind: 'audit', resourceId: 'old-error' },
+    })
   })
 })
 

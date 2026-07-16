@@ -27,47 +27,64 @@ pub struct WebFetchTool {
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self {
-            descriptor: super::with_result_budget(
-                super::with_output_schema(
-                    super::descriptor(
-                        "WebFetch",
-                        "Web fetch",
-                        "Fetch text content from an HTTP URL.",
-                        ToolGroup::Network,
-                        true,
-                        true,
-                        false,
-                        262_144,
-                        Vec::new(),
-                        super::object_schema(
-                            &["url"],
-                            json!({
-                                "url": { "type": "string" },
-                                "max_bytes": { "type": "integer", "minimum": 1 }
-                            }),
+            descriptor: super::with_configuration(
+                super::with_result_budget(
+                    super::with_output_schema(
+                        super::descriptor(
+                            "WebFetch",
+                            "Web fetch",
+                            "Fetch text content from an HTTP URL.",
+                            ToolGroup::Network,
+                            true,
+                            true,
+                            false,
+                            262_144,
+                            Vec::new(),
+                            super::object_schema(
+                                &["url"],
+                                json!({
+                                    "url": { "type": "string" },
+                                    "max_bytes": { "type": "integer", "minimum": 1 }
+                                }),
+                            ),
                         ),
+                        json!({
+                            "type": "object",
+                            "required": ["url", "status", "content_type", "body", "body_bytes", "truncated"],
+                            "properties": {
+                                "url": { "type": "string" },
+                                "status": { "type": "integer" },
+                                "content_type": { "type": ["string", "null"] },
+                                "body": { "type": ["string", "null"] },
+                                "body_bytes": { "type": "integer", "minimum": 0 },
+                                "truncated": { "type": "boolean" }
+                            },
+                            "additionalProperties": false
+                        }),
                     ),
-                    json!({
-                        "type": "object",
-                        "required": ["url", "status", "content_type", "body", "body_bytes", "truncated"],
-                        "properties": {
-                            "url": { "type": "string" },
-                            "status": { "type": "integer" },
-                            "content_type": { "type": ["string", "null"] },
-                            "body": { "type": ["string", "null"] },
-                            "body_bytes": { "type": "integer", "minimum": 0 },
-                            "truncated": { "type": "boolean" }
-                        },
-                        "additionalProperties": false
-                    }),
+                    super::result_budget(
+                        BudgetMetric::Bytes,
+                        262_144,
+                        OverflowAction::Offload,
+                        4_000,
+                        4_000,
+                    ),
                 ),
-                super::result_budget(
-                    BudgetMetric::Bytes,
-                    262_144,
-                    OverflowAction::Offload,
-                    4_000,
-                    4_000,
-                ),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "defaultMaxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10485760,
+                            "title": "Default response limit",
+                            "description": "Maximum response bytes when a call does not provide max_bytes."
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+                json!({ "defaultMaxBytes": 64000 }),
+                Some(30_000),
             ),
         }
     }
@@ -88,7 +105,7 @@ impl Tool for WebFetchTool {
 
     async fn validate(&self, input: &Value, _ctx: &ToolContext) -> Result<(), ValidationError> {
         url(input)?;
-        max_bytes(input)?;
+        max_bytes(input, _ctx)?;
         Ok(())
     }
 
@@ -157,11 +174,13 @@ impl Tool for WebFetchTool {
     ) -> Result<ToolStream, ToolError> {
         let input = authorized.raw_input();
         let url = url(input).map_err(validation_error)?;
-        let max_bytes = max_bytes(input).map_err(validation_error)?;
+        let max_bytes = max_bytes(input, &ctx).map_err(validation_error)?;
+        let request_timeout =
+            Duration::from_millis(ctx.runtime_settings(&self.descriptor).timeout_ms);
 
         let permit = authorized.network_permit()?;
         let broker = ctx.capability::<dyn ToolNetworkBrokerCap>(ToolCapability::NetworkBroker)?;
-        brokered_web_fetch(broker, permit, url, max_bytes).await
+        brokered_web_fetch(broker, permit, url, max_bytes, request_timeout).await
     }
 }
 
@@ -170,6 +189,7 @@ async fn brokered_web_fetch(
     permit: AuthorizedNetworkPermit,
     url: Url,
     max_bytes: usize,
+    request_timeout: Duration,
 ) -> Result<ToolStream, ToolError> {
     let url_str = url.to_string();
     let max_bytes_u64 = max_bytes as u64;
@@ -178,7 +198,7 @@ async fn brokered_web_fetch(
         url: url_str.clone(),
         headers: BTreeMap::new(),
         body: None,
-        timeout: Duration::from_secs(30),
+        timeout: request_timeout,
         max_response_bytes: max_bytes_u64.min(10 * 1024 * 1024),
     };
     let resp = broker.execute_json(&permit, req).await?;
@@ -246,9 +266,16 @@ fn url(input: &Value) -> Result<Url, ValidationError> {
     }
 }
 
-fn max_bytes(input: &Value) -> Result<usize, ValidationError> {
+fn max_bytes(input: &Value, ctx: &ToolContext) -> Result<usize, ValidationError> {
     let Some(value) = input.get("max_bytes") else {
-        return Ok(64_000);
+        let configured = ctx.runtime_settings(&WebFetchTool::default().descriptor);
+        let raw = configured
+            .parameters
+            .get("defaultMaxBytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(64_000);
+        return usize::try_from(raw)
+            .map_err(|_| ValidationError::from("defaultMaxBytes must fit in usize"));
     };
     let raw = value
         .as_u64()
