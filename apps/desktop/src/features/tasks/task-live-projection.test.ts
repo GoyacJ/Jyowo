@@ -24,7 +24,7 @@ describe('deriveLiveTaskSnapshot', () => {
       }),
       engineEvent(6, 'assistant_message_completed', {
         at: '2026-07-12T01:00:03Z',
-        content: { text: 'First answer' },
+        content: { text: 'Canonical answer' },
         message_id: messageId,
         pricing_snapshot_id: null,
         run_id: id(31),
@@ -57,7 +57,7 @@ describe('deriveLiveTaskSnapshot', () => {
     })
     expect(
       result.timeline.filter((item) => item.kind === 'assistant_text').map((item) => item.summary),
-    ).toEqual(['First ', 'answer'])
+    ).toEqual(['First ', 'Canonical answer'])
     expect(
       result.timeline
         .filter((item) => item.kind === 'assistant_text')
@@ -93,6 +93,96 @@ describe('deriveLiveTaskSnapshot', () => {
       kind: 'assistant_text',
       semanticGroupId: messageId,
       summary: 'Completion fallback',
+    })
+  })
+
+  it('projects pure media and appends media to streamed assistant content', () => {
+    const mediaMessageId = id(51)
+    const streamedMessageId = id(52)
+    const imageBlobId = id(53)
+    const videoBlobId = id(54)
+    const fileBlobId = id(55)
+    const streamedImageBlobId = id(56)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      engineEvent(3, 'assistant_message_completed', {
+        content: {
+          multimodal: [
+            mediaPart('image', imageBlobId, 'image/png', 10),
+            mediaPart('video', videoBlobId, 'video/mp4', 20),
+            mediaPart('file', fileBlobId, 'application/pdf', 30),
+          ],
+        },
+        message_id: mediaMessageId,
+      }),
+      engineEvent(4, 'assistant_delta_produced', {
+        delta: { text: 'Rendered image' },
+        message_id: streamedMessageId,
+      }),
+      engineEvent(5, 'assistant_message_completed', {
+        content: {
+          multimodal: [
+            { text: 'Canonical before ' },
+            mediaPart('image', streamedImageBlobId, 'image/webp', 40),
+            { text: ' after image' },
+          ],
+        },
+        message_id: streamedMessageId,
+      }),
+    ])
+
+    expect(result.timeline).toHaveLength(2)
+    expect(result.timeline[0]).toMatchObject({
+      blobId: imageBlobId,
+      contentBlocks: [
+        {
+          artifact: {
+            artifactKind: 'image',
+            blobId: imageBlobId,
+            mediaType: 'image/png',
+            presentation: { preferredSurface: 'inline' },
+          },
+          type: 'artifact',
+        },
+        {
+          artifact: {
+            artifactKind: 'video',
+            blobId: videoBlobId,
+            mediaType: 'video/mp4',
+            presentation: { preferredSurface: 'inline' },
+          },
+          type: 'artifact',
+        },
+        {
+          artifact: {
+            artifactKind: 'file',
+            blobId: fileBlobId,
+            mediaType: 'application/pdf',
+            presentation: { preferredSurface: 'card' },
+          },
+          type: 'artifact',
+        },
+      ],
+      incomplete: false,
+      kind: 'assistant_text',
+      semanticGroupId: mediaMessageId,
+      summary: 'Image',
+    })
+    expect(result.timeline[1]).toMatchObject({
+      blobId: streamedImageBlobId,
+      contentBlocks: [
+        { format: 'markdown', text: 'Canonical before ', type: 'text' },
+        {
+          artifact: {
+            artifactKind: 'image',
+            blobId: streamedImageBlobId,
+            mediaType: 'image/webp',
+          },
+          type: 'artifact',
+        },
+        { format: 'markdown', text: ' after image', type: 'text' },
+      ],
+      incomplete: false,
+      summary: 'Canonical before  after image',
     })
   })
 
@@ -253,6 +343,40 @@ describe('deriveLiveTaskSnapshot', () => {
     ])
   })
 
+  it('preserves queued attachments in consumed user message content blocks', () => {
+    const queueItemId = id(57)
+    const attachmentId = id(58)
+    const segmentId = id(59)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'message.queued', {
+        attachments: [attachmentId],
+        content: 'Inspect this file',
+        contextReferences: [],
+        createdAt: '2026-07-12T01:00:00Z',
+        queueItemId,
+      }),
+      taskEvent(4, 'run.started', { segmentId, startedAt: '2026-07-12T01:00:01Z' }),
+      taskEvent(5, 'message.consumed', { queueItemId, revision: 1, segmentId }),
+    ])
+
+    expect(result.timeline.at(-1)).toMatchObject({
+      blobId: attachmentId,
+      contentBlocks: [
+        { format: 'plain', text: 'Inspect this file', type: 'text' },
+        {
+          artifact: {
+            artifactKind: 'file',
+            blobId: attachmentId,
+            presentation: { preferredSurface: 'card' },
+          },
+          type: 'artifact',
+        },
+      ],
+      kind: 'user_message',
+      summary: 'Inspect this file',
+    })
+  })
+
   it('updates queue and permission state from committed live events without replaying the snapshot', () => {
     const queueItemId = id(60)
     const permission = { requestId: id(61), revision: 1, route: 'foreground_task' as const }
@@ -342,20 +466,57 @@ describe('deriveLiveTaskSnapshot', () => {
     const blobId = id(82)
     const result = deriveLiveTaskSnapshot(snapshot, [
       engineEvent(3, 'artifact_created', {
-        blob_ref: { content_hash: Array(32).fill(1), id: blobId, size: 12 },
+        blob_ref: {
+          content_hash: Array(32).fill(1),
+          content_type: 'text/markdown',
+          id: blobId,
+          size: 12,
+        },
         kind: 'file',
         title: 'report.md',
       }),
       engineEvent(4, 'artifact_created', {
-        blob_ref: { content_hash: Array(32).fill(2), id: id(83), size: 24 },
+        blob_ref: {
+          content_hash: Array(32).fill(2),
+          content_type: 'video/mp4',
+          id: id(83),
+          size: 24,
+        },
         kind: 'video',
         title: 'demo.mp4',
       }),
     ])
 
     expect(result.timeline).toEqual([
-      expect.objectContaining({ blobId, kind: 'file', summary: 'report.md' }),
-      expect.objectContaining({ kind: 'artifact', summary: 'demo.mp4' }),
+      expect.objectContaining({
+        blobId,
+        contentBlocks: [
+          expect.objectContaining({
+            artifact: expect.objectContaining({
+              artifactKind: 'file',
+              mediaType: 'text/markdown',
+              size: 12,
+            }),
+            type: 'artifact',
+          }),
+        ],
+        kind: 'file',
+        summary: 'report.md',
+      }),
+      expect.objectContaining({
+        contentBlocks: [
+          expect.objectContaining({
+            artifact: expect.objectContaining({
+              artifactKind: 'video',
+              mediaType: 'video/mp4',
+              presentation: { preferredSurface: 'inline' },
+            }),
+            type: 'artifact',
+          }),
+        ],
+        kind: 'artifact',
+        summary: 'demo.mp4',
+      }),
     ])
   })
 
@@ -452,6 +613,25 @@ function usage() {
     input_tokens: 1,
     output_tokens: 1,
     tool_calls: 0,
+  }
+}
+
+function mediaPart(
+  kind: 'file' | 'image' | 'video',
+  blobId: string,
+  mimeType: string,
+  size: number,
+) {
+  return {
+    [kind]: {
+      blob_ref: {
+        content_hash: Array(32).fill(1),
+        content_type: 'application/octet-stream',
+        id: blobId,
+        size,
+      },
+      mime_type: mimeType,
+    },
   }
 }
 

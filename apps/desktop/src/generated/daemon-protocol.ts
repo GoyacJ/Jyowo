@@ -816,22 +816,37 @@ export type SubagentActorState =
   | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
- * via the `definition` "TimelineEventKind".
+ * via the `definition` "TimelineContentBlock".
  */
-export type TimelineEventKind =
-  | 'user_message'
-  | 'assistant_text'
-  | 'tool_activity'
-  | 'command'
-  | 'diff'
-  | 'file'
-  | 'artifact'
-  | 'image'
-  | 'permission'
-  | 'compaction'
-  | 'subagent'
-  | 'notice'
-  | 'error'
+export type TimelineContentBlock =
+  | {
+      format: TimelineTextFormat
+      text: string
+      type: 'text'
+    }
+  | {
+      artifact: TimelineArtifactProjection
+      type: 'artifact'
+    }
+  | {
+      activity: TimelineToolProjection
+      type: 'tool_activity'
+    }
+  | {
+      level: TimelineNoticeLevel
+      text: string
+      type: 'notice'
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineTextFormat".
+ */
+export type TimelineTextFormat = 'plain' | 'markdown'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineArtifactSurface".
+ */
+export type TimelineArtifactSurface = 'inline' | 'card' | 'workbench'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "TimelineToolOperation".
@@ -850,6 +865,29 @@ export type TimelineToolOperation =
  * via the `definition` "TimelineToolStatus".
  */
 export type TimelineToolStatus = 'requested' | 'running' | 'completed' | 'denied' | 'failed'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineNoticeLevel".
+ */
+export type TimelineNoticeLevel = 'info' | 'warning' | 'error'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineEventKind".
+ */
+export type TimelineEventKind =
+  | 'user_message'
+  | 'assistant_text'
+  | 'tool_activity'
+  | 'command'
+  | 'diff'
+  | 'file'
+  | 'artifact'
+  | 'image'
+  | 'permission'
+  | 'compaction'
+  | 'subagent'
+  | 'notice'
+  | 'error'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "EventSourceKind".
@@ -1465,6 +1503,7 @@ export interface SubagentProjection {
  */
 export interface TimelineItemProjection {
   blobId?: TypedUlid | null
+  contentBlocks?: TimelineContentBlock[]
   globalOffset: number
   id: string
   incomplete: boolean
@@ -1473,6 +1512,29 @@ export interface TimelineItemProjection {
   semanticGroupId?: string | null
   summary: string
   tool?: TimelineToolProjection | null
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineArtifactProjection".
+ */
+export interface TimelineArtifactProjection {
+  artifactId?: string | null
+  artifactKind?: string | null
+  blobId?: TypedUlid | null
+  format?: string | null
+  mediaType: string
+  presentation?: TimelineArtifactPresentation | null
+  preview?: string | null
+  size?: number | null
+  title: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "TimelineArtifactPresentation".
+ */
+export interface TimelineArtifactPresentation {
+  preferredSurface?: TimelineArtifactSurface | null
+  previewBlobId?: TypedUlid | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema

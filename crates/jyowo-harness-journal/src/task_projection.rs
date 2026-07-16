@@ -4,8 +4,10 @@ use chrono::{DateTime, Utc};
 use harness_contracts::{
     ActorId, ChildAttachment, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode,
     QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
-    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState, TimelineEventKind,
-    TimelineItemProjection, TimelineToolOperation, TimelineToolProjection, TimelineToolStatus,
+    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState,
+    TimelineArtifactPresentation, TimelineArtifactProjection, TimelineArtifactSurface,
+    TimelineContentBlock, TimelineEventKind, TimelineItemProjection, TimelineNoticeLevel,
+    TimelineTextFormat, TimelineToolOperation, TimelineToolProjection, TimelineToolStatus,
     ToolResult, ToolResultPart,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -1172,10 +1174,17 @@ fn project_timeline(
         ),
         TaskEvent::Engine { .. } => unreachable!("engine events are projected above"),
     };
-    let blob_id = reduced
+    let attachments = reduced
         .terminal_queue_item
         .as_ref()
-        .and_then(|item| item.attachments.first().copied());
+        .map(|item| item.attachments.as_slice())
+        .unwrap_or_default();
+    let blob_id = attachments.first().copied();
+    let content_blocks = if kind == TimelineEventKind::UserMessage {
+        user_message_content_blocks(&summary, attachments)
+    } else {
+        default_content_blocks(kind.clone(), &summary, blob_id, None)
+    };
     let timeline = TimelineItemProjection {
         id: envelope.event_id.to_string(),
         kind,
@@ -1186,6 +1195,7 @@ fn project_timeline(
         blob_id,
         incomplete,
         tool: None,
+        content_blocks,
     };
     insert_timeline_item(transaction, envelope, &timeline)
 }
@@ -1285,34 +1295,40 @@ fn project_engine_timeline(
                 blob_id: None,
                 incomplete: true,
                 tool: None,
+                content_blocks: vec![TimelineContentBlock::Text {
+                    format: TimelineTextFormat::Markdown,
+                    text: text.clone(),
+                }],
             }
         }
         Event::AssistantMessageCompleted(completed) => {
             let semantic_group_id = completed.message_id.to_string();
+            let content_blocks = message_content_blocks(&completed.content);
+            if content_blocks.is_empty() {
+                return Ok(());
+            }
             if complete_assistant_group(
                 transaction,
                 envelope.task_id,
                 run_segment_id,
                 &semantic_group_id,
+                &content_blocks,
             )? {
                 return Ok(());
             }
-            let Some(text) = message_content_text(&completed.content) else {
-                return Ok(());
-            };
-            if text.is_empty() {
-                return Ok(());
-            }
+            let summary = content_blocks_summary(&content_blocks);
+            let blob_id = first_artifact_blob_id(&content_blocks);
             TimelineItemProjection {
                 id: envelope.event_id.to_string(),
                 kind: TimelineEventKind::AssistantText,
                 global_offset: envelope.global_offset,
                 run_segment_id,
                 semantic_group_id: Some(semantic_group_id),
-                summary: text,
-                blob_id: None,
+                summary,
+                blob_id,
                 incomplete: false,
                 tool: None,
+                content_blocks,
             }
         }
         Event::AssistantNotice(notice) => engine_timeline_item(
@@ -1339,29 +1355,47 @@ fn project_engine_timeline(
             None,
             false,
         ),
-        Event::ArtifactCreated(artifact) => engine_timeline_item(
-            envelope,
-            artifact_timeline_kind(&artifact.kind),
-            run_segment_id,
-            artifact.title.clone(),
-            artifact.blob_ref.as_ref().map(|blob| blob.id),
-            false,
-        ),
-        Event::ArtifactUpdated(artifact) => engine_timeline_item(
-            envelope,
-            artifact
-                .kind
-                .as_deref()
-                .map(artifact_timeline_kind)
-                .unwrap_or(TimelineEventKind::Artifact),
-            run_segment_id,
-            artifact
+        Event::ArtifactCreated(artifact) => {
+            let title = artifact.title.clone();
+            let descriptor = timeline_artifact_projection(
+                Some(artifact.artifact_id.clone()),
+                title.clone(),
+                Some(artifact.kind.clone()),
+                artifact.blob_ref.as_ref(),
+                artifact.preview.clone(),
+            );
+            artifact_timeline_item(
+                envelope,
+                artifact_timeline_kind(&artifact.kind),
+                run_segment_id,
+                title,
+                descriptor,
+            )
+        }
+        Event::ArtifactUpdated(artifact) => {
+            let title = artifact
                 .title
                 .clone()
-                .unwrap_or_else(|| "Artifact updated".into()),
-            artifact.blob_ref.as_ref().map(|blob| blob.id),
-            false,
-        ),
+                .unwrap_or_else(|| "Artifact updated".into());
+            let descriptor = timeline_artifact_projection(
+                Some(artifact.artifact_id.clone()),
+                title.clone(),
+                artifact.kind.clone(),
+                artifact.blob_ref.as_ref(),
+                artifact.preview.clone(),
+            );
+            artifact_timeline_item(
+                envelope,
+                artifact
+                    .kind
+                    .as_deref()
+                    .map(artifact_timeline_kind)
+                    .unwrap_or(TimelineEventKind::Artifact),
+                run_segment_id,
+                title,
+                descriptor,
+            )
+        }
         Event::ToolUseRequested(tool) => {
             let operation = timeline_tool_operation(&tool.tool_name);
             let projection = TimelineToolProjection {
@@ -1458,6 +1492,7 @@ fn engine_timeline_item(
     blob_id: Option<harness_contracts::BlobId>,
     incomplete: bool,
 ) -> TimelineItemProjection {
+    let content_blocks = default_content_blocks(kind.clone(), &summary, blob_id, None);
     TimelineItemProjection {
         id: envelope.event_id.to_string(),
         kind,
@@ -1468,6 +1503,29 @@ fn engine_timeline_item(
         blob_id,
         incomplete,
         tool: None,
+        content_blocks,
+    }
+}
+
+fn artifact_timeline_item(
+    envelope: &TaskEventEnvelope,
+    kind: TimelineEventKind,
+    run_segment_id: Option<harness_contracts::RunSegmentId>,
+    summary: String,
+    artifact: TimelineArtifactProjection,
+) -> TimelineItemProjection {
+    let blob_id = artifact.blob_id;
+    TimelineItemProjection {
+        id: envelope.event_id.to_string(),
+        kind,
+        global_offset: envelope.global_offset,
+        run_segment_id,
+        semantic_group_id: None,
+        summary,
+        blob_id,
+        incomplete: false,
+        tool: None,
+        content_blocks: vec![TimelineContentBlock::Artifact { artifact }],
     }
 }
 
@@ -1476,6 +1534,9 @@ fn tool_timeline_item(
     run_segment_id: Option<harness_contracts::RunSegmentId>,
     tool: TimelineToolProjection,
 ) -> TimelineItemProjection {
+    let content_blocks = vec![TimelineContentBlock::ToolActivity {
+        activity: tool.clone(),
+    }];
     TimelineItemProjection {
         id: envelope.event_id.to_string(),
         kind: TimelineEventKind::ToolActivity,
@@ -1489,6 +1550,7 @@ fn tool_timeline_item(
             TimelineToolStatus::Requested | TimelineToolStatus::Running
         ),
         tool: Some(tool),
+        content_blocks,
     }
 }
 
@@ -1563,6 +1625,9 @@ fn update_tool_timeline(
         status,
         TimelineToolStatus::Requested | TimelineToolStatus::Running
     );
+    item.content_blocks = vec![TimelineContentBlock::ToolActivity {
+        activity: tool.clone(),
+    }];
     transaction.execute(
         "UPDATE timeline_projection SET projection_json = ?3
          WHERE task_id = ?1 AND global_offset = ?2",
@@ -1751,21 +1816,257 @@ fn artifact_timeline_kind(kind: &str) -> TimelineEventKind {
     }
 }
 
-fn message_content_text(content: &MessageContent) -> Option<String> {
-    match content {
-        MessageContent::Text(text) => Some(text.clone()),
-        MessageContent::Multimodal(parts) => {
-            let text = parts
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::Text(text) => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<String>();
-            (!text.is_empty()).then_some(text)
-        }
-        MessageContent::Structured(_) => None,
+fn timeline_artifact_projection(
+    artifact_id: Option<String>,
+    title: String,
+    artifact_kind: Option<String>,
+    blob_ref: Option<&harness_contracts::BlobRef>,
+    preview: Option<String>,
+) -> TimelineArtifactProjection {
+    let media_type = blob_ref
+        .and_then(|blob| blob.content_type.clone())
+        .unwrap_or_else(|| "application/octet-stream".into());
+    let preferred_surface = preferred_artifact_surface(artifact_kind.as_deref(), &media_type);
+    TimelineArtifactProjection {
+        artifact_id,
+        blob_id: blob_ref.map(|blob| blob.id),
+        title,
+        artifact_kind,
+        media_type,
+        size: blob_ref.map(|blob| blob.size),
+        format: None,
+        preview,
+        presentation: Some(TimelineArtifactPresentation {
+            preferred_surface: Some(preferred_surface),
+            preview_blob_id: None,
+        }),
     }
+}
+
+fn preferred_artifact_surface(
+    artifact_kind: Option<&str>,
+    media_type: &str,
+) -> TimelineArtifactSurface {
+    let kind = artifact_kind.unwrap_or_default().to_ascii_lowercase();
+    let media_type = media_type.to_ascii_lowercase();
+    if matches!(
+        kind.as_str(),
+        "audio" | "image" | "map" | "screenshot" | "video"
+    ) || media_type.starts_with("audio/")
+        || media_type.starts_with("image/")
+        || media_type.starts_with("video/")
+        || media_type.contains("geo+json")
+        || media_type.contains("geojson")
+    {
+        TimelineArtifactSurface::Inline
+    } else {
+        TimelineArtifactSurface::Card
+    }
+}
+
+fn default_content_blocks(
+    kind: TimelineEventKind,
+    summary: &str,
+    blob_id: Option<harness_contracts::BlobId>,
+    tool: Option<&TimelineToolProjection>,
+) -> Vec<TimelineContentBlock> {
+    if let Some(tool) = tool {
+        return vec![TimelineContentBlock::ToolActivity {
+            activity: tool.clone(),
+        }];
+    }
+    match kind {
+        TimelineEventKind::AssistantText => vec![TimelineContentBlock::Text {
+            format: TimelineTextFormat::Markdown,
+            text: summary.into(),
+        }],
+        TimelineEventKind::UserMessage => vec![TimelineContentBlock::Text {
+            format: TimelineTextFormat::Plain,
+            text: summary.into(),
+        }],
+        TimelineEventKind::Artifact
+        | TimelineEventKind::Command
+        | TimelineEventKind::Diff
+        | TimelineEventKind::File
+        | TimelineEventKind::Image
+            if blob_id.is_some() =>
+        {
+            let artifact_kind = match kind {
+                TimelineEventKind::Artifact => "artifact",
+                TimelineEventKind::Command => "command",
+                TimelineEventKind::Diff => "diff",
+                TimelineEventKind::File => "file",
+                TimelineEventKind::Image => "image",
+                _ => unreachable!(),
+            };
+            vec![TimelineContentBlock::Artifact {
+                artifact: TimelineArtifactProjection {
+                    artifact_id: None,
+                    blob_id,
+                    title: summary.into(),
+                    artifact_kind: Some(artifact_kind.into()),
+                    media_type: "application/octet-stream".into(),
+                    size: None,
+                    format: None,
+                    preview: None,
+                    presentation: Some(TimelineArtifactPresentation {
+                        preferred_surface: Some(if kind == TimelineEventKind::Image {
+                            TimelineArtifactSurface::Inline
+                        } else {
+                            TimelineArtifactSurface::Card
+                        }),
+                        preview_blob_id: None,
+                    }),
+                },
+            }]
+        }
+        _ => vec![TimelineContentBlock::Notice {
+            level: match kind {
+                TimelineEventKind::Error => TimelineNoticeLevel::Error,
+                TimelineEventKind::Permission => TimelineNoticeLevel::Warning,
+                _ => TimelineNoticeLevel::Info,
+            },
+            text: summary.into(),
+        }],
+    }
+}
+
+fn user_message_content_blocks(
+    summary: &str,
+    attachments: &[harness_contracts::BlobId],
+) -> Vec<TimelineContentBlock> {
+    let mut blocks = vec![TimelineContentBlock::Text {
+        format: TimelineTextFormat::Plain,
+        text: summary.into(),
+    }];
+    for (index, blob_id) in attachments.iter().enumerate() {
+        blocks.push(TimelineContentBlock::Artifact {
+            artifact: TimelineArtifactProjection {
+                artifact_id: None,
+                blob_id: Some(*blob_id),
+                title: if attachments.len() == 1 {
+                    summary.into()
+                } else {
+                    format!("Attachment {}", index + 1)
+                },
+                artifact_kind: Some("file".into()),
+                media_type: "application/octet-stream".into(),
+                size: None,
+                format: None,
+                preview: None,
+                presentation: Some(TimelineArtifactPresentation {
+                    preferred_surface: Some(TimelineArtifactSurface::Card),
+                    preview_blob_id: None,
+                }),
+            },
+        });
+    }
+    blocks
+}
+
+fn message_content_blocks(content: &MessageContent) -> Vec<TimelineContentBlock> {
+    match content {
+        MessageContent::Text(text) => (!text.is_empty())
+            .then(|| TimelineContentBlock::Text {
+                format: TimelineTextFormat::Markdown,
+                text: text.clone(),
+            })
+            .into_iter()
+            .collect(),
+        MessageContent::Structured(value) => vec![TimelineContentBlock::Text {
+            format: TimelineTextFormat::Plain,
+            text: value.to_string(),
+        }],
+        MessageContent::Multimodal(parts) => parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text(text) if !text.is_empty() => Some(TimelineContentBlock::Text {
+                    format: TimelineTextFormat::Markdown,
+                    text: text.clone(),
+                }),
+                MessagePart::Image {
+                    mime_type,
+                    blob_ref,
+                } => Some(message_artifact_block(
+                    "Image", "image", mime_type, blob_ref,
+                )),
+                MessagePart::Video {
+                    mime_type,
+                    blob_ref,
+                } => Some(message_artifact_block(
+                    "Video", "video", mime_type, blob_ref,
+                )),
+                MessagePart::File {
+                    mime_type,
+                    blob_ref,
+                } => Some(message_artifact_block("File", "file", mime_type, blob_ref)),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+fn message_artifact_block(
+    title: &str,
+    artifact_kind: &str,
+    mime_type: &str,
+    blob_ref: &harness_contracts::BlobRef,
+) -> TimelineContentBlock {
+    let media_type = if mime_type.trim().is_empty() {
+        blob_ref
+            .content_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".into())
+    } else {
+        mime_type.to_owned()
+    };
+    TimelineContentBlock::Artifact {
+        artifact: TimelineArtifactProjection {
+            artifact_id: None,
+            blob_id: Some(blob_ref.id),
+            title: title.into(),
+            artifact_kind: Some(artifact_kind.into()),
+            media_type: media_type.clone(),
+            size: Some(blob_ref.size),
+            format: None,
+            preview: None,
+            presentation: Some(TimelineArtifactPresentation {
+                preferred_surface: Some(preferred_artifact_surface(
+                    Some(artifact_kind),
+                    &media_type,
+                )),
+                preview_blob_id: None,
+            }),
+        },
+    }
+}
+
+fn content_blocks_summary(blocks: &[TimelineContentBlock]) -> String {
+    let text = blocks
+        .iter()
+        .filter_map(|block| match block {
+            TimelineContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    if !text.is_empty() {
+        return text;
+    }
+    blocks
+        .iter()
+        .find_map(|block| match block {
+            TimelineContentBlock::Artifact { artifact } => Some(artifact.title.clone()),
+            TimelineContentBlock::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn first_artifact_blob_id(blocks: &[TimelineContentBlock]) -> Option<harness_contracts::BlobId> {
+    blocks.iter().find_map(|block| match block {
+        TimelineContentBlock::Artifact { artifact } => artifact.blob_id,
+        _ => None,
+    })
 }
 
 fn complete_assistant_group(
@@ -1773,6 +2074,7 @@ fn complete_assistant_group(
     task_id: TaskId,
     run_segment_id: Option<harness_contracts::RunSegmentId>,
     semantic_group_id: &str,
+    completed_blocks: &[TimelineContentBlock],
 ) -> Result<bool, TaskStoreError> {
     let mut completed = {
         let mut statement = transaction.prepare(
@@ -1797,6 +2099,9 @@ fn complete_assistant_group(
         return Ok(false);
     };
     item.incomplete = false;
+    item.summary = content_blocks_summary(completed_blocks);
+    item.blob_id = first_artifact_blob_id(completed_blocks);
+    item.content_blocks = completed_blocks.to_vec();
     transaction.execute(
         "UPDATE timeline_projection SET projection_json = ?3
          WHERE task_id = ?1 AND global_offset = ?2",
@@ -2091,8 +2396,8 @@ fn integrity<T>(message: impl Into<String>) -> Result<T, TaskStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::artifact_timeline_kind;
-    use harness_contracts::TimelineEventKind;
+    use super::{artifact_timeline_kind, preferred_artifact_surface, timeline_artifact_projection};
+    use harness_contracts::{BlobId, BlobRef, TimelineArtifactSurface, TimelineEventKind};
 
     #[test]
     fn preserves_object_identity_for_generated_artifacts() {
@@ -2104,5 +2409,37 @@ mod tests {
         assert_eq!(artifact_timeline_kind("diff"), TimelineEventKind::Diff);
         assert_eq!(artifact_timeline_kind("file"), TimelineEventKind::File);
         assert_eq!(artifact_timeline_kind("video"), TimelineEventKind::Artifact);
+    }
+
+    #[test]
+    fn projects_renderer_metadata_without_changing_event_kind() {
+        let blob_id = BlobId::new();
+        let artifact = timeline_artifact_projection(
+            Some("artifact-1".into()),
+            "demo.mp4".into(),
+            Some("video".into()),
+            Some(&BlobRef {
+                id: blob_id,
+                size: 42,
+                content_hash: [1; 32],
+                content_type: Some("video/mp4".into()),
+            }),
+            None,
+        );
+
+        assert_eq!(artifact_timeline_kind("video"), TimelineEventKind::Artifact);
+        assert_eq!(artifact.blob_id, Some(blob_id));
+        assert_eq!(artifact.media_type, "video/mp4");
+        assert_eq!(artifact.size, Some(42));
+        assert_eq!(
+            artifact
+                .presentation
+                .and_then(|presentation| presentation.preferred_surface),
+            Some(TimelineArtifactSurface::Inline)
+        );
+        assert_eq!(
+            preferred_artifact_surface(Some("file"), "application/zip"),
+            TimelineArtifactSurface::Card
+        );
     }
 }

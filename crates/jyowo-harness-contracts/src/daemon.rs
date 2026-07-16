@@ -21,7 +21,7 @@ use crate::{
     UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -788,6 +788,78 @@ pub enum TimelineEventKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum TimelineTextFormat {
+    Plain,
+    Markdown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineNoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineArtifactSurface {
+    Inline,
+    Card,
+    Workbench,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineArtifactPresentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_surface: Option<TimelineArtifactSurface>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_blob_id: Option<BlobId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimelineArtifactProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<BlobId>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_kind: Option<String>,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<TimelineArtifactPresentation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TimelineContentBlock {
+    Text {
+        format: TimelineTextFormat,
+        text: String,
+    },
+    Artifact {
+        artifact: TimelineArtifactProjection,
+    },
+    ToolActivity {
+        activity: TimelineToolProjection,
+    },
+    Notice {
+        level: TimelineNoticeLevel,
+        text: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum TimelineToolOperation {
     Read,
     Edit,
@@ -1051,6 +1123,8 @@ pub struct TimelineItemProjection {
     pub incomplete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<TimelineToolProjection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<TimelineContentBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

@@ -64,6 +64,184 @@ describe('TaskTimeline', () => {
     expect(onSelectItem).toHaveBeenNthCalledWith(2, artifact, expect.any(HTMLElement))
   })
 
+  it('renders mixed assistant content blocks in protocol order', () => {
+    const mixed = {
+      ...item(31, 'assistant_text', 'legacy summary', 'segment-mixed'),
+      contentBlocks: [
+        { format: 'markdown' as const, text: 'Before media', type: 'text' as const },
+        {
+          artifact: {
+            artifactKind: 'file',
+            mediaType: 'text/plain',
+            preview: 'Video transcript',
+            presentation: { preferredSurface: 'inline' as const },
+            title: 'demo.mp4',
+          },
+          type: 'artifact' as const,
+        },
+        { format: 'plain' as const, text: 'After media', type: 'text' as const },
+      ],
+    }
+
+    const { container } = render(<TaskTimeline items={[mixed]} />)
+    const before = screen.getByText('Before media')
+    const preview = screen.getByText('Video transcript')
+    const after = screen.getByText('After media')
+
+    expect(before.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(preview.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(container.querySelectorAll('[data-artifact]')).toHaveLength(1)
+    expect(screen.queryByText('legacy summary')).not.toBeInTheDocument()
+  })
+
+  it('replaces streamed deltas with the completed assistant blocks', () => {
+    const delta = {
+      ...item(35, 'assistant_text', 'Draft response', 'segment-authoritative', true),
+      contentBlocks: [
+        { format: 'markdown' as const, text: 'Draft response', type: 'text' as const },
+      ],
+      semanticGroupId: 'message-authoritative',
+    }
+    const completed = {
+      ...item(36, 'assistant_text', 'Canonical before  after', 'segment-authoritative'),
+      contentBlocks: [
+        { format: 'markdown' as const, text: 'Canonical before ', type: 'text' as const },
+        {
+          artifact: {
+            artifactKind: 'file',
+            mediaType: 'text/plain',
+            preview: 'media preview',
+            presentation: { preferredSurface: 'inline' as const },
+            title: 'result.txt',
+          },
+          type: 'artifact' as const,
+        },
+        { format: 'plain' as const, text: ' after', type: 'text' as const },
+      ],
+      semanticGroupId: 'message-authoritative',
+    }
+
+    render(<TaskTimeline items={[delta, completed]} />)
+    const before = screen.getByText('Canonical before')
+    const media = screen.getByText('media preview')
+    const after = screen.getByText('after')
+
+    expect(screen.queryByText('Draft response')).not.toBeInTheDocument()
+    expect(before.compareDocumentPosition(media) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(media.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it.each(['command', 'terminal'])('does not offer to open %s artifacts', (artifactKind) => {
+    const entry = {
+      ...item(37, artifactKind === 'command' ? 'command' : 'artifact', 'Task output'),
+      contentBlocks: [
+        {
+          artifact: {
+            artifactKind,
+            blobId: `${artifactKind}-blob`,
+            mediaType: 'application/octet-stream',
+            title: `${artifactKind} output`,
+          },
+          type: 'artifact' as const,
+        },
+      ],
+    }
+
+    render(<TaskTimeline items={[entry]} onSelectItem={() => undefined} />)
+
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
+  })
+
+  it('uses notice levels and tool activities from canonical content blocks', () => {
+    const warning = {
+      ...item(32, 'notice', 'legacy warning'),
+      contentBlocks: [
+        { level: 'warning' as const, text: 'Review required', type: 'notice' as const },
+      ],
+    }
+    const tool = {
+      ...item(33, 'tool_activity', 'legacy tool', 'segment-block-tool'),
+      contentBlocks: [
+        {
+          activity: {
+            operation: 'read' as const,
+            status: 'completed' as const,
+            subject: 'src/main.ts',
+            toolName: 'read_file',
+            toolUseId: 'content-block-tool',
+          },
+          type: 'tool_activity' as const,
+        },
+      ],
+    }
+
+    const { container } = render(<TaskTimeline items={[warning, tool]} />)
+
+    expect(screen.getByText('Review required').closest('[data-notice-level]')).toHaveAttribute(
+      'data-notice-level',
+      'warning',
+    )
+    expect(screen.getAllByText('Read src/main.ts').length).toBeGreaterThan(0)
+    expect(container.querySelector('[data-event-id="event-33"]')).toBeInTheDocument()
+  })
+
+  it('opens the selected artifact when one assistant message contains several', () => {
+    const onSelectItem = vi.fn()
+    const mixed = {
+      ...item(34, 'assistant_text', 'Two files', 'segment-two-files'),
+      contentBlocks: [
+        {
+          artifact: {
+            artifactId: 'first-artifact',
+            artifactKind: 'file',
+            mediaType: 'text/plain',
+            preview: 'first preview',
+            title: 'first.txt',
+          },
+          type: 'artifact' as const,
+        },
+        {
+          artifact: {
+            artifactId: 'second-artifact',
+            artifactKind: 'file',
+            mediaType: 'text/plain',
+            preview: 'second preview',
+            title: 'second.txt',
+          },
+          type: 'artifact' as const,
+        },
+      ],
+    }
+
+    render(<TaskTimeline items={[mixed]} onSelectItem={onSelectItem} />)
+    const openButtons = screen.getAllByRole('button', { name: 'Open File' })
+    fireEvent.click(openButtons[0] as HTMLButtonElement)
+    fireEvent.click(openButtons[1] as HTMLButtonElement)
+
+    expect(onSelectItem).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        contentBlocks: [
+          expect.objectContaining({
+            artifact: expect.objectContaining({ artifactId: 'first-artifact' }),
+          }),
+        ],
+      }),
+      expect.any(HTMLElement),
+    )
+    expect(onSelectItem).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        contentBlocks: [
+          expect.objectContaining({
+            artifact: expect.objectContaining({ artifactId: 'second-artifact' }),
+          }),
+        ],
+      }),
+      expect.any(HTMLElement),
+    )
+  })
+
   it('opens user message attachments without making plain messages interactive', () => {
     const onSelectItem = vi.fn()
     const attachment = { ...item(32, 'user_message', 'design.png'), blobId: 'attachment-blob' }
@@ -194,11 +372,11 @@ describe('TaskTimeline', () => {
       <TaskTimeline
         items={[
           {
-            ...item(70, 'assistant_text', 'First ', 'segment-grouped'),
+            ...item(70, 'assistant_text', 'First ', 'segment-grouped', true),
             semanticGroupId: 'message-a',
           },
           {
-            ...item(71, 'assistant_text', 'message', 'segment-grouped'),
+            ...item(71, 'assistant_text', 'First message', 'segment-grouped'),
             semanticGroupId: 'message-a',
           },
           {
@@ -219,7 +397,7 @@ describe('TaskTimeline', () => {
     const { container } = render(
       <TaskTimeline
         items={Array.from({ length: 17 }, (_, index) => ({
-          ...item(80 + index, 'assistant_text', String(index), 'segment-streamed'),
+          ...item(80 + index, 'assistant_text', String(index), 'segment-streamed', true),
           semanticGroupId: 'one-message',
         }))}
       />,
@@ -230,7 +408,7 @@ describe('TaskTimeline', () => {
 
   it('coalesces a long streamed assistant message into one rendered timeline node', () => {
     const streamed = Array.from({ length: 500 }, (_, index) => ({
-      ...item(1_000 + index, 'assistant_text', String(index % 10), 'segment-streamed'),
+      ...item(1_000 + index, 'assistant_text', String(index % 10), 'segment-streamed', true),
       semanticGroupId: 'one-long-message',
     }))
 

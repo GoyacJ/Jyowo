@@ -1,8 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
-import { MarkdownMessage } from '@/shared/markdown/MarkdownMessage'
 
-import { isLowValueLifecycleItem, TimelineEvent, TimelineItem } from './TimelineEvent'
+import { isLowValueLifecycleItem, TimelineEvent } from './TimelineEvent'
 import { ToolActivityGroup } from './ToolActivityGroup'
 import type { ToolTimelineItem } from './tool-activity-summary'
 
@@ -62,34 +61,8 @@ function renderItems(
       )
       continue
     }
-    if (item.kind !== 'assistant_text') {
-      rendered.push(<TimelineEvent item={item} key={item.id} onSelect={onSelectItem} />)
-      index += 1
-      continue
-    }
-
-    const narrative: TimelineItemProjection[] = []
-    while (
-      items[index]?.kind === 'assistant_text' &&
-      items[index]?.runSegmentId === item.runSegmentId &&
-      items[index]?.semanticGroupId === item.semanticGroupId
-    ) {
-      narrative.push(items[index] as TimelineItemProjection)
-      index += 1
-    }
-    rendered.push(
-      <div data-narrative="true" key={narrative[0]?.id}>
-        {narrative.map((entry) => (
-          <TimelineItem item={entry} key={entry.id}>
-            <div data-incomplete={entry.incomplete ? 'true' : undefined}>
-              <MarkdownMessage className="text-[15px] text-foreground">
-                {entry.summary}
-              </MarkdownMessage>
-            </div>
-          </TimelineItem>
-        ))}
-      </div>,
-    )
+    rendered.push(<TimelineEvent item={item} key={item.id} onSelect={onSelectItem} />)
+    index += 1
   }
   return rendered
 }

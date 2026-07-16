@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[test]
 fn daemon_protocol_exports_one_versioned_schema() {
-    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(PROTOCOL_VERSION, 5);
 
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let text = serde_json::to_string(&value).expect("render daemon schema");
@@ -148,6 +148,39 @@ fn timeline_items_preserve_optional_semantic_group_identity() {
         serde_json::from_value(value.clone()).expect("semantic timeline item parses");
 
     assert_eq!(serde_json::to_value(item).unwrap(), value);
+}
+
+#[test]
+fn timeline_artifact_blocks_carry_renderer_metadata_and_reject_unknown_fields() {
+    let value = json!({
+        "id": "00000000000000000000000001",
+        "kind": "artifact",
+        "globalOffset": 7,
+        "runSegmentId": null,
+        "summary": "demo.mp4",
+        "blobId": "00000000000000000000000004",
+        "incomplete": false,
+        "contentBlocks": [{
+            "type": "artifact",
+            "artifact": {
+                "artifactId": "artifact-1",
+                "blobId": "00000000000000000000000004",
+                "title": "demo.mp4",
+                "artifactKind": "video",
+                "mediaType": "video/mp4",
+                "size": 42,
+                "presentation": { "preferredSurface": "inline" }
+            }
+        }]
+    });
+
+    let item: TimelineItemProjection =
+        serde_json::from_value(value.clone()).expect("artifact timeline item parses");
+    assert_eq!(serde_json::to_value(item).unwrap(), value);
+
+    let mut invalid = value;
+    invalid["contentBlocks"][0]["artifact"]["rendererComponent"] = json!("UnsafeView");
+    assert!(serde_json::from_value::<TimelineItemProjection>(invalid).is_err());
 }
 
 #[test]

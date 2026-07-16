@@ -1,10 +1,11 @@
 import {
   AlertTriangle,
   Bot,
+  CircleAlert,
   FileDiff,
   FileText,
-  Globe2,
   ImageIcon,
+  Info,
   KeyRound,
   Search,
   Sparkles,
@@ -12,11 +13,18 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { ArtifactRenderer } from '@/features/artifacts/ArtifactRenderer'
+import {
+  type ArtifactDescriptor,
+  type ContentBlock,
+  timelineContentBlocks,
+} from '@/features/artifacts/model'
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 import { MarkdownMessage } from '@/shared/markdown/MarkdownMessage'
 
 import { ArtifactContainer } from './ArtifactContainer'
 import { timelineSummary } from './timeline-summary'
+import { toolActivitySummary } from './tool-activity-summary'
 import { UserMessage } from './UserMessage'
 
 export function TimelineEvent({
@@ -26,87 +34,136 @@ export function TimelineEvent({
   item: TimelineItemProjection
   onSelect?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
 }) {
-  const { t } = useTranslation('tasks')
-  const displaySummary = timelineSummary(item, t)
-  if (item.kind === 'user_message') {
-    const message = <UserMessage content={item.summary} />
-    return (
-      <TimelineItem item={item}>
-        {item.blobId && onSelect ? (
-          <button
-            aria-label={t('timeline.openPanel', { panel: t('workbench.targetKind.file') })}
-            className="ml-auto block rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={(event) => onSelect(item, event.currentTarget)}
-            type="button"
-          >
-            {message}
-          </button>
-        ) : (
-          message
-        )}
-      </TimelineItem>
-    )
-  }
+  const blocks = timelineContentBlocks(item)
+  const artifactCount = blocks.filter((block) => block.type === 'artifact').length
+  const content = (
+    <TimelineItem item={item}>
+      <div className="space-y-3">
+        {blocks.map((block, index) => (
+          <ContentBlockView
+            artifactCount={artifactCount}
+            block={block}
+            blockIndex={index}
+            item={item}
+            key={contentBlockKey(block, index)}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    </TimelineItem>
+  )
+  return item.kind === 'assistant_text' ? <div data-narrative="true">{content}</div> : content
+}
 
-  if (item.kind === 'assistant_text') {
+function ContentBlockView({
+  artifactCount,
+  block,
+  blockIndex,
+  item,
+  onSelect,
+}: {
+  artifactCount: number
+  block: ContentBlock
+  blockIndex: number
+  item: TimelineItemProjection
+  onSelect?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
+}) {
+  const { t } = useTranslation('tasks')
+  if (block.type === 'text') {
+    if (item.kind === 'user_message') return <UserMessage content={block.text} />
+    if (block.format === 'markdown') {
+      return (
+        <div data-incomplete={item.incomplete ? 'true' : undefined}>
+          <MarkdownMessage className="text-[15px] text-foreground">{block.text}</MarkdownMessage>
+        </div>
+      )
+    }
     return (
-      <div data-narrative="true">
-        <TimelineItem item={item}>
-          <div data-incomplete={item.incomplete ? 'true' : undefined}>
-            <MarkdownMessage className="text-[15px] text-foreground">
-              {item.summary}
-            </MarkdownMessage>
-          </div>
-        </TimelineItem>
+      <div
+        className="whitespace-pre-wrap break-words text-[15px] text-foreground"
+        data-incomplete={item.incomplete ? 'true' : undefined}
+      >
+        {block.text}
       </div>
     )
   }
-
-  if (isArtifact(item)) {
-    const canOpen = Boolean(onSelect && supportsWorkbenchTarget(item))
+  if (block.type === 'artifact') {
+    const selectionItem = itemForArtifact(item, block.artifact, blockIndex, artifactCount)
+    const kind = block.artifact.artifactKind ?? item.kind
+    const canOpen = Boolean(
+      onSelect &&
+        kind !== 'command' &&
+        kind !== 'terminal' &&
+        (block.artifact.blobId ||
+          block.artifact.presentation?.previewBlobId ||
+          block.artifact.preview),
+    )
+    const surface = block.artifact.presentation?.preferredSurface === 'inline' ? 'inline' : 'card'
+    const useLegacySummary = ['command', 'diff'].includes(kind)
     return (
-      <TimelineItem item={item}>
-        <ArtifactContainer
-          item={item}
-          label={t(artifactLabelKey(item.kind))}
-          onOpen={canOpen && onSelect ? (trigger) => onSelect(item, trigger) : undefined}
-          openLabel={
-            canOpen ? t('timeline.openPanel', { panel: t(workbenchLabelKey(item)) }) : undefined
-          }
-        >
+      <ArtifactContainer
+        item={selectionItem}
+        label={t(artifactLabelKey(kind))}
+        onOpen={canOpen && onSelect ? (trigger) => onSelect(selectionItem, trigger) : undefined}
+        openLabel={
+          canOpen
+            ? t('timeline.openPanel', { panel: t(artifactWorkbenchLabelKey(kind)) })
+            : undefined
+        }
+      >
+        {useLegacySummary ? (
           <div className="flex items-start gap-2.5 text-sm leading-6">
-            <ArtifactIcon kind={item.kind} />
-            <span className={item.kind === 'command' ? 'font-mono text-[13px]' : undefined}>
-              {displaySummary}
+            <ArtifactIcon kind={kind} />
+            <span className={kind === 'command' ? 'font-mono text-[13px]' : undefined}>
+              {block.artifact.title}
             </span>
           </div>
-        </ArtifactContainer>
-      </TimelineItem>
+        ) : (
+          <ArtifactRenderer artifact={block.artifact} surface={surface} />
+        )}
+      </ArtifactContainer>
+    )
+  }
+  if (block.type === 'tool_activity') {
+    const toolItem: TimelineItemProjection = {
+      ...item,
+      contentBlocks: [{ activity: block.activity, type: 'tool_activity' }],
+      kind: 'tool_activity',
+      tool: block.activity,
+    }
+    const row = (
+      <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
+        <Search aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+        <span>{toolActivitySummary(toolItem, t)}</span>
+        {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
+      </div>
+    )
+    return onSelect && isBrowserToolItem(toolItem) ? (
+      <button
+        aria-label={t('timeline.openPanel', { panel: t('workbench.targetKind.browser') })}
+        className="w-full rounded-md text-left hover:bg-muted/60"
+        onClick={(event) => onSelect(toolItem, event.currentTarget)}
+        type="button"
+      >
+        {row}
+      </button>
+    ) : (
+      row
     )
   }
 
-  const row = (
-    <div className="flex items-start gap-2.5 py-1 text-muted-foreground text-sm leading-5">
-      <RowIcon item={item} />
-      <span>{displaySummary}</span>
+  const text = block.text === item.summary ? timelineSummary(item, t) : block.text
+  return (
+    <div
+      className={`flex items-start gap-2.5 py-1 text-sm leading-5 ${
+        block.level === 'error' ? 'text-destructive' : 'text-muted-foreground'
+      }`}
+      data-notice-level={block.level}
+    >
+      <NoticeIcon item={item} level={block.level} />
+      <span>{text}</span>
       {item.incomplete ? <span className="sr-only">{t('timeline.incomplete')}</span> : null}
     </div>
-  )
-  return (
-    <TimelineItem item={item}>
-      {onSelect && isWorkbenchRow(item) ? (
-        <button
-          aria-label={t('timeline.openPanel', { panel: t(workbenchLabelKey(item)) })}
-          className="w-full rounded-md text-left hover:bg-muted/60"
-          onClick={(event) => onSelect(item, event.currentTarget)}
-          type="button"
-        >
-          {row}
-        </button>
-      ) : (
-        row
-      )}
-    </TimelineItem>
   )
 }
 
@@ -150,66 +207,71 @@ export function TimelineItem({
   )
 }
 
-function isArtifact(item: TimelineItemProjection) {
-  return (
-    ['artifact', 'command', 'diff', 'file', 'image', 'permission', 'error'].includes(item.kind) ||
-    item.summary.length > 600
-  )
-}
-
-function artifactLabelKey(kind: TimelineItemProjection['kind']) {
-  const labels: Partial<Record<TimelineItemProjection['kind'], string>> = {
-    command: 'timeline.command',
-    diff: 'timeline.changes',
-    error: 'timeline.actionRequired',
-    image: 'timeline.image',
-    permission: 'timeline.permission',
+function itemForArtifact(
+  item: TimelineItemProjection,
+  artifact: ArtifactDescriptor,
+  blockIndex: number,
+  artifactCount: number,
+): TimelineItemProjection {
+  if (artifactCount === 1) return item
+  return {
+    ...item,
+    blobId: artifact.blobId,
+    contentBlocks: [{ artifact, type: 'artifact' }],
+    summary: artifact.title,
+    semanticGroupId: `${item.semanticGroupId ?? item.id}:artifact:${blockIndex}`,
   }
-  return labels[kind] ?? 'timeline.output'
 }
 
-function ArtifactIcon({ kind }: { kind: TimelineItemProjection['kind'] }) {
+function contentBlockKey(block: ContentBlock, index: number) {
+  if (block.type === 'artifact') {
+    return `artifact:${block.artifact.artifactId ?? block.artifact.blobId ?? block.artifact.title}:${index}`
+  }
+  if (block.type === 'tool_activity') return `tool:${block.activity.toolUseId}:${index}`
+  return `${block.type}:${index}`
+}
+
+function artifactLabelKey(kind: string) {
+  if (kind === 'command') return 'timeline.command'
+  if (kind === 'diff') return 'timeline.changes'
+  if (kind === 'image' || kind === 'screenshot') return 'timeline.image'
+  if (kind === 'file') return 'workbench.targetKind.file'
+  return 'timeline.output'
+}
+
+function artifactWorkbenchLabelKey(kind: string) {
+  if (kind === 'diff') return 'workbench.tabs.changes'
+  if (kind === 'command') return 'workbench.tabs.commands'
+  if (kind === 'file') return 'workbench.targetKind.file'
+  if (kind === 'image' || kind === 'screenshot') return 'workbench.tabs.sources'
+  return 'workbench.targetKind.artifact'
+}
+
+function ArtifactIcon({ kind }: { kind: string }) {
   const className = 'mt-1 size-4 shrink-0 text-muted-foreground'
   if (kind === 'command') return <SquareTerminal aria-hidden="true" className={className} />
   if (kind === 'diff') return <FileDiff aria-hidden="true" className={className} />
-  if (kind === 'artifact' || kind === 'file') {
-    return <FileText aria-hidden="true" className={className} />
+  if (kind === 'image' || kind === 'screenshot') {
+    return <ImageIcon aria-hidden="true" className={className} />
   }
-  if (kind === 'image') return <ImageIcon aria-hidden="true" className={className} />
-  if (kind === 'permission') return <KeyRound aria-hidden="true" className={className} />
-  return <AlertTriangle aria-hidden="true" className="mt-1 size-4 shrink-0 text-destructive" />
+  return <FileText aria-hidden="true" className={className} />
 }
 
-function RowIcon({ item }: { item: TimelineItemProjection }) {
+function NoticeIcon({
+  item,
+  level,
+}: {
+  item: TimelineItemProjection
+  level: Extract<ContentBlock, { type: 'notice' }>['level']
+}) {
   const className = 'mt-0.5 size-4 shrink-0'
-  if (isBrowserToolItem(item)) return <Globe2 aria-hidden="true" className={className} />
-  if (item.kind === 'tool_activity') return <Search aria-hidden="true" className={className} />
+  if (level === 'error') return <CircleAlert aria-hidden="true" className={className} />
+  if (item.kind === 'permission') return <KeyRound aria-hidden="true" className={className} />
+  if (level === 'warning') return <AlertTriangle aria-hidden="true" className={className} />
   if (item.kind === 'subagent') return <Bot aria-hidden="true" className={className} />
+  if (item.kind === 'tool_activity') return <Search aria-hidden="true" className={className} />
+  if (item.kind === 'notice') return <Info aria-hidden="true" className={className} />
   return <Sparkles aria-hidden="true" className={className} />
-}
-
-function isWorkbenchRow(item: TimelineItemProjection) {
-  return item.kind === 'subagent' || isBrowserToolItem(item)
-}
-
-function supportsWorkbenchTarget(item: TimelineItemProjection) {
-  if (isBrowserToolItem(item)) return true
-  if (item.kind === 'subagent') return true
-  return Boolean(item.blobId && ['diff', 'file', 'artifact', 'image'].includes(item.kind))
-}
-
-function workbenchLabelKey(item: TimelineItemProjection) {
-  if (isBrowserToolItem(item)) return 'workbench.targetKind.browser'
-  if (item.kind === 'diff') return 'workbench.tabs.changes'
-  if (item.kind === 'command') return 'workbench.tabs.commands'
-  if (item.kind === 'file') return 'workbench.targetKind.file'
-  if (item.kind === 'artifact') return 'workbench.targetKind.artifact'
-  if (item.kind === 'subagent') return 'workbench.tabs.agents'
-  if (item.kind === 'image') return 'workbench.tabs.sources'
-  if (item.kind === 'notice' && item.summary.toLowerCase().startsWith('workspace')) {
-    return 'workbench.tabs.environment'
-  }
-  return 'workbench.tabs.audit'
 }
 
 export function isBrowserToolItem(item: TimelineItemProjection) {

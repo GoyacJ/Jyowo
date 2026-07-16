@@ -17,6 +17,9 @@ import {
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ArtifactRenderer } from '@/features/artifacts/ArtifactRenderer'
+import type { ArtifactDescriptor } from '@/features/artifacts/model'
+import { useArtifactResource } from '@/features/artifacts/resource'
 import type {
   TaskEventEnvelope,
   TaskProjection,
@@ -71,92 +74,6 @@ export function TaskWorkbench({
   const layoutMode = useTaskWorkbenchLayoutMode(workbenchRef)
   const activeTab = session?.tabs.find((tab) => tab.id === session.activeTabId) ?? null
   const activeTarget = activeTab?.target ?? null
-  const [blobRetry, setBlobRetry] = useState(0)
-  const [artifact, setArtifact] = useState<{
-    blobId?: string
-    error: boolean
-    imageUrl: string | null
-    loading: boolean
-    mediaType: string | null
-    missing: boolean
-    size: number | null
-    text: string | null
-  }>({
-    error: false,
-    imageUrl: null,
-    loading: false,
-    mediaType: null,
-    missing: false,
-    size: null,
-    text: null,
-  })
-
-  useEffect(() => {
-    const blobId = activeTarget?.blobId
-    if (!blobId || !activeTarget || !blobKinds.has(activeTarget.kind)) {
-      setArtifact({
-        blobId,
-        error: false,
-        imageUrl: null,
-        loading: false,
-        mediaType: null,
-        missing: false,
-        size: null,
-        text: null,
-      })
-      return
-    }
-    let cancelled = false
-    let imageUrl: string | null = null
-    setArtifact({
-      blobId,
-      error: false,
-      imageUrl: null,
-      loading: true,
-      mediaType: null,
-      missing: false,
-      size: null,
-      text: null,
-    })
-    void client
-      .readBlob(blobId)
-      .then((blob) => {
-        if (cancelled) return
-        const bytes = blob.bytes
-        const mediaType = blob.mediaType || 'application/octet-stream'
-        if (bytes && mediaType.startsWith('image/')) {
-          imageUrl = URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: mediaType }))
-        }
-        setArtifact({
-          blobId,
-          error: false,
-          imageUrl,
-          loading: false,
-          mediaType,
-          missing: blob.missing || blob.bytes === null,
-          size: blob.size,
-          text: bytes && isTextMediaType(mediaType) ? new TextDecoder().decode(bytes) : null,
-        })
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setArtifact({
-            blobId,
-            error: true,
-            imageUrl: null,
-            loading: false,
-            mediaType: null,
-            missing: false,
-            size: null,
-            text: null,
-          })
-        }
-      })
-    return () => {
-      cancelled = true
-      if (imageUrl) URL.revokeObjectURL(imageUrl)
-    }
-  }, [activeTarget, blobRetry, client.readBlob])
 
   useEffect(() => {
     if (layoutMode !== 'fullscreen') return
@@ -352,14 +269,12 @@ export function TaskWorkbench({
         role="tabpanel"
       >
         <WorkbenchContent
-          artifact={artifact}
           client={client}
           events={events}
           projection={projection}
           snapshotOffset={snapshotOffset}
           target={activeTarget}
           timeline={timeline}
-          onRetryArtifact={() => setBlobRetry((value) => value + 1)}
         />
       </div>
     </aside>
@@ -404,70 +319,56 @@ function WorkbenchTab({
 }
 
 function WorkbenchContent({
-  artifact,
   client,
   events,
-  onRetryArtifact,
   projection,
   snapshotOffset,
   target,
   timeline,
 }: {
-  artifact: {
-    error: boolean
-    imageUrl: string | null
-    loading: boolean
-    mediaType: string | null
-    missing: boolean
-    size: number | null
-    text: string | null
-  }
-  client: Pick<DaemonClient, 'loadTaskEvents' | 'request'>
+  client: Pick<DaemonClient, 'loadTaskEvents' | 'readBlob' | 'request'>
   events: TaskEventEnvelope[]
-  onRetryArtifact: () => void
   projection: TaskProjection
   snapshotOffset: number
   target: TaskWorkbenchTarget
   timeline: TimelineItemProjection[]
 }) {
   const { t } = useTranslation('tasks')
-  const unsupported =
-    !artifact.error &&
-    !artifact.loading &&
-    !artifact.missing &&
-    artifact.mediaType !== null &&
-    !isTextMediaType(artifact.mediaType) &&
-    !artifact.mediaType.startsWith('image/')
-  if (unsupported) {
+  if (target.kind === 'diff' || target.kind === 'command') {
+    return <LegacyArtifactPanel client={client} target={target} />
+  }
+  if (
+    target.kind === 'source' &&
+    !target.blobId &&
+    !target.artifact?.previewBlobId &&
+    !target.artifact?.preview
+  ) {
     return (
-      <UnsupportedArtifact
-        mediaType={artifact.mediaType as string}
-        size={artifact.size}
-        title={target.title}
+      <SourcesPanel
+        events={events}
+        loading={false}
+        missing={false}
+        text={null}
+        timeline={timeline}
       />
     )
   }
-  if (artifact.imageUrl) {
-    return (
-      <ArtifactImage mediaType={artifact.mediaType} src={artifact.imageUrl} title={target.title} />
-    )
-  }
-  if (target.kind === 'diff') return <DiffPanel {...artifact} onRetry={onRetryArtifact} />
-  if (target.kind === 'command') return <CommandPanel {...artifact} onRetry={onRetryArtifact} />
-  if (target.kind === 'source') {
-    return (
-      <SourcesPanel events={events} onRetry={onRetryArtifact} timeline={timeline} {...artifact} />
-    )
-  }
-  if (target.kind === 'file' || target.kind === 'artifact') {
+  if (target.kind === 'file' || target.kind === 'artifact' || target.kind === 'source') {
+    if (target.blobId || target.artifact?.previewBlobId || target.artifact?.preview) {
+      return (
+        <ArtifactRenderer
+          artifact={artifactDescriptorForTarget(target)}
+          loader={client.readBlob}
+          surface="workbench"
+        />
+      )
+    }
     return (
       <ArtifactText
         empty={t('workbench.empty.artifact')}
-        error={artifact.error}
-        loading={artifact.loading}
-        missing={artifact.missing}
-        onRetry={onRetryArtifact}
-        text={artifact.text}
+        loading={false}
+        missing={false}
+        text={null}
       />
     )
   }
@@ -499,44 +400,43 @@ function WorkbenchContent({
   )
 }
 
-function ArtifactImage({
-  mediaType,
-  src,
-  title,
+function LegacyArtifactPanel({
+  client,
+  target,
 }: {
-  mediaType: string | null
-  src: string
-  title: string
+  client: Pick<DaemonClient, 'readBlob'>
+  target: TaskWorkbenchTarget
 }) {
-  return (
-    <figure className="flex min-h-full flex-col items-center justify-center gap-3 bg-muted/20 p-4">
-      <img alt={title} className="max-h-full max-w-full object-contain" src={src} />
-      <figcaption className="font-mono text-[11px] text-muted-foreground">{mediaType}</figcaption>
-    </figure>
+  const artifact = useArtifactResource(
+    artifactDescriptorForTarget(target),
+    client.readBlob,
+    'workbench',
   )
+  const props = {
+    error: artifact.error,
+    loading: artifact.loading,
+    missing: artifact.missing,
+    onRetry: artifact.retry,
+    text: artifact.text,
+  }
+  return target.kind === 'diff' ? <DiffPanel {...props} /> : <CommandPanel {...props} />
 }
 
-function UnsupportedArtifact({
-  mediaType,
-  size,
-  title,
-}: {
-  mediaType: string
-  size: number | null
-  title: string
-}) {
-  const { t } = useTranslation('tasks')
-  return (
-    <div className="flex min-h-48 flex-col items-center justify-center gap-2 px-6 text-center">
-      <FileText aria-hidden="true" className="size-6 text-muted-foreground" />
-      <p className="text-sm">{t('workbench.artifact.unsupported')}</p>
-      <p className="max-w-full truncate font-mono text-[11px] text-muted-foreground">{title}</p>
-      <p className="font-mono text-[11px] text-muted-foreground">
-        {mediaType}
-        {size === null ? '' : ` · ${t('workbench.artifact.bytes', { count: size })}`}
-      </p>
-    </div>
-  )
+function artifactDescriptorForTarget(target: TaskWorkbenchTarget): ArtifactDescriptor {
+  return {
+    artifactId: target.artifact?.artifactId,
+    artifactKind: target.artifact?.artifactKind ?? target.kind,
+    blobId: target.blobId,
+    format: target.artifact?.format,
+    mediaType: target.artifact?.mediaType ?? 'application/octet-stream',
+    presentation: {
+      preferredSurface: target.artifact?.preferredSurface,
+      previewBlobId: target.artifact?.previewBlobId,
+    },
+    preview: target.artifact?.preview,
+    size: target.artifact?.size,
+    title: target.title,
+  }
 }
 
 function TargetIcon({ className, kind }: { className?: string; kind: TaskWorkbenchTargetKind }) {
@@ -548,32 +448,6 @@ function TargetIcon({ className, kind }: { className?: string; kind: TaskWorkben
   if (kind === 'environment') return <FolderGit2 aria-hidden="true" className={className} />
   if (kind === 'audit') return <ListTree aria-hidden="true" className={className} />
   return <FileText aria-hidden="true" className={className} />
-}
-
-const blobKinds = new Set<TaskWorkbenchTargetKind>([
-  'artifact',
-  'command',
-  'diff',
-  'file',
-  'source',
-])
-
-function isTextMediaType(mediaType: string) {
-  const normalized = mediaType.toLowerCase().split(';', 1)[0]?.trim() ?? ''
-  return (
-    normalized.startsWith('text/') ||
-    normalized.endsWith('+json') ||
-    normalized.endsWith('+xml') ||
-    [
-      'application/javascript',
-      'application/json',
-      'application/toml',
-      'application/xml',
-      'application/x-httpd-php',
-      'application/x-sh',
-      'application/x-yaml',
-    ].includes(normalized)
-  )
 }
 
 type TaskWorkbenchLayoutMode = 'docked' | 'fullscreen' | 'overlay'

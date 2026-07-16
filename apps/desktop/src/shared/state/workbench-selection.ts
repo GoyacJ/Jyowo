@@ -20,6 +20,16 @@ export type TaskWorkbenchTargetKind =
   | 'subagent'
 
 export type TaskWorkbenchTarget = {
+  artifact?: {
+    artifactId?: string
+    artifactKind?: string
+    format?: string
+    mediaType: string
+    preferredSurface?: 'inline' | 'card' | 'workbench'
+    preview?: string
+    previewBlobId?: string
+    size?: number
+  }
   blobId?: string
   kind: TaskWorkbenchTargetKind
   line?: number

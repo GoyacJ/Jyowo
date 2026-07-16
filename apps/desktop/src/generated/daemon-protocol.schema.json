@@ -5279,6 +5279,188 @@
         "completed"
       ]
     },
+    "TimelineArtifactPresentation": {
+      "type": "object",
+      "properties": {
+        "preferredSurface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineArtifactSurface"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previewBlobId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TimelineArtifactProjection": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifactKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blobId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "presentation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineArtifactPresentation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "mediaType"
+      ]
+    },
+    "TimelineArtifactSurface": {
+      "type": "string",
+      "enum": [
+        "inline",
+        "card",
+        "workbench"
+      ]
+    },
+    "TimelineContentBlock": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "format": {
+              "$ref": "#/$defs/TimelineTextFormat"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "format",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/TimelineArtifactProjection"
+            },
+            "type": {
+              "type": "string",
+              "const": "artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "artifact"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/TimelineToolProjection"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_activity"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "level": {
+              "$ref": "#/$defs/TimelineNoticeLevel"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "notice"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "level",
+            "text"
+          ]
+        }
+      ]
+    },
     "TimelineEventKind": {
       "type": "string",
       "enum": [
@@ -5309,6 +5491,12 @@
               "type": "null"
             }
           ]
+        },
+        "contentBlocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TimelineContentBlock"
+          }
         },
         "globalOffset": {
           "type": "integer",
@@ -5361,6 +5549,21 @@
         "globalOffset",
         "summary",
         "incomplete"
+      ]
+    },
+    "TimelineNoticeLevel": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    "TimelineTextFormat": {
+      "type": "string",
+      "enum": [
+        "plain",
+        "markdown"
       ]
     },
     "TimelineToolOperation": {

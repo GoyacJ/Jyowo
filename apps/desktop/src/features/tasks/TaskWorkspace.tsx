@@ -348,6 +348,7 @@ export function TaskWorkspaceView({
           </header>
           <div className="flex min-h-0 min-w-0 flex-1 pt-6">
             <TaskTimeline
+              blobLoader={client?.readBlob}
               focusRequest={timelineFocusRequest}
               items={items}
               onSelectItem={selectTimelineItem}

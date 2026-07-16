@@ -1,7 +1,9 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { TimelineItemProjection } from '@/generated/daemon-protocol'
+import { normalizeTimelineItem } from '@/features/artifacts/model'
+import { type ArtifactBlobLoader, ArtifactResourceProvider } from '@/features/artifacts/resource'
+import type { TimelineContentBlock, TimelineItemProjection } from '@/generated/daemon-protocol'
 
 import { RunSegment } from './RunSegment'
 import { isLowValueLifecycleItem, TimelineEvent } from './TimelineEvent'
@@ -27,24 +29,37 @@ type TimelineBlock =
     }
 
 export function TaskTimeline({
+  blobLoader,
   focusRequest,
   items,
   onSelectItem,
   taskId,
 }: {
+  blobLoader?: ArtifactBlobLoader
   focusRequest?: { eventId: string; nonce: number } | null
   items: TimelineItemProjection[]
   onSelectItem?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
   taskId?: string
 }) {
   const { t } = useTranslation('tasks')
-  const orderedItems = [...items].sort(
+  const normalizedItems = items.map(normalizeTimelineItem)
+  const sourceByNormalizedItem = new Map(
+    normalizedItems.map((normalized, index) => [
+      normalized,
+      items[index] as TimelineItemProjection,
+    ]),
+  )
+  const orderedItems = normalizedItems.sort(
     (left, right) => left.globalOffset - right.globalOffset || left.id.localeCompare(right.id),
   )
   const conversationItems = orderedItems.filter((item) => !isLowValueLifecycleItem(item))
   const latest = conversationItems.at(-1)
   const first = conversationItems.at(0)
   const blocks = createBlocks(coalesceAssistantItems(conversationItems))
+  const selectItem = onSelectItem
+    ? (item: TimelineItemProjection, trigger?: HTMLElement) =>
+        onSelectItem(sourceByNormalizedItem.get(item) ?? item, trigger)
+    : undefined
   const virtualAnchorAdapterRef = useRef<VirtualAnchorAdapter>({ resolve: () => null })
   const {
     contentRef,
@@ -63,7 +78,9 @@ export function TaskTimeline({
     viewportRef,
   } = useTaskScrollAnchor(latest?.id ?? null, {
     prependAnchorKey: first?.id,
-    streamingScrollTick: latest?.incomplete ? `${latest.id}:${latest.summary.length}` : undefined,
+    streamingScrollTick: latest?.incomplete
+      ? `${latest.id}:${latest.summary.length}:${latest.contentBlocks?.length ?? 0}`
+      : undefined,
     taskId,
     virtualAnchorAdapter: virtualAnchorAdapterRef.current,
   })
@@ -155,76 +172,78 @@ export function TaskTimeline({
   ])
 
   return (
-    <div className="relative min-h-0 min-w-0 flex-1">
-      <p aria-live="polite" className="sr-only" role="status">
-        <span key={latest?.id}>
-          {latest
-            ? t('timeline.update', {
-                summary:
-                  latest.kind === 'tool_activity' && latest.tool
-                    ? toolActivitySummary(latest, t)
-                    : timelineSummary(latest, t),
-              })
-            : t('timeline.noActivity')}
-        </span>
-      </p>
-      <section
-        aria-label={t('timeline.label')}
-        className="h-full overflow-y-auto overscroll-contain px-1 pb-28"
-        data-testid="task-timeline-viewport"
-        onKeyDown={onKeyDown}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onScroll={onScroll}
-        onTouchEnd={onTouchEnd}
-        onTouchMove={onTouchMove}
-        onTouchStart={onTouchStart}
-        onWheel={onWheel}
-        ref={viewportRef}
-      >
-        {useVirtualList ? (
-          <div
-            className="relative"
-            data-testid="task-timeline-scroll-content"
-            ref={contentRef}
-            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-          >
-            {visibleRows.map((virtualRow) => {
-              const block = blocks[virtualRow.index]
-              if (!block) return null
-              return (
-                <div
-                  className="absolute top-0 left-0 w-full pb-5"
-                  data-index={virtualRow.index}
-                  data-timeline-block={block.key}
-                  key={block.key}
-                  ref={rowVirtualizer.measureElement}
-                  style={{ transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  <TimelineBlockView block={block} onSelectItem={onSelectItem} />
-                </div>
-              )
-            })}
+    <ArtifactResourceProvider loader={blobLoader}>
+      <div className="relative min-h-0 min-w-0 flex-1">
+        <p aria-live="polite" className="sr-only" role="status">
+          <span key={latest?.id}>
+            {latest
+              ? t('timeline.update', {
+                  summary:
+                    latest.kind === 'tool_activity' && latest.tool
+                      ? toolActivitySummary(latest, t)
+                      : timelineSummary(latest, t),
+                })
+              : t('timeline.noActivity')}
+          </span>
+        </p>
+        <section
+          aria-label={t('timeline.label')}
+          className="h-full overflow-y-auto overscroll-contain px-1 pb-28"
+          data-testid="task-timeline-viewport"
+          onKeyDown={onKeyDown}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onScroll={onScroll}
+          onTouchEnd={onTouchEnd}
+          onTouchMove={onTouchMove}
+          onTouchStart={onTouchStart}
+          onWheel={onWheel}
+          ref={viewportRef}
+        >
+          {useVirtualList ? (
             <div
-              aria-hidden="true"
-              className="absolute left-0 w-full"
-              ref={endRef}
-              style={{ top: `${rowVirtualizer.getTotalSize()}px` }}
-            />
-          </div>
-        ) : (
-          <div className="space-y-5" data-testid="task-timeline-scroll-content" ref={contentRef}>
-            {blocks.map((block) => (
-              <div data-timeline-block={block.key} key={block.key}>
-                <TimelineBlockView block={block} onSelectItem={onSelectItem} />
-              </div>
-            ))}
-            <div aria-hidden="true" ref={endRef} />
-          </div>
-        )}
-      </section>
-    </div>
+              className="relative"
+              data-testid="task-timeline-scroll-content"
+              ref={contentRef}
+              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            >
+              {visibleRows.map((virtualRow) => {
+                const block = blocks[virtualRow.index]
+                if (!block) return null
+                return (
+                  <div
+                    className="absolute top-0 left-0 w-full pb-5"
+                    data-index={virtualRow.index}
+                    data-timeline-block={block.key}
+                    key={block.key}
+                    ref={rowVirtualizer.measureElement}
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <TimelineBlockView block={block} onSelectItem={selectItem} />
+                  </div>
+                )
+              })}
+              <div
+                aria-hidden="true"
+                className="absolute left-0 w-full"
+                ref={endRef}
+                style={{ top: `${rowVirtualizer.getTotalSize()}px` }}
+              />
+            </div>
+          ) : (
+            <div className="space-y-5" data-testid="task-timeline-scroll-content" ref={contentRef}>
+              {blocks.map((block) => (
+                <div data-timeline-block={block.key} key={block.key}>
+                  <TimelineBlockView block={block} onSelectItem={selectItem} />
+                </div>
+              ))}
+              <div aria-hidden="true" ref={endRef} />
+            </div>
+          )}
+        </section>
+      </div>
+    </ArtifactResourceProvider>
   )
 }
 
@@ -283,13 +302,62 @@ function coalesceAssistantItems(items: TimelineItemProjection[]) {
       item.runSegmentId === previous.runSegmentId &&
       item.semanticGroupId === previous.semanticGroupId
     ) {
-      previous.summary += item.summary
-      previous.incomplete = item.incomplete
+      if (item.incomplete === false) {
+        Object.assign(previous, item, {
+          contentBlocks: item.contentBlocks?.map(cloneContentBlock),
+        })
+      } else {
+        previous.summary += item.summary
+        previous.incomplete = item.incomplete
+        previous.blobId ??= item.blobId
+        previous.contentBlocks = mergeContentBlocks(
+          previous.contentBlocks ?? [],
+          item.contentBlocks ?? [],
+        )
+      }
       continue
     }
-    coalesced.push({ ...item })
+    coalesced.push(
+      item.kind === 'assistant_text'
+        ? { ...item, contentBlocks: item.contentBlocks?.map(cloneContentBlock) }
+        : item,
+    )
   }
   return coalesced
+}
+
+function mergeContentBlocks(
+  current: TimelineContentBlock[],
+  incoming: TimelineContentBlock[],
+): TimelineContentBlock[] {
+  const merged = current.map(cloneContentBlock)
+  for (const block of incoming) {
+    const previous = merged.at(-1)
+    if (block.type === 'text' && previous?.type === 'text' && block.format === previous.format) {
+      previous.text += block.text
+    } else {
+      merged.push(cloneContentBlock(block))
+    }
+  }
+  return merged
+}
+
+function cloneContentBlock(block: TimelineContentBlock): TimelineContentBlock {
+  if (block.type === 'artifact') {
+    return {
+      artifact: {
+        ...block.artifact,
+        presentation: block.artifact.presentation
+          ? { ...block.artifact.presentation }
+          : block.artifact.presentation,
+      },
+      type: 'artifact',
+    }
+  }
+  if (block.type === 'tool_activity') {
+    return { activity: { ...block.activity }, type: 'tool_activity' }
+  }
+  return { ...block }
 }
 
 function TimelineBlockView({

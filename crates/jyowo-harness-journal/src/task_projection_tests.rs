@@ -7,12 +7,14 @@ use crate::{
 };
 use chrono::{TimeZone, Utc};
 use harness_contracts::{
-    ActorId, AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobId, CheckpointId,
+    ActorId, ArtifactCreatedEvent, ArtifactRevisionId, ArtifactSource, ArtifactStatus,
+    AssistantDeltaProducedEvent, AssistantMessageCompletedEvent, BlobId, BlobRef, CheckpointId,
     ChildAttachment, ClientId, CommandId, DeferPolicy, DeltaChunk, EndReason, Event, EventId,
-    MessageContent, MessageId, NoopRedactor, PermissionProjection, PermissionRoute, QueueItemId,
-    QueueItemState, RequestId, RunEndedEvent, RunId, RunSegmentId, RunState, RunTerminalReason,
-    SessionId, StopReason, SubagentActorState, SubagentId, SubagentParentProjection,
-    SubagentProjection, TaskId, TaskState, TenantId, ToolProperties, ToolResult,
+    MessageContent, MessageId, MessagePart, NoopRedactor, PermissionProjection, PermissionRoute,
+    QueueItemId, QueueItemState, RequestId, RunEndedEvent, RunId, RunSegmentId, RunState,
+    RunTerminalReason, SessionId, StopReason, SubagentActorState, SubagentId,
+    SubagentParentProjection, SubagentProjection, TaskId, TaskState, TenantId,
+    TimelineArtifactSurface, TimelineContentBlock, ToolProperties, ToolResult,
     ToolUseCompletedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, UsageSnapshot,
     WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceMode,
 };
@@ -73,7 +75,7 @@ fn engine_assistant_events_project_text_without_internal_lifecycle_notices() {
                 Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
                     run_id,
                     message_id,
-                    content: MessageContent::Text("First answer".into()),
+                    content: MessageContent::Text("Canonical answer".into()),
                     tool_uses: Vec::new(),
                     usage: UsageSnapshot::default(),
                     pricing_snapshot_id: None,
@@ -110,7 +112,7 @@ fn engine_assistant_events_project_text_without_internal_lifecycle_notices() {
             .iter()
             .map(|item| item.summary.as_str())
             .collect::<Vec<_>>(),
-        vec!["First ", "answer", "Completion fallback"]
+        vec!["First ", "Canonical answer", "Completion fallback"]
     );
     assert!(projected
         .iter()
@@ -141,6 +143,270 @@ fn engine_assistant_events_project_text_without_internal_lifecycle_notices() {
     store.rebuild_projections().unwrap();
     assert_eq!(timeline(&path, task_id), before_rebuild);
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn engine_assistant_multimodal_content_projects_all_media_blocks() {
+    let root = temp_root("engine-assistant-multimodal");
+    let path = root.join("tasks.db");
+    let store = Arc::new(TaskStore::open(&path).unwrap());
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let media_message_id = MessageId::new();
+    let streamed_message_id = MessageId::new();
+    let image_blob = blob_ref("application/octet-stream", 10);
+    let video_blob = blob_ref("video/quicktime", 20);
+    let file_blob = blob_ref("application/pdf", 30);
+    let streamed_image_blob = blob_ref("image/webp", 40);
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Multimodal output"),
+    );
+    for blob in [&image_blob, &video_blob, &file_blob, &streamed_image_blob] {
+        let blob_id = blob.id.to_string();
+        store
+            .stage_blob(
+                task_id,
+                blob.id,
+                blob.content_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream"),
+                blob.size,
+                blob.content_hash,
+                &format!("{}/{}.blob", &blob_id[..2], blob_id),
+            )
+            .unwrap();
+    }
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(segment_id),
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            Some(0),
+            &[
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id: media_message_id,
+                    content: MessageContent::Multimodal(vec![
+                        MessagePart::Image {
+                            mime_type: "image/png".into(),
+                            blob_ref: image_blob.clone(),
+                        },
+                        MessagePart::Video {
+                            mime_type: "video/mp4".into(),
+                            blob_ref: video_blob.clone(),
+                        },
+                        MessagePart::File {
+                            mime_type: "application/pdf".into(),
+                            blob_ref: file_blob.clone(),
+                        },
+                    ]),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at,
+                }),
+                Event::AssistantDeltaProduced(AssistantDeltaProducedEvent {
+                    run_id,
+                    message_id: streamed_message_id,
+                    delta: DeltaChunk::Text("Rendered image".into()),
+                    at,
+                }),
+                Event::AssistantMessageCompleted(AssistantMessageCompletedEvent {
+                    run_id,
+                    message_id: streamed_message_id,
+                    content: MessageContent::Multimodal(vec![
+                        MessagePart::Text("Canonical before ".into()),
+                        MessagePart::Image {
+                            mime_type: "image/webp".into(),
+                            blob_ref: streamed_image_blob.clone(),
+                        },
+                        MessagePart::Text(" after image".into()),
+                    ]),
+                    tool_uses: Vec::new(),
+                    usage: UsageSnapshot::default(),
+                    pricing_snapshot_id: None,
+                    stop_reason: StopReason::EndTurn,
+                    at,
+                }),
+            ],
+        )
+        .unwrap();
+
+    let before_rebuild = timeline(&path, task_id);
+    let projected = before_rebuild
+        .iter()
+        .filter(|item| item.kind == harness_contracts::TimelineEventKind::AssistantText)
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 2);
+
+    let media = projected[0];
+    assert_eq!(media.summary, "Image");
+    assert_eq!(media.blob_id, Some(image_blob.id));
+    assert_eq!(media.content_blocks.len(), 3);
+    assert_artifact_block(
+        &media.content_blocks[0],
+        "image",
+        "image/png",
+        image_blob.id,
+    );
+    assert_artifact_block(
+        &media.content_blocks[1],
+        "video",
+        "video/mp4",
+        video_blob.id,
+    );
+    assert_artifact_block(
+        &media.content_blocks[2],
+        "file",
+        "application/pdf",
+        file_blob.id,
+    );
+
+    let streamed = projected[1];
+    assert!(!streamed.incomplete);
+    assert_eq!(streamed.summary, "Canonical before  after image");
+    assert_eq!(streamed.blob_id, Some(streamed_image_blob.id));
+    assert!(matches!(
+        streamed.content_blocks.first(),
+        Some(TimelineContentBlock::Text { text, .. }) if text == "Canonical before "
+    ));
+    assert_artifact_block(
+        &streamed.content_blocks[1],
+        "image",
+        "image/webp",
+        streamed_image_blob.id,
+    );
+    assert!(matches!(
+        streamed.content_blocks.get(2),
+        Some(TimelineContentBlock::Text { text, .. }) if text == " after image"
+    ));
+
+    store.rebuild_projections().unwrap();
+    assert_eq!(timeline(&path, task_id), before_rebuild);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn engine_artifacts_project_renderer_metadata_and_rebuild_identically() {
+    let root = temp_root("engine-artifact-renderer");
+    let path = root.join("tasks.db");
+    let store = TaskStore::open(&path).unwrap();
+    let task_id = TaskId::new();
+    let segment_id = RunSegmentId::new();
+    let run_id = RunId::new();
+    let session_id = SessionId::new();
+    let blob_id = BlobId::new();
+    let content_hash = *blake3::hash(b"video").as_bytes();
+    let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
+
+    transact(
+        &store,
+        task_id,
+        0,
+        user_source(),
+        NewTaskEvent::task_created("Artifact output"),
+    );
+    let blob_id_text = blob_id.to_string();
+    store
+        .stage_blob(
+            task_id,
+            blob_id,
+            "video/mp4",
+            5,
+            content_hash,
+            &format!("{}/{}.blob", &blob_id_text[..2], blob_id_text),
+        )
+        .unwrap();
+    transact(
+        &store,
+        task_id,
+        1,
+        supervisor_source(),
+        NewTaskEvent::run_started(segment_id, at),
+    );
+    store
+        .append_engine_events(
+            task_id,
+            TenantId::SINGLE,
+            session_id,
+            Some(segment_id),
+            AppendMetadata {
+                run_id: Some(run_id),
+                ..AppendMetadata::default()
+            },
+            Some(0),
+            &[Event::ArtifactCreated(ArtifactCreatedEvent {
+                revision_id: ArtifactRevisionId::new(),
+                session_id,
+                run_id,
+                artifact_id: "artifact-video".into(),
+                title: "demo.mp4".into(),
+                kind: "video".into(),
+                status: ArtifactStatus::Ready,
+                source: ArtifactSource::Assistant,
+                source_message_id: None,
+                source_tool_use_id: None,
+                blob_ref: Some(BlobRef {
+                    id: blob_id,
+                    size: 5,
+                    content_hash,
+                    content_type: Some("video/mp4".into()),
+                }),
+                preview: None,
+                content_hash: Some(content_hash.to_vec()),
+                at,
+            })],
+        )
+        .unwrap();
+
+    let before_rebuild = timeline(&path, task_id);
+    let artifact_item = before_rebuild
+        .iter()
+        .find(|item| item.summary == "demo.mp4")
+        .unwrap();
+    assert_eq!(
+        artifact_item.kind,
+        harness_contracts::TimelineEventKind::Artifact
+    );
+    let [TimelineContentBlock::Artifact { artifact }] = artifact_item.content_blocks.as_slice()
+    else {
+        panic!("expected one artifact content block");
+    };
+    assert_eq!(artifact.blob_id, Some(blob_id));
+    assert_eq!(artifact.media_type, "video/mp4");
+    assert_eq!(artifact.size, Some(5));
+    assert_eq!(
+        artifact
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.preferred_surface),
+        Some(TimelineArtifactSurface::Inline)
+    );
+
+    store.rebuild_projections().unwrap();
+    assert_eq!(timeline(&path, task_id), before_rebuild);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -830,6 +1096,14 @@ fn typed_events_reduce_complete_task_run_queue_and_permission_state() {
     assert_eq!(user_messages.len(), 1);
     assert_eq!(user_messages[0].summary, "edited");
     assert_eq!(user_messages[0].run_segment_id, Some(next_segment_id));
+    assert_eq!(user_messages[0].blob_id, Some(blob_id));
+    assert!(matches!(
+        user_messages[0].content_blocks.as_slice(),
+        [
+            TimelineContentBlock::Text { text, .. },
+            TimelineContentBlock::Artifact { artifact }
+        ] if text == "edited" && artifact.blob_id == Some(blob_id)
+    ));
 
     let before = store.projection_counts().unwrap();
     store.rebuild_projections().unwrap();
@@ -1908,6 +2182,40 @@ fn command(
         authority,
         payload: json!({ "event": expected_stream_version + 1 }),
     }
+}
+
+fn blob_ref(content_type: &str, size: u64) -> BlobRef {
+    BlobRef {
+        id: BlobId::new(),
+        size,
+        content_hash: [size as u8; 32],
+        content_type: Some(content_type.into()),
+    }
+}
+
+fn assert_artifact_block(
+    block: &TimelineContentBlock,
+    artifact_kind: &str,
+    media_type: &str,
+    blob_id: BlobId,
+) {
+    let TimelineContentBlock::Artifact { artifact } = block else {
+        panic!("expected artifact block");
+    };
+    assert_eq!(artifact.artifact_kind.as_deref(), Some(artifact_kind));
+    assert_eq!(artifact.media_type, media_type);
+    assert_eq!(artifact.blob_id, Some(blob_id));
+    assert_eq!(
+        artifact
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.preferred_surface),
+        Some(if artifact_kind == "file" {
+            TimelineArtifactSurface::Card
+        } else {
+            TimelineArtifactSurface::Inline
+        })
+    );
 }
 
 fn timeline(path: &Path, task_id: TaskId) -> Vec<harness_contracts::TimelineItemProjection> {

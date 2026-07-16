@@ -8,6 +8,8 @@ import type {
   TaskEventEnvelope,
   TaskProjection,
   TaskState,
+  TimelineArtifactProjection,
+  TimelineContentBlock,
   TimelineEventKind,
   TimelineItemProjection,
   TimelineToolOperation,
@@ -38,6 +40,9 @@ export function deriveLiveTaskSnapshot(
   const timeline = new Map(snapshot.timeline.map((item) => [item.globalOffset, { ...item }]))
   const queue = new Map(projection.queue.map((item) => [item.queueItemId, item]))
   const queueContent = new Map(projection.queue.map((item) => [item.queueItemId, item.content]))
+  const queueAttachments = new Map(
+    projection.queue.map((item) => [item.queueItemId, [...item.attachments]]),
+  )
   const ordered = [...events]
     .filter((event) => event.globalOffset > snapshot.snapshotOffset)
     .sort((left, right) => left.globalOffset - right.globalOffset)
@@ -48,8 +53,8 @@ export function deriveLiveTaskSnapshot(
     seenOffsets.add(event.globalOffset)
     projection.lastGlobalOffset = Math.max(projection.lastGlobalOffset, event.globalOffset)
     projection.streamVersion = Math.max(projection.streamVersion, event.streamSequence)
-    applyProjectionEvent(projection, queue, queueContent, event)
-    projectTimelineEvent(timeline, queueContent, event)
+    applyProjectionEvent(projection, queue, queueContent, queueAttachments, event)
+    projectTimelineEvent(timeline, queueContent, queueAttachments, event)
   }
 
   projection.queue = [...queue.values()].sort(
@@ -72,6 +77,7 @@ function applyProjectionEvent(
   projection: TaskProjection,
   queue: Map<TypedUlid, QueueItemProjection>,
   queueContent: Map<string, string>,
+  queueAttachments: Map<string, TypedUlid[]>,
   event: TaskEventEnvelope,
 ) {
   const payload = record(event.payload)
@@ -207,13 +213,14 @@ function applyProjectionEvent(
       return
     }
     default:
-      applyQueueEvent(queue, queueContent, event, payload)
+      applyQueueEvent(queue, queueContent, queueAttachments, event, payload)
   }
 }
 
 function applyQueueEvent(
   queue: Map<TypedUlid, QueueItemProjection>,
   queueContent: Map<string, string>,
+  queueAttachments: Map<string, TypedUlid[]>,
   event: TaskEventEnvelope,
   payload: Record<string, unknown>,
 ) {
@@ -236,6 +243,7 @@ function applyQueueEvent(
     }
     queue.set(queueItemId, item)
     queueContent.set(queueItemId, content)
+    queueAttachments.set(queueItemId, [...item.attachments])
     return
   }
   if (!current) return
@@ -252,6 +260,7 @@ function applyQueueEvent(
       revision,
     })
     queueContent.set(queueItemId, content)
+    queueAttachments.set(queueItemId, typedIdArray(payload.attachments))
   } else if (event.eventType === 'message.promoted') {
     queue.set(queueItemId, { ...current, state: 'promoting' })
   } else if (event.eventType === 'message.recovered') {
@@ -264,6 +273,7 @@ function applyQueueEvent(
 function projectTimelineEvent(
   timeline: Map<number, TimelineItemProjection>,
   queueContent: Map<string, string>,
+  queueAttachments: Map<string, TypedUlid[]>,
   event: TaskEventEnvelope,
 ) {
   if (timeline.has(event.globalOffset)) return
@@ -275,7 +285,7 @@ function projectTimelineEvent(
   if (!payload || ignoredTaskTimelineEvent(event.eventType)) return
   const runSegmentId =
     typedId(payload.runSegmentId) ?? typedId(payload.segmentId) ?? childSegment(payload)
-  const selected = taskTimelineDescription(event.eventType, payload, queueContent)
+  const selected = taskTimelineDescription(event.eventType, payload, queueContent, queueAttachments)
   if (!selected) return
   timeline.set(event.globalOffset, {
     ...selected,
@@ -300,6 +310,7 @@ function projectEngineEvent(
     const text = stringValue(record(event.delta)?.text)
     if (!messageId || !text) return
     timeline.set(envelope.globalOffset, {
+      contentBlocks: [{ format: 'markdown', text, type: 'text' }],
       globalOffset: envelope.globalOffset,
       id: envelope.eventId,
       incomplete: true,
@@ -313,6 +324,8 @@ function projectEngineEvent(
   if (type === 'assistant_message_completed') {
     const messageId = stringValue(event.message_id)
     if (!messageId) return
+    const contentBlocks = messageContentBlocks(event.content)
+    if (contentBlocks.length === 0) return
     const previous = [...timeline.values()]
       .reverse()
       .find(
@@ -323,18 +336,21 @@ function projectEngineEvent(
       )
     if (previous) {
       previous.incomplete = false
+      previous.contentBlocks = contentBlocks
+      previous.summary = contentBlocksSummary(contentBlocks)
+      previous.blobId = firstArtifactBlobId(contentBlocks)
       return
     }
-    const text = messageContentText(event.content)
-    if (!text) return
     timeline.set(envelope.globalOffset, {
+      blobId: firstArtifactBlobId(contentBlocks),
+      contentBlocks,
       globalOffset: envelope.globalOffset,
       id: envelope.eventId,
       incomplete: false,
       kind: 'assistant_text',
       runSegmentId,
       semanticGroupId: messageId,
-      summary: text,
+      summary: contentBlocksSummary(contentBlocks),
     })
     return
   }
@@ -355,7 +371,10 @@ function projectEngineEvent(
 function engineTimelineDescription(
   type: string,
   event: Record<string, unknown>,
-): Pick<TimelineItemProjection, 'blobId' | 'incomplete' | 'kind' | 'summary'> | null {
+): Pick<
+  TimelineItemProjection,
+  'blobId' | 'contentBlocks' | 'incomplete' | 'kind' | 'summary'
+> | null {
   switch (type) {
     case 'assistant_notice':
       return description('notice', stringValue(event.body) ?? 'Assistant notice')
@@ -366,12 +385,13 @@ function engineTimelineDescription(
     case 'artifact_created':
     case 'artifact_updated': {
       const blob = record(event.blob_ref)
+      const title = stringValue(event.title) ?? 'Artifact updated'
+      const kind = stringValue(event.kind)
+      const artifact = timelineArtifactProjection(event, blob, title, kind)
       return {
-        ...description(
-          artifactKind(stringValue(event.kind)),
-          stringValue(event.title) ?? 'Artifact updated',
-        ),
+        ...description(artifactKind(kind), title),
         blobId: typedId(blob?.id),
+        contentBlocks: [{ artifact, type: 'artifact' }],
       }
     }
     case 'compaction_applied':
@@ -404,6 +424,7 @@ function projectToolTimelineEvent(
       toolUseId,
     }
     timeline.set(envelope.globalOffset, {
+      contentBlocks: [{ activity: tool, type: 'tool_activity' }],
       globalOffset: envelope.globalOffset,
       id: envelope.eventId,
       incomplete: true,
@@ -445,6 +466,7 @@ function projectToolTimelineEvent(
       toolUseId,
     }
     timeline.set(envelope.globalOffset, {
+      contentBlocks: [{ activity: tool, type: 'tool_activity' }],
       globalOffset: envelope.globalOffset,
       id: envelope.eventId,
       incomplete: status === 'requested' || status === 'running',
@@ -469,6 +491,7 @@ function projectToolTimelineEvent(
   }
   previous.incomplete = status === 'requested' || status === 'running'
   previous.summary = timelineToolSummary(previous.tool)
+  previous.contentBlocks = [{ activity: previous.tool, type: 'tool_activity' }]
 }
 
 function timelineToolStatus(type: string): TimelineToolStatus | undefined {
@@ -629,13 +652,22 @@ function taskTimelineDescription(
   eventType: string,
   payload: Record<string, unknown>,
   queueContent: Map<string, string>,
-): Pick<TimelineItemProjection, 'incomplete' | 'kind' | 'summary'> | null {
+  queueAttachments: Map<string, TypedUlid[]>,
+): Pick<
+  TimelineItemProjection,
+  'blobId' | 'contentBlocks' | 'incomplete' | 'kind' | 'summary'
+> | null {
   switch (eventType) {
-    case 'message.consumed':
-      return description(
-        'user_message',
-        queueContent.get(stringValue(payload.queueItemId) ?? '') ?? 'Message submitted',
-      )
+    case 'message.consumed': {
+      const queueItemId = stringValue(payload.queueItemId) ?? ''
+      const summary = queueContent.get(queueItemId) ?? 'Message submitted'
+      const attachments = queueAttachments.get(queueItemId) ?? []
+      return {
+        ...description('user_message', summary),
+        blobId: attachments[0],
+        contentBlocks: userMessageContentBlocks(summary, attachments),
+      }
+    }
     case 'permission.invalidated':
       return description('permission', 'Permission expired after restart')
     case 'permission.requested':
@@ -712,8 +744,78 @@ function description(
   kind: TimelineEventKind,
   summary: string,
   incomplete = false,
-): Pick<TimelineItemProjection, 'incomplete' | 'kind' | 'summary'> {
-  return { incomplete, kind, summary }
+): Pick<TimelineItemProjection, 'contentBlocks' | 'incomplete' | 'kind' | 'summary'> {
+  return { contentBlocks: defaultContentBlocks(kind, summary), incomplete, kind, summary }
+}
+
+function defaultContentBlocks(kind: TimelineEventKind, summary: string): TimelineContentBlock[] {
+  if (kind === 'assistant_text' || kind === 'user_message') {
+    return [
+      {
+        format: kind === 'assistant_text' ? 'markdown' : 'plain',
+        text: summary,
+        type: 'text',
+      },
+    ]
+  }
+  return [
+    {
+      level: kind === 'error' ? 'error' : kind === 'permission' ? 'warning' : 'info',
+      text: summary,
+      type: 'notice',
+    },
+  ]
+}
+
+function userMessageContentBlocks(
+  summary: string,
+  attachments: TypedUlid[],
+): TimelineContentBlock[] {
+  return [
+    { format: 'plain', text: summary, type: 'text' },
+    ...attachments.map(
+      (blobId, index): TimelineContentBlock => ({
+        artifact: {
+          artifactKind: 'file',
+          blobId,
+          mediaType: 'application/octet-stream',
+          presentation: { preferredSurface: 'card' },
+          title: attachments.length === 1 ? summary : `Attachment ${index + 1}`,
+        },
+        type: 'artifact',
+      }),
+    ),
+  ]
+}
+
+function timelineArtifactProjection(
+  event: Record<string, unknown>,
+  blob: Record<string, unknown> | null,
+  title: string,
+  artifactKindValue?: string,
+): TimelineArtifactProjection {
+  const mediaType = stringValue(blob?.content_type) ?? 'application/octet-stream'
+  const artifactKind = artifactKindValue?.toLowerCase()
+  return {
+    artifactId: stringValue(event.artifact_id),
+    artifactKind,
+    blobId: typedId(blob?.id),
+    mediaType,
+    presentation: {
+      preferredSurface: prefersInlineArtifact(artifactKind, mediaType) ? 'inline' : 'card',
+    },
+    preview: stringValue(event.preview),
+    size: numberValue(blob?.size),
+    title,
+  }
+}
+
+function prefersInlineArtifact(artifactKind: string | undefined, mediaType: string) {
+  return (
+    ['audio', 'image', 'map', 'screenshot', 'video'].includes(artifactKind ?? '') ||
+    /^(audio|image|video)\//i.test(mediaType) ||
+    /geo(\+)?json/i.test(mediaType)
+  )
 }
 
 function ignoredTaskTimelineEvent(eventType: string) {
@@ -726,12 +828,73 @@ function ignoredTaskTimelineEvent(eventType: string) {
   ].includes(eventType)
 }
 
-function messageContentText(value: unknown) {
+function messageContentBlocks(value: unknown): TimelineContentBlock[] {
   const content = record(value)
   const text = stringValue(content?.text)
-  if (text !== undefined) return text
+  if (text !== undefined) {
+    return text ? [{ format: 'markdown', text, type: 'text' }] : []
+  }
+  if (content && 'structured' in content) {
+    const structured = JSON.stringify(content.structured)
+    return structured === undefined ? [] : [{ format: 'plain', text: structured, type: 'text' }]
+  }
   const parts = Array.isArray(content?.multimodal) ? content.multimodal : []
-  return parts.map((part) => stringValue(record(part)?.text) ?? '').join('')
+  return parts.flatMap((part): TimelineContentBlock[] => {
+    const value = record(part)
+    const partText = stringValue(value?.text)
+    if (partText !== undefined) {
+      return partText ? [{ format: 'markdown', text: partText, type: 'text' }] : []
+    }
+    for (const [key, title, kind] of [
+      ['image', 'Image', 'image'],
+      ['video', 'Video', 'video'],
+      ['file', 'File', 'file'],
+    ] as const) {
+      const media = record(value?.[key])
+      const blob = record(media?.blob_ref)
+      const blobId = typedId(blob?.id)
+      if (!media || !blob || !blobId) continue
+      const mediaType =
+        stringValue(media.mime_type)?.trim() ||
+        stringValue(blob.content_type) ||
+        'application/octet-stream'
+      return [
+        {
+          artifact: {
+            artifactKind: kind,
+            blobId,
+            mediaType,
+            presentation: {
+              preferredSurface: prefersInlineArtifact(kind, mediaType) ? 'inline' : 'card',
+            },
+            size: numberValue(blob.size),
+            title,
+          },
+          type: 'artifact',
+        },
+      ]
+    }
+    return []
+  })
+}
+
+function contentBlocksSummary(blocks: TimelineContentBlock[]) {
+  const text = blocks
+    .filter(
+      (block): block is Extract<TimelineContentBlock, { type: 'text' }> => block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('')
+  if (text) return text
+  return (
+    blocks.find((block) => block.type === 'artifact')?.artifact.title ??
+    blocks.find((block) => block.type === 'notice')?.text ??
+    ''
+  )
+}
+
+function firstArtifactBlobId(blocks: TimelineContentBlock[]) {
+  return blocks.find((block) => block.type === 'artifact')?.artifact.blobId ?? undefined
 }
 
 function artifactKind(kind?: string): TimelineEventKind {

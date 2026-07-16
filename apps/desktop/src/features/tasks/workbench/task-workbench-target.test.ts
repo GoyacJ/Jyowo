@@ -62,6 +62,89 @@ describe('taskWorkbenchTargetFromTimelineItem', () => {
       ),
     ).toBeNull()
   })
+
+  it('opens an artifact block from an assistant message without a top-level blob', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('assistant_text'),
+          blobId: undefined,
+          contentBlocks: [
+            {
+              artifact: {
+                artifactId: 'assistant-video',
+                artifactKind: 'video',
+                blobId,
+                mediaType: 'video/mp4',
+                title: 'demo.mp4',
+              },
+              type: 'artifact',
+            },
+          ],
+        },
+        taskId,
+      ),
+    ).toMatchObject({
+      blobId,
+      kind: 'artifact',
+      resourceId: blobId,
+      title: 'demo.mp4',
+    })
+  })
+
+  it('opens preview-only artifacts and preserves preview metadata', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('notice'),
+          blobId: undefined,
+          contentBlocks: [
+            {
+              artifact: {
+                artifactId: 'preview-map',
+                artifactKind: 'map',
+                mediaType: 'application/geo+json',
+                presentation: { previewBlobId: 'preview-blob' },
+                title: 'area.geojson',
+              },
+              type: 'artifact',
+            },
+          ],
+        },
+        taskId,
+      ),
+    ).toMatchObject({
+      artifact: { artifactId: 'preview-map', previewBlobId: 'preview-blob' },
+      blobId: undefined,
+      kind: 'artifact',
+      resourceId: 'preview-blob',
+      title: 'area.geojson',
+    })
+  })
+
+  it('uses the derived semantic group when an artifact has no persistent resource id', () => {
+    expect(
+      taskWorkbenchTargetFromTimelineItem(
+        {
+          ...item('assistant_text'),
+          blobId: undefined,
+          contentBlocks: [
+            {
+              artifact: {
+                artifactKind: 'map',
+                mediaType: 'application/geo+json',
+                preview: '{"type":"FeatureCollection","features":[]}',
+                title: 'inline map',
+              },
+              type: 'artifact',
+            },
+          ],
+          semanticGroupId: 'message:artifact:1',
+        },
+        taskId,
+      ),
+    ).toMatchObject({ resourceId: 'message:artifact:1' })
+  })
 })
 
 function item(

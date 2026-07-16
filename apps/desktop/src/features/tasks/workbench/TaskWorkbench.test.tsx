@@ -105,6 +105,30 @@ describe('TaskWorkbench', () => {
     ).toBeInTheDocument()
   })
 
+  it('renders a preview-only source through the artifact renderer', async () => {
+    const readBlob = vi.fn().mockResolvedValue(blob('preview source', 'text/plain'))
+    render(
+      <TaskWorkbench client={workbenchClient(readBlob)} events={events} projection={projection} />,
+    )
+
+    act(() =>
+      openTarget(
+        target('source', 'preview.png', {
+          artifact: {
+            artifactKind: 'image',
+            mediaType: 'image/png',
+            previewBlobId: 'preview-blob',
+          },
+          blobId: undefined,
+          resourceId: 'preview-source',
+        }),
+      ),
+    )
+
+    expect(await screen.findByText('preview source')).toBeInTheDocument()
+    expect(readBlob).toHaveBeenCalledWith('preview-blob')
+  })
+
   it('shows missing resources and retries transient failures', async () => {
     const readBlob = vi
       .fn()
