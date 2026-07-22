@@ -1,6 +1,7 @@
 import { load, type Store } from '@tauri-apps/plugin-store'
 
 import { type AppLocale, DEFAULT_APP_LOCALE, isAppLocale } from '@/shared/i18n/locales'
+import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from '@/shared/state/sidebar-layout'
 import {
   clampTaskWorkbenchWidth,
   DEFAULT_TASK_WORKBENCH_WIDTH,
@@ -20,6 +21,7 @@ export type UiPreferences = {
   theme: UiThemePreference
   locale: AppLocale
   sidebarCollapsed: boolean
+  sidebarWidth: number
   sidebarSections: SidebarSectionsPreference
   expandedProjects: Record<string, boolean>
   taskWorkbenchWidth: number
@@ -31,6 +33,7 @@ const UI_PREFERENCES_DEFAULTS: UiPreferences = {
   theme: 'system',
   locale: DEFAULT_APP_LOCALE,
   sidebarCollapsed: false,
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   sidebarSections: {
     pinned: true,
     projects: true,
@@ -60,6 +63,7 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     theme,
     locale,
     sidebarCollapsed,
+    sidebarWidth,
     sidebarSections,
     expandedProjects,
     taskWorkbenchWidth,
@@ -70,6 +74,7 @@ export async function readUiPreferences(): Promise<UiPreferences> {
     store.get<UiThemePreference>('theme'),
     store.get<AppLocale>('locale'),
     store.get<boolean>('sidebarCollapsed'),
+    store.get<number>('sidebarWidth'),
     store.get<SidebarSectionsPreference>('sidebarSections'),
     store.get<Record<string, boolean>>('expandedProjects'),
     store.get<number>('taskWorkbenchWidth'),
@@ -85,6 +90,10 @@ export async function readUiPreferences(): Promise<UiPreferences> {
       typeof sidebarCollapsed === 'boolean'
         ? sidebarCollapsed
         : UI_PREFERENCES_DEFAULTS.sidebarCollapsed,
+    sidebarWidth:
+      typeof sidebarWidth === 'number' && Number.isFinite(sidebarWidth)
+        ? clampSidebarWidth(sidebarWidth)
+        : UI_PREFERENCES_DEFAULTS.sidebarWidth,
     sidebarSections: isSidebarSectionsPreference(sidebarSections)
       ? sidebarSections
       : { ...UI_PREFERENCES_DEFAULTS.sidebarSections },

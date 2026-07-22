@@ -476,9 +476,16 @@ pub fn export_all_schemas() -> BTreeMap<String, Schema> {
         "plugin_runtime_rpc_response",
         PluginRuntimeRpcResponse
     );
-    insert_schema!(schemas, "clarify_prompt", ClarifyPrompt);
-    insert_schema!(schemas, "clarify_choice", ClarifyChoice);
-    insert_schema!(schemas, "clarify_answer", ClarifyAnswer);
+    insert_schema!(schemas, "ask_user_question_request", AskUserQuestionRequest);
+    insert_schema!(schemas, "ask_user_question", AskUserQuestion);
+    insert_schema!(schemas, "ask_user_question_option", AskUserQuestionOption);
+    insert_schema!(schemas, "ask_user_question_answer", AskUserQuestionAnswer);
+    insert_schema!(
+        schemas,
+        "ask_user_question_response",
+        AskUserQuestionResponse
+    );
+    insert_schema!(schemas, "ask_user_question_outcome", AskUserQuestionOutcome);
     insert_schema!(schemas, "outbound_user_message", OutboundUserMessage);
     insert_schema!(schemas, "user_message_delivery", UserMessageDelivery);
     insert_schema!(schemas, "runtime_execution_status", RuntimeExecutionStatus);

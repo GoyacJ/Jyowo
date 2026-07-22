@@ -425,6 +425,62 @@ describe('deriveLiveTaskSnapshot', () => {
     expect(result.projection.streamVersion).toBe(5)
   })
 
+  it('projects a pending question from the committed flat event payload', () => {
+    const segmentId = id(62)
+    const requestId = id(63)
+    const toolUseId = id(64)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      taskEvent(3, 'run.started', {
+        segmentId,
+        startedAt: '2026-07-12T01:00:00Z',
+      }),
+      taskEvent(4, 'question.requested', {
+        expiresAt: '2026-07-12T01:05:00Z',
+        questions: [
+          {
+            allowCustom: false,
+            header: '控制方式',
+            id: 'control',
+            multiSelect: false,
+            options: [
+              {
+                description: '同时支持电脑和移动设备',
+                id: 'both',
+                label: '键盘 + 触屏',
+              },
+            ],
+            question: '游戏运行在哪种设备上？',
+          },
+        ],
+        requestId,
+        revision: 1,
+        segmentId,
+        toolUseId,
+      }),
+    ])
+
+    expect(result.projection).toMatchObject({
+      currentRun: { segmentId, state: 'waiting_input' },
+      pendingQuestion: {
+        questions: [
+          expect.objectContaining({
+            id: 'control',
+            question: '游戏运行在哪种设备上？',
+          }),
+        ],
+        requestId,
+        revision: 1,
+        segmentId,
+        toolUseId,
+      },
+      state: 'waiting_input',
+    })
+    expect(result.timeline.at(-1)).toMatchObject({
+      kind: 'notice',
+      summary: 'User input requested',
+    })
+  })
+
   it('keeps live subagent projections current', () => {
     const child = {
       actorId: id(71),
@@ -464,6 +520,7 @@ describe('deriveLiveTaskSnapshot', () => {
 
   it('preserves file and generated media artifact kinds in the live timeline', () => {
     const blobId = id(82)
+    const sourceToolUseId = id(84)
     const result = deriveLiveTaskSnapshot(snapshot, [
       engineEvent(3, 'artifact_created', {
         blob_ref: {
@@ -473,6 +530,7 @@ describe('deriveLiveTaskSnapshot', () => {
           size: 12,
         },
         kind: 'file',
+        source_tool_use_id: sourceToolUseId,
         title: 'report.md',
       }),
       engineEvent(4, 'artifact_created', {
@@ -496,6 +554,7 @@ describe('deriveLiveTaskSnapshot', () => {
               artifactKind: 'file',
               mediaType: 'text/markdown',
               size: 12,
+              sourceToolUseId,
             }),
             type: 'artifact',
           }),
@@ -553,6 +612,66 @@ describe('deriveLiveTaskSnapshot', () => {
         },
       }),
     ])
+  })
+
+  it('projects a nonzero shell exit as a failed command', () => {
+    const toolUseId = id(91)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      engineEvent(3, 'tool_use_requested', {
+        input: { command: 'pwd && ls -la' },
+        tool_name: 'Bash',
+        tool_use_id: toolUseId,
+      }),
+      engineEvent(4, 'tool_use_completed', {
+        duration_ms: 9,
+        result: {
+          mixed: [
+            { kind: 'text', text: 'command failed' },
+            {
+              kind: 'structured',
+              schema_ref: null,
+              value: { exit_status: { code: 127 }, success: false },
+            },
+          ],
+        },
+        tool_use_id: toolUseId,
+      }),
+    ])
+
+    expect(result.timeline[0]).toEqual(
+      expect.objectContaining({
+        incomplete: false,
+        summary: 'Tool failed',
+        tool: expect.objectContaining({
+          operation: 'command',
+          output: 'command failed',
+          status: 'failed',
+        }),
+      }),
+    )
+  })
+
+  it('preserves the tool denial reason in the live timeline', () => {
+    const toolUseId = id(92)
+    const result = deriveLiveTaskSnapshot(snapshot, [
+      engineEvent(3, 'tool_use_requested', {
+        input: { command: 'pwd' },
+        tool_name: 'Bash',
+        tool_use_id: toolUseId,
+      }),
+      engineEvent(4, 'tool_use_denied', {
+        reason: { other: 'workspace lease is read-only' },
+        tool_use_id: toolUseId,
+      }),
+    ])
+
+    expect(result.timeline[0]?.tool).toEqual(
+      expect.objectContaining({
+        output: 'Tool use denied: workspace lease is read-only',
+        resultSummary: 'Tool use denied: workspace lease is read-only',
+        status: 'denied',
+      }),
+    )
   })
 })
 

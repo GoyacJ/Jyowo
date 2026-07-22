@@ -1,15 +1,17 @@
 #[cfg(feature = "builtin-toolset")]
+mod ask_user_question;
+#[cfg(feature = "builtin-toolset")]
 mod bash;
 #[cfg(feature = "builtin-toolset")]
 mod brokered_platform;
-#[cfg(feature = "builtin-toolset")]
-mod clarify;
 #[cfg(feature = "builtin-toolset")]
 mod diagnostics;
 #[cfg(feature = "builtin-toolset")]
 mod edit;
 #[cfg(feature = "programmatic-tool-calling")]
 mod execute_code;
+#[cfg(feature = "builtin-toolset")]
+mod file_artifact;
 #[cfg(feature = "gemini-tools")]
 mod gemini;
 #[cfg(feature = "builtin-toolset")]
@@ -51,6 +53,8 @@ mod write;
 mod zhipu;
 
 #[cfg(feature = "builtin-toolset")]
+pub use ask_user_question::AskUserQuestionTool;
+#[cfg(feature = "builtin-toolset")]
 pub use bash::BashTool;
 #[cfg(feature = "builtin-toolset")]
 pub use brokered_platform::{
@@ -59,8 +63,6 @@ pub use brokered_platform::{
     BrowserUseTool, ComputerUseTool, ImageGenerationTool, LspTool, NotebookEditTool, SessionTool,
     WorkflowTool, WorktreeTool,
 };
-#[cfg(feature = "builtin-toolset")]
-pub use clarify::ClarifyTool;
 #[cfg(feature = "builtin-toolset")]
 pub use diagnostics::{parse_cargo_diagnostics, parse_typescript_diagnostics, DiagnosticsTool};
 #[cfg(feature = "builtin-toolset")]

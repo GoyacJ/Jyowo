@@ -4,13 +4,13 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, BlobId, BlobRef, CausationId, CommandId, ConversationAttachmentReference,
-    ConversationContextReference, CorrelationId, Event, EventSource, EventSourceKind,
-    IndeterminateToolDecision, MessageContent, MessagePart, PermissionProjection, QueueItemId,
-    ReferenceKind, RequestId, RunId, RunSegmentId, RunTerminalReason, SessionId,
-    SubagentParentProjection, SubagentProjection, TenantId, ToolResult, ToolResultPart, ToolUseId,
-    WorkspaceLeaseId, WorkspaceLeaseProjection, WorkspaceLeaseState, WorkspaceSelection,
-    CURRENT_CONTEXT_REFERENCE_VERSION,
+    ActorId, AskUserQuestionOutcome, BlobId, BlobRef, CausationId, CommandId,
+    ConversationAttachmentReference, ConversationContextReference, CorrelationId, Event,
+    EventSource, EventSourceKind, IndeterminateToolDecision, MessageContent, MessagePart,
+    PendingQuestionProjection, PermissionProjection, QueueItemId, ReferenceKind, RequestId, RunId,
+    RunSegmentId, RunTerminalReason, SessionId, SubagentParentProjection, SubagentProjection,
+    TenantId, ToolResult, ToolResultPart, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    WorkspaceLeaseState, WorkspaceSelection, CURRENT_CONTEXT_REFERENCE_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -131,6 +131,19 @@ pub(crate) enum TaskEvent {
         option_id: Option<String>,
     },
     PermissionInvalidated {
+        request_id: RequestId,
+        revision: u64,
+        reason: String,
+    },
+    QuestionRequested {
+        question: PendingQuestionProjection,
+    },
+    QuestionResolved {
+        request_id: RequestId,
+        revision: u64,
+        outcome: AskUserQuestionOutcome,
+    },
+    QuestionInvalidated {
         request_id: RequestId,
         revision: u64,
         reason: String,
@@ -355,6 +368,22 @@ struct PermissionResolvedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PermissionInvalidatedPayload {
+    request_id: RequestId,
+    revision: u64,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QuestionResolvedPayload {
+    request_id: RequestId,
+    revision: u64,
+    outcome: AskUserQuestionOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QuestionInvalidatedPayload {
     request_id: RequestId,
     revision: u64,
     reason: String,
@@ -725,6 +754,43 @@ impl NewTaskEvent {
     ) -> Self {
         Self {
             event: TaskEvent::PermissionInvalidated {
+                request_id,
+                revision,
+                reason: reason.into(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn question_requested(question: PendingQuestionProjection) -> Self {
+        Self {
+            event: TaskEvent::QuestionRequested { question },
+        }
+    }
+
+    #[must_use]
+    pub const fn question_resolved(
+        request_id: RequestId,
+        revision: u64,
+        outcome: AskUserQuestionOutcome,
+    ) -> Self {
+        Self {
+            event: TaskEvent::QuestionResolved {
+                request_id,
+                revision,
+                outcome,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn question_invalidated(
+        request_id: RequestId,
+        revision: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            event: TaskEvent::QuestionInvalidated {
                 request_id,
                 revision,
                 reason: reason.into(),
@@ -1258,6 +1324,25 @@ impl TaskEvent {
                     reason: value.reason,
                 })
             }
+            "question.requested" => Ok(Self::QuestionRequested {
+                question: serde_json::from_value(payload)?,
+            }),
+            "question.resolved" => {
+                let value: QuestionResolvedPayload = serde_json::from_value(payload)?;
+                Ok(Self::QuestionResolved {
+                    request_id: value.request_id,
+                    revision: value.revision,
+                    outcome: value.outcome,
+                })
+            }
+            "question.invalidated" => {
+                let value: QuestionInvalidatedPayload = serde_json::from_value(payload)?;
+                Ok(Self::QuestionInvalidated {
+                    request_id: value.request_id,
+                    revision: value.revision,
+                    reason: value.reason,
+                })
+            }
             "subagent.spawned" => {
                 let value: SubagentSpawnedPayload = serde_json::from_value(payload)?;
                 Ok(Self::SubagentSpawned {
@@ -1371,6 +1456,9 @@ impl TaskEvent {
             Self::PermissionRequested { .. } => "permission.requested",
             Self::PermissionResolved { .. } => "permission.resolved",
             Self::PermissionInvalidated { .. } => "permission.invalidated",
+            Self::QuestionRequested { .. } => "question.requested",
+            Self::QuestionResolved { .. } => "question.resolved",
+            Self::QuestionInvalidated { .. } => "question.invalidated",
             Self::SubagentSpawned { .. } => "subagent.spawned",
             Self::SubagentLinked { .. } => "subagent.linked",
             Self::SubagentStateChanged { .. } => "subagent.state_changed",
@@ -1546,6 +1634,25 @@ impl TaskEvent {
                 revision: *revision,
                 reason: reason.clone(),
             })?,
+            Self::QuestionRequested { question } => serde_json::to_value(question)?,
+            Self::QuestionResolved {
+                request_id,
+                revision,
+                outcome,
+            } => serde_json::to_value(QuestionResolvedPayload {
+                request_id: *request_id,
+                revision: *revision,
+                outcome: outcome.clone(),
+            })?,
+            Self::QuestionInvalidated {
+                request_id,
+                revision,
+                reason,
+            } => serde_json::to_value(QuestionInvalidatedPayload {
+                request_id: *request_id,
+                revision: *revision,
+                reason: reason.clone(),
+            })?,
             Self::SubagentSpawned {
                 actor_id,
                 started_at,
@@ -1652,6 +1759,15 @@ impl TaskEvent {
             Self::PermissionInvalidated { .. } => matches!(
                 source.kind,
                 EventSourceKind::PermissionBroker
+                    | EventSourceKind::Supervisor
+                    | EventSourceKind::Recovery
+            ),
+            Self::QuestionRequested { .. } | Self::QuestionResolved { .. } => {
+                source.kind == EventSourceKind::QuestionBroker
+            }
+            Self::QuestionInvalidated { .. } => matches!(
+                source.kind,
+                EventSourceKind::QuestionBroker
                     | EventSourceKind::Supervisor
                     | EventSourceKind::Recovery
             ),
@@ -1795,6 +1911,11 @@ impl TaskEvent {
             Self::PermissionInvalidated { reason, .. } if reason.len() > 256 => {
                 return Err(TaskStoreError::InvalidInput(
                     "permission invalidation reason exceeds 256 bytes".into(),
+                ));
+            }
+            Self::QuestionInvalidated { reason, .. } if reason.len() > 256 => {
+                return Err(TaskStoreError::InvalidInput(
+                    "question invalidation reason exceeds 256 bytes".into(),
                 ));
             }
             Self::WorkspacePreparing { lease } if lease.state != WorkspaceLeaseState::Preparing => {

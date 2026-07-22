@@ -195,11 +195,11 @@ pub struct ExecutionDefaultsRecord {
     pub tool_settings: BTreeMap<String, crate::ToolRuntimeSettings>,
     #[serde(default = "default_context_compression_trigger_ratio")]
     pub context_compression_trigger_ratio: f32,
-    #[serde(default)]
+    #[serde(default = "default_agent_capability_enabled")]
     pub subagents_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_agent_capability_enabled")]
     pub agent_teams_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_agent_capability_enabled")]
     pub background_agents_enabled: bool,
 }
 
@@ -215,6 +215,10 @@ fn default_tool_profile_full() -> crate::ToolProfile {
     crate::ToolProfile::Full
 }
 
+fn default_agent_capability_enabled() -> bool {
+    true
+}
+
 impl Default for ExecutionDefaultsRecord {
     fn default() -> Self {
         Self {
@@ -222,9 +226,9 @@ impl Default for ExecutionDefaultsRecord {
             tool_profile: crate::ToolProfile::Full,
             tool_settings: BTreeMap::new(),
             context_compression_trigger_ratio: default_context_compression_trigger_ratio(),
-            subagents_enabled: false,
-            agent_teams_enabled: false,
-            background_agents_enabled: false,
+            subagents_enabled: default_agent_capability_enabled(),
+            agent_teams_enabled: default_agent_capability_enabled(),
+            background_agents_enabled: default_agent_capability_enabled(),
         }
     }
 }
@@ -789,9 +793,9 @@ mod tests {
         assert_eq!(defaults.tool_profile, crate::ToolProfile::Full);
         assert!(defaults.tool_settings.is_empty());
         assert!((defaults.context_compression_trigger_ratio - 0.8).abs() < f32::EPSILON);
-        assert!(!defaults.subagents_enabled);
-        assert!(!defaults.agent_teams_enabled);
-        assert!(!defaults.background_agents_enabled);
+        assert!(defaults.subagents_enabled);
+        assert!(defaults.agent_teams_enabled);
+        assert!(defaults.background_agents_enabled);
     }
 
     #[test]
@@ -831,6 +835,9 @@ mod tests {
         .expect("legacy execution defaults should deserialize");
 
         assert!(parsed.tool_settings.is_empty());
+        assert!(parsed.subagents_enabled);
+        assert!(parsed.agent_teams_enabled);
+        assert!(parsed.background_agents_enabled);
     }
 
     #[test]

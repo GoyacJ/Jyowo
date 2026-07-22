@@ -8,17 +8,19 @@ export function DiffPanel({
   loading,
   missing,
   onRetry,
+  surface = 'workbench',
   text,
 }: {
   error?: boolean
   loading: boolean
   missing: boolean
   onRetry?: () => void
+  surface?: 'inline' | 'workbench'
   text: string | null
 }) {
   const { t } = useTranslation('tasks')
   if (text !== null && !loading && !error && !missing) {
-    return <UnifiedDiff text={text} />
+    return <UnifiedDiff surface={surface} text={text} />
   }
   return (
     <ArtifactText
@@ -34,14 +36,14 @@ export function DiffPanel({
 
 type DiffLineKind = 'addition' | 'context' | 'deletion' | 'hunk' | 'meta'
 
-type ParsedDiffLine = {
+export type ParsedDiffLine = {
   kind: DiffLineKind
   newLine: number | null
   oldLine: number | null
   text: string
 }
 
-type ParsedDiffFile = {
+export type ParsedDiffFile = {
   label: string
   lines: ParsedDiffLine[]
 }
@@ -118,13 +120,28 @@ export function parseUnifiedDiff(text: string): ParsedDiffFile[] {
   return files
 }
 
-function UnifiedDiff({ text }: { text: string }) {
+export function UnifiedDiff({
+  surface = 'workbench',
+  text,
+}: {
+  surface?: 'inline' | 'workbench'
+  text: string
+}) {
   const { t } = useTranslation('tasks')
   const files = parseUnifiedDiff(text)
   return (
-    <div className="min-h-full bg-background font-mono text-xs" data-testid="unified-diff">
+    <div
+      className={
+        surface === 'inline'
+          ? 'max-h-80 overflow-auto rounded-lg border border-border/80 bg-background/75 font-mono text-xs'
+          : 'min-h-full bg-background font-mono text-xs'
+      }
+      data-diff-surface={surface}
+      data-testid="unified-diff"
+    >
       {files.map((file, fileIndex) => {
         const label = file.label || t('workbench.diff.changes')
+        const stats = diffStats(file)
         return (
           <section
             aria-label={t('workbench.diff.file', { file: label })}
@@ -135,6 +152,20 @@ function UnifiedDiff({ text }: { text: string }) {
               <FileDiff aria-hidden="true" className="size-3.5 text-muted-foreground" />
               <span className="truncate" title={label}>
                 {label}
+              </span>
+              <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
+                <span className="text-state-completed">
+                  <span aria-hidden="true">+{stats.additions}</span>
+                  <span className="sr-only">
+                    {t('workbench.diff.addedCount', { count: stats.additions })}
+                  </span>
+                </span>
+                <span className="text-state-failed">
+                  <span aria-hidden="true">-{stats.deletions}</span>
+                  <span className="sr-only">
+                    {t('workbench.diff.removedCount', { count: stats.deletions })}
+                  </span>
+                </span>
               </span>
             </header>
             <div className="overflow-x-auto">
@@ -157,6 +188,17 @@ function UnifiedDiff({ text }: { text: string }) {
         )
       })}
     </div>
+  )
+}
+
+function diffStats(file: ParsedDiffFile) {
+  return file.lines.reduce(
+    (stats, line) => {
+      if (line.kind === 'addition') stats.additions += 1
+      if (line.kind === 'deletion') stats.deletions += 1
+      return stats
+    },
+    { additions: 0, deletions: 0 },
   )
 }
 

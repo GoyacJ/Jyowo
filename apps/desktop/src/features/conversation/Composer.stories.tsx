@@ -67,7 +67,7 @@ const meta = {
   title: 'Conversation/Composer',
   component: Composer,
   parameters: {
-    layout: 'centered',
+    layout: 'fullscreen',
   },
   decorators: [withFrame],
   args: {
@@ -125,6 +125,22 @@ export const Running: Story = {
   },
 }
 
+export const QueueRunning: Story = {
+  args: {
+    mode: { kind: 'queue' },
+    onPauseRun: noopAction,
+    submitAriaLabel: 'Queue message',
+    submitLabel: 'Queue',
+  },
+}
+
+export const Paused: Story = {
+  args: {
+    mode: { kind: 'ready' },
+    onContinueRun: noopAction,
+  },
+}
+
 export const HighRiskPermission: Story = {
   args: {
     permissionMode: 'bypass_permissions',
@@ -138,5 +154,9 @@ export const TextOnlyModel: Story = {
 }
 
 function StoryFrame({ children }: { children: ReactNode }) {
-  return <main className="w-[720px] bg-background p-6 text-foreground">{children}</main>
+  return (
+    <main className="flex min-h-screen w-screen items-end justify-center bg-background p-12 text-foreground">
+      <div className="w-full max-w-[720px]">{children}</div>
+    </main>
+  )
 }

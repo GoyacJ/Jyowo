@@ -37,6 +37,10 @@ describe('DiffPanel', () => {
     expect(screen.getAllByText('Added:')).toHaveLength(2)
     expect(screen.getAllByText('Added:')[0]).toHaveClass('sr-only')
     expect(screen.getByText('Removed:')).toHaveClass('sr-only')
+    expect(screen.getByText('+2')).toBeInTheDocument()
+    expect(screen.getByText('2 added lines')).toHaveClass('sr-only')
+    expect(screen.getByText('-1')).toBeInTheDocument()
+    expect(screen.getByText('1 removed line')).toHaveClass('sr-only')
     expect(
       screen.getByTestId('unified-diff').querySelectorAll('[data-diff-line="addition"]'),
     ).toHaveLength(2)

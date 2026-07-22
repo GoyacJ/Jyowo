@@ -18,12 +18,7 @@ import { uiStore } from '@/shared/state/ui-store'
 import type { CommandClient } from '@/shared/tauri/commands'
 import { CommandClientProvider, DaemonClientProvider } from '@/shared/tauri/react'
 import { createTestCommandClient } from '@/testing/command-client'
-import {
-  TaskWorkspace,
-  TaskWorkspaceView,
-  taskWorkspaceLayoutModeForWidth,
-  timelineItems,
-} from './TaskWorkspace'
+import { TaskWorkspace, TaskWorkspaceView, timelineItems } from './TaskWorkspace'
 import type { TaskSnapshot } from './task-store'
 
 const useTask = vi.hoisted(() => vi.fn())
@@ -63,13 +58,6 @@ describe('TaskWorkspace', () => {
   beforeEach(() => {
     useTask.mockReset()
     uiStore.setState({ taskWorkbenchByTaskId: {} })
-  })
-
-  it('uses fullscreen, overlay, and docked modes at the documented boundaries', () => {
-    expect(taskWorkspaceLayoutModeForWidth(719)).toBe('fullscreen')
-    expect(taskWorkspaceLayoutModeForWidth(720)).toBe('overlay')
-    expect(taskWorkspaceLayoutModeForWidth(1039)).toBe('overlay')
-    expect(taskWorkspaceLayoutModeForWidth(1040)).toBe('docked')
   })
 
   it('offers runnable authentication-free providers without an API key', async () => {
@@ -240,6 +228,7 @@ describe('TaskWorkspace', () => {
   })
 
   it('does not turn global desktop defaults into task runtime overrides', async () => {
+    const defaultWorkspaceRoot = '/Users/test/.jyowo/workspaces/default'
     const request = vi.fn().mockResolvedValue(acceptedCommand(3, 3))
     const commandClient = createTestCommandClient({
       executionSettings: {
@@ -259,11 +248,19 @@ describe('TaskWorkspace', () => {
         toolProfile: 'full',
       },
     })
+    const providerSettings = await commandClient.listProviderSettings()
+    const getExecutionSettings = vi.spyOn(commandClient, 'getExecutionSettings')
     useTask.mockReturnValue({
       connectionError: null,
       connectionState: 'connected',
       events: [],
-      snapshot: idleSnapshot,
+      snapshot: {
+        ...idleSnapshot,
+        projection: {
+          ...idleSnapshot.projection,
+          workspace: { mode: 'current', root: defaultWorkspaceRoot },
+        },
+      },
     })
 
     renderTaskWorkspace(commandClient, {
@@ -271,7 +268,10 @@ describe('TaskWorkspace', () => {
       request,
     })
 
-    await screen.findByRole('option', { name: /OpenAI/ })
+    const model = await screen.findByRole('combobox', { name: 'Model' })
+    expect(model).toHaveValue(providerSettings.defaultConfigId)
+    expect(screen.getByRole('button', { name: 'Permission mode: Full access' })).toBeInTheDocument()
+    expect(getExecutionSettings).toHaveBeenCalledWith()
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: 'Use inherited project runtime settings' },
     })
@@ -281,6 +281,67 @@ describe('TaskWorkspace', () => {
     const submitted = request.mock.calls[0]?.[0]
     expect(submitted).not.toHaveProperty('modelConfigId')
     expect(submitted).not.toHaveProperty('permissionMode')
+  })
+
+  it('restores explicit model and permission choices after switching tasks', async () => {
+    const taskA = snapshot.projection.taskId
+    const taskB = '01J00000000000000000000011'
+    const commandClient = createTestCommandClient()
+    const providerSettings = await commandClient.listProviderSettings()
+    const defaultConfig = providerSettings.configs[0]
+    if (!defaultConfig) throw new Error('provider settings fixture requires a default config')
+    const taskAConfig = {
+      ...defaultConfig,
+      displayName: 'Task A Model',
+      id: 'task-a-model',
+      isDefault: false,
+    }
+    const taskBConfig = {
+      ...defaultConfig,
+      displayName: 'Task B Model',
+      id: 'task-b-model',
+      isDefault: false,
+    }
+    useTask.mockImplementation((requestedTaskId: string) => ({
+      connectionError: null,
+      connectionState: 'connected',
+      events: [],
+      snapshot: {
+        ...idleSnapshot,
+        projection: { ...idleSnapshot.projection, taskId: requestedTaskId },
+      },
+    }))
+
+    const { rerender } = renderTaskWorkspace(
+      createTestCommandClient({
+        providerSettingsList: {
+          ...providerSettings,
+          configs: [defaultConfig, taskAConfig, taskBConfig],
+        },
+      }),
+      { connect: vi.fn().mockResolvedValue(undefined), request: vi.fn() },
+    )
+
+    const model = await screen.findByRole('combobox', { name: 'Model' })
+    fireEvent.change(model, { target: { value: taskAConfig.id } })
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Auto approve/i }))
+
+    rerender(<TaskWorkspace taskId={taskB} />)
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toHaveValue(
+      providerSettings.defaultConfigId,
+    )
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), {
+      target: { value: taskBConfig.id },
+    })
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Permission mode: Request approval' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/i }))
+
+    rerender(<TaskWorkspace taskId={taskA} />)
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toHaveValue(taskAConfig.id)
+    expect(
+      screen.getByRole('button', { name: 'Permission mode: Auto approve' }),
+    ).toBeInTheDocument()
   })
 
   it('uses project provider capability until the task explicitly overrides it', async () => {
@@ -520,38 +581,6 @@ describe('TaskWorkspace', () => {
     )
   })
 
-  it('renders a centered readable timeline and connection state', () => {
-    render(<TaskWorkspaceView connectionState="connected" snapshot={snapshot} />)
-
-    expect(screen.getByRole('heading', { name: 'Repair scheduler recovery' })).toBeInTheDocument()
-    expect(screen.getByTestId('task-reading-column')).toHaveClass('max-w-[820px]')
-    expect(screen.getByText('Connected')).toBeInTheDocument()
-  })
-
-  it('localizes visible task state and connection chrome in Chinese', () => {
-    render(
-      <I18nextProvider i18n={createAppI18n('zh-CN')}>
-        <TaskWorkspaceView connectionState="connected" snapshot={snapshot} />
-      </I18nextProvider>,
-    )
-
-    expect(screen.getByText('已连接')).toBeInTheDocument()
-    expect(screen.getByText('已完成')).toBeInTheDocument()
-    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
-  })
-
-  it('renders an unavailable state without partial task content', () => {
-    render(
-      <TaskWorkspaceView
-        connectionError="Malformed daemon frame"
-        connectionState="protocol_error"
-        snapshot={null}
-      />,
-    )
-
-    expect(screen.getByRole('alert')).toHaveTextContent('Malformed daemon frame')
-  })
-
   it('renders daemon-projected queued messages above the composer without adding timeline turns', async () => {
     const client = { connect: vi.fn(), request: vi.fn() }
     const { rerender } = render(
@@ -610,7 +639,7 @@ describe('TaskWorkspace', () => {
         taskId: snapshot.projection.taskId,
         type: 'command_accepted',
       },
-      protocolVersion: 6,
+      protocolVersion: 7,
     })
     render(
       <TaskWorkspaceView
@@ -715,34 +744,6 @@ describe('TaskWorkspace', () => {
         type: 'resolve_permission',
       }),
     )
-  })
-
-  it('shows a recoverable error when projected permission details are unavailable', () => {
-    const permissionSnapshot: TaskSnapshot = {
-      ...runningSnapshot,
-      projection: {
-        ...runningSnapshot.projection,
-        pendingPermission: {
-          requestId: '01J00000000000000000000022',
-          revision: 4,
-          route: 'foreground_task',
-        },
-      },
-    }
-
-    render(
-      <I18nextProvider i18n={createAppI18n('zh-CN')}>
-        <TaskWorkspaceView
-          client={{ connect: vi.fn(), request: vi.fn() }}
-          connectionState="connected"
-          snapshot={permissionSnapshot}
-        />
-      </I18nextProvider>,
-    )
-
-    expect(screen.getByRole('alert')).toHaveTextContent('权限详情不可用')
-    expect(screen.getByRole('alert')).toHaveTextContent('请重启或恢复任务')
-    expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
   })
 
   it('serializes queue and composer commands against one workspace stream cursor', async () => {
@@ -1180,6 +1181,6 @@ function acceptedCommand(streamVersion: number, committedOffset: number) {
       taskId: snapshot.projection.taskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 6,
+    protocolVersion: 7,
   }
 }

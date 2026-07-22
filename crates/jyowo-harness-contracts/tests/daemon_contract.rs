@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[test]
 fn daemon_protocol_exports_one_versioned_schema() {
-    assert_eq!(PROTOCOL_VERSION, 6);
+    assert_eq!(PROTOCOL_VERSION, 7);
 
     let value = serde_json::to_value(daemon_protocol_schema()).expect("serialize daemon schema");
     let text = serde_json::to_string(&value).expect("render daemon schema");
@@ -28,6 +28,8 @@ fn daemon_protocol_exports_one_versioned_schema() {
         "load_task_events",
         "event_history_page",
         "read_blob",
+        "runtime",
+        "runtime_session",
         "list_runtime_tools",
         "list_skill_reference_candidates",
         "list_memory_items",
@@ -54,6 +56,29 @@ fn daemon_protocol_exports_one_versioned_schema() {
     assert_eq!(value["request"]["type"], "subscribe_events");
     assert_eq!(value["request"]["afterOffset"], 42);
     assert!(value["request"].get("after_offset").is_none());
+}
+
+#[test]
+fn runtime_requests_keep_executable_content_explicit_and_task_scoped() {
+    let frame = json!({
+        "requestId": "runtime-1",
+        "protocolVersion": PROTOCOL_VERSION,
+        "request": {
+            "type": "runtime",
+            "taskId": "00000000000000000000000001",
+            "command": {
+                "type": "open",
+                "spec": {
+                    "kind": "html",
+                    "blobId": "00000000000000000000000002",
+                    "title": "Preview"
+                }
+            }
+        }
+    });
+
+    let parsed = serde_json::from_value::<ClientFrame>(frame).expect("runtime client frame");
+    assert!(matches!(parsed.request, ClientRequest::Runtime { .. }));
 }
 
 #[test]

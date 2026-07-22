@@ -19,8 +19,8 @@ describe('BrowserPanel', () => {
         frame(
           session('ready', {
             currentUrl: 'https://example.com/',
-            dashboardUrl: 'http://127.0.0.1:43121/',
             title: 'Example Domain',
+            view: { type: 'url', url: 'http://127.0.0.1:43121/' },
           }),
         ),
       )
@@ -34,14 +34,14 @@ describe('BrowserPanel', () => {
       'allow-downloads allow-forms allow-pointer-lock allow-same-origin allow-scripts',
     )
     expect(request).toHaveBeenNthCalledWith(1, {
-      command: { type: 'status' },
+      command: { kind: 'browser', sessionId: 'browser', type: 'status' },
       taskId,
-      type: 'browser',
+      type: 'runtime',
     })
     expect(request).toHaveBeenNthCalledWith(2, {
-      command: { type: 'open' },
+      command: { spec: { kind: 'browser' }, type: 'open' },
       taskId,
-      type: 'browser',
+      type: 'runtime',
     })
     expect(screen.getByText('Example Domain')).toBeInTheDocument()
     expect(screen.getByText('https://example.com/')).toBeInTheDocument()
@@ -50,7 +50,9 @@ describe('BrowserPanel', () => {
   it('stops the browser without closing the workbench', async () => {
     const request = vi
       .fn()
-      .mockResolvedValueOnce(frame(session('ready', { dashboardUrl: 'http://127.0.0.1:43121' })))
+      .mockResolvedValueOnce(
+        frame(session('ready', { view: { type: 'url', url: 'http://127.0.0.1:43121' } })),
+      )
       .mockResolvedValueOnce(frame(session('stopped')))
 
     renderPanel(request)
@@ -59,9 +61,9 @@ describe('BrowserPanel', () => {
 
     expect(await screen.findByText('Browser stopped')).toBeInTheDocument()
     expect(request).toHaveBeenLastCalledWith({
-      command: { type: 'close' },
+      command: { kind: 'browser', sessionId: 'browser', type: 'close' },
       taskId,
-      type: 'browser',
+      type: 'runtime',
     })
   })
 
@@ -69,7 +71,7 @@ describe('BrowserPanel', () => {
     const request = vi.fn().mockResolvedValue(
       frame(
         session('unavailable', {
-          unavailableReason: 'bundled Node.js executable was not found',
+          error: 'bundled Node.js executable was not found',
         }),
       ),
     )
@@ -91,17 +93,23 @@ function renderPanel(request: Pick<DaemonClient, 'request'>['request']) {
 }
 
 function frame(message: ServerMessage): ServerFrame {
-  return { message, protocolVersion: 6, requestId: 'browser-request' }
+  return { message, protocolVersion: 7, requestId: 'browser-request' }
 }
 
 function session(
-  status: Extract<ServerMessage, { type: 'browser_session' }>['status'],
-  overrides: Partial<Extract<ServerMessage, { type: 'browser_session' }>> = {},
-): Extract<ServerMessage, { type: 'browser_session' }> {
+  status: Extract<ServerMessage, { type: 'runtime_session' }>['status'],
+  overrides: Partial<Extract<ServerMessage, { type: 'runtime_session' }>> = {},
+): Extract<ServerMessage, { type: 'runtime_session' }> {
   return {
+    currentUrl: null,
+    error: null,
+    kind: 'browser',
+    sessionId: 'browser',
     status,
     taskId,
-    type: 'browser_session',
+    title: 'Task browser',
+    type: 'runtime_session',
+    view: null,
     ...overrides,
   }
 }

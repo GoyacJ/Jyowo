@@ -21,11 +21,11 @@ export function CommandInput({
   ...props
 }: ComponentProps<typeof CommandPrimitive.Input>) {
   return (
-    <div className="flex items-center border-border border-b px-3">
+    <div className="flex items-center border-border border-b px-3 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/10">
       <Search aria-hidden="true" className="mr-2 size-4 shrink-0 text-muted-foreground" data-icon />
       <CommandPrimitive.Input
         className={cn(
-          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-10 w-full bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
           className,
         )}
         {...props}

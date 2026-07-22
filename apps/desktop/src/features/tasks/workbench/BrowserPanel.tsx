@@ -2,11 +2,11 @@ import { CircleAlert, Globe2, LoaderCircle, Power, RefreshCw } from 'lucide-reac
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import type { BrowserCommand, ServerMessage, TypedUlid } from '@/generated/daemon-protocol'
+import type { RuntimeCommand, ServerMessage, TypedUlid } from '@/generated/daemon-protocol'
 import type { DaemonClient } from '@/shared/daemon/client'
 import { Button } from '@/shared/ui/button'
 
-type BrowserSession = Extract<ServerMessage, { type: 'browser_session' }>
+type BrowserSession = Extract<ServerMessage, { type: 'runtime_session' }>
 
 export function BrowserPanel({
   client,
@@ -23,13 +23,13 @@ export function BrowserPanel({
   const pageVisible = usePageVisible()
 
   const send = useCallback(
-    async (command: BrowserCommand) => {
-      const frame = await client.request({ command, taskId, type: 'browser' })
+    async (command: RuntimeCommand) => {
+      const frame = await client.request({ command, taskId, type: 'runtime' })
       if (frame.message.type === 'error') throw new Error(frame.message.message)
-      if (frame.message.type !== 'browser_session') {
-        throw new Error(`Expected browser_session, received ${frame.message.type}`)
+      if (frame.message.type !== 'runtime_session') {
+        throw new Error(`Expected runtime_session, received ${frame.message.type}`)
       }
-      if (frame.message.taskId !== taskId)
+      if (frame.message.taskId !== taskId || frame.message.kind !== 'browser')
         throw new Error('Browser session belongs to another task')
       return frame.message
     },
@@ -40,7 +40,7 @@ export function BrowserPanel({
     setPending(true)
     setFailed(false)
     try {
-      setSession(await send({ type: 'open' }))
+      setSession(await send({ spec: { kind: 'browser' }, type: 'open' }))
     } catch {
       setFailed(true)
     } finally {
@@ -52,10 +52,13 @@ export function BrowserPanel({
     let cancelled = false
     setPending(true)
     setFailed(false)
-    void send({ type: 'status' })
+    void send({ kind: 'browser', sessionId: 'browser', type: 'status' })
       .then(async (current) => {
         if (cancelled) return
-        const next = current.status === 'stopped' ? await send({ type: 'open' }) : current
+        const next =
+          current.status === 'stopped'
+            ? await send({ spec: { kind: 'browser' }, type: 'open' })
+            : current
         if (!cancelled) setSession(next)
       })
       .catch(() => {
@@ -72,14 +75,14 @@ export function BrowserPanel({
   useEffect(() => {
     if (!pageVisible || session?.status !== 'ready') return
     const interval = window.setInterval(() => {
-      void send({ type: 'status' })
+      void send({ kind: 'browser', sessionId: 'browser', type: 'status' })
         .then(setSession)
         .catch(() => setFailed(true))
     }, 4_000)
     return () => window.clearInterval(interval)
   }, [pageVisible, send, session?.status])
 
-  const dashboardUrl = safeDashboardUrl(session?.dashboardUrl)
+  const dashboardUrl = safeDashboardUrl(session?.view)
   const ready = session?.status === 'ready' && dashboardUrl !== null
   const unavailable = session?.status === 'unavailable'
   const stopped = session?.status === 'stopped'
@@ -94,7 +97,7 @@ export function BrowserPanel({
     setPending(true)
     setFailed(false)
     try {
-      setSession(await send({ type: 'close' }))
+      setSession(await send({ kind: 'browser', sessionId: 'browser', type: 'close' }))
       setFrameLoaded(false)
     } catch {
       setFailed(true)
@@ -107,7 +110,7 @@ export function BrowserPanel({
     setPending(true)
     setFailed(false)
     try {
-      setSession(await send({ type: 'status' }))
+      setSession(await send({ kind: 'browser', sessionId: 'browser', type: 'status' }))
     } catch {
       setFailed(true)
     } finally {
@@ -134,7 +137,7 @@ export function BrowserPanel({
             {t('workbench.browser.retry')}
           </Button>
         }
-        description={session.unavailableReason ?? t('workbench.browser.unavailableDescription')}
+        description={session.error ?? t('workbench.browser.unavailableDescription')}
         icon={<CircleAlert aria-hidden="true" className="size-5" />}
         title={t('workbench.browser.unavailable')}
       />
@@ -150,7 +153,7 @@ export function BrowserPanel({
             {t('workbench.browser.retry')}
           </Button>
         }
-        description={session?.unavailableReason ?? t('workbench.browser.failedDescription')}
+        description={session?.error ?? t('workbench.browser.failedDescription')}
         icon={<CircleAlert aria-hidden="true" className="size-5" />}
         title={t('workbench.browser.failed')}
       />
@@ -282,10 +285,10 @@ function BrowserState({
   )
 }
 
-function safeDashboardUrl(value: string | null | undefined) {
-  if (!value) return null
+function safeDashboardUrl(view: BrowserSession['view']) {
+  if (view?.type !== 'url') return null
   try {
-    const url = new URL(value)
+    const url = new URL(view.url)
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port) return null
     return url.toString()
   } catch {

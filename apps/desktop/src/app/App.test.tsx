@@ -48,6 +48,7 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
       theme: 'light' | 'dark' | 'system'
       locale: 'zh-CN' | 'en-US'
       sidebarCollapsed: boolean
+      sidebarWidth: number
       sidebarSections: {
         pinned: boolean
         projects: boolean
@@ -62,6 +63,7 @@ const uiPreferencesStoreFixture = vi.hoisted(() => ({
     theme: 'light',
     locale: 'en-US',
     sidebarCollapsed: false,
+    sidebarWidth: 300,
     sidebarSections: {
       pinned: true,
       projects: true,
@@ -142,6 +144,7 @@ describe('App', () => {
       theme: 'light',
       locale: 'en-US',
       sidebarCollapsed: false,
+      sidebarWidth: 300,
       sidebarSections: {
         pinned: true,
         projects: true,
@@ -434,6 +437,7 @@ describe('App', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarWidth: 360,
       sidebarSections: {
         pinned: false,
         projects: true,
@@ -454,6 +458,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(uiStore.getState().theme).toBe('dark')
       expect(uiStore.getState().sidebarCollapsed).toBe(true)
+      expect(uiStore.getState().sidebarWidth).toBe(360)
       expect(uiStore.getState().sidebarSections).toEqual({
         pinned: false,
         projects: true,
@@ -472,6 +477,7 @@ describe('App', () => {
       locale: 'en-US',
       theme: 'system',
       sidebarCollapsed: true,
+      sidebarWidth: 360,
       sidebarSections: {
         pinned: false,
         projects: true,
@@ -517,6 +523,7 @@ describe('App', () => {
         theme: 'dark',
         locale: 'en-US',
         sidebarCollapsed: false,
+        sidebarWidth: 300,
         sidebarSections: {
           pinned: true,
           projects: true,

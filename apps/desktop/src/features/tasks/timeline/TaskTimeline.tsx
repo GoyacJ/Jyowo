@@ -1,9 +1,14 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { LoaderCircle } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { normalizeTimelineItem } from '@/features/artifacts/model'
 import { type ArtifactBlobLoader, ArtifactResourceProvider } from '@/features/artifacts/resource'
-import type { TimelineContentBlock, TimelineItemProjection } from '@/generated/daemon-protocol'
+import type {
+  RunProjection,
+  TimelineContentBlock,
+  TimelineItemProjection,
+} from '@/generated/daemon-protocol'
 
 import { RunSegment } from './RunSegment'
 import { isLowValueLifecycleItem, TimelineEvent } from './TimelineEvent'
@@ -27,14 +32,23 @@ type TimelineBlock =
       kind: 'segment'
       segmentId: string
     }
+  | {
+      key: string
+      kind: 'run-status'
+      status: RunFeedbackStatus
+    }
+
+type RunFeedbackStatus = 'pausing' | 'thinking'
 
 export function TaskTimeline({
+  activeRun,
   blobLoader,
   focusRequest,
   items,
   onSelectItem,
   taskId,
 }: {
+  activeRun?: RunProjection | null
   blobLoader?: ArtifactBlobLoader
   focusRequest?: { eventId: string; nonce: number } | null
   items: TimelineItemProjection[]
@@ -55,7 +69,9 @@ export function TaskTimeline({
   const conversationItems = orderedItems.filter((item) => !isLowValueLifecycleItem(item))
   const latest = conversationItems.at(-1)
   const first = conversationItems.at(0)
-  const blocks = createBlocks(coalesceAssistantItems(conversationItems))
+  const runFeedback = deriveRunFeedback(activeRun, conversationItems)
+  const blocks = createBlocks(coalesceAssistantItems(conversationItems), activeRun, runFeedback)
+  const latestAnchorKey = blocks.at(-1)?.key ?? latest?.id ?? null
   const selectItem = onSelectItem
     ? (item: TimelineItemProjection, trigger?: HTMLElement) =>
         onSelectItem(sourceByNormalizedItem.get(item) ?? item, trigger)
@@ -76,7 +92,7 @@ export function TaskTimeline({
     pauseFollowing,
     runProgrammaticScroll,
     viewportRef,
-  } = useTaskScrollAnchor(latest?.id ?? null, {
+  } = useTaskScrollAnchor(latestAnchorKey, {
     prependAnchorKey: first?.id,
     streamingScrollTick: latest?.incomplete
       ? `${latest.id}:${latest.summary.length}:${latest.contentBlocks?.length ?? 0}`
@@ -248,6 +264,7 @@ export function TaskTimeline({
 }
 
 function blockContainsEvent(block: TimelineBlock, eventId: string) {
+  if (block.kind === 'run-status') return false
   return block.kind === 'item'
     ? block.item.id === eventId
     : block.items.some((item) => item.id === eventId)
@@ -259,7 +276,11 @@ function findTimelineEvent(viewport: HTMLElement, eventId: string) {
   )
 }
 
-function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
+function createBlocks(
+  items: TimelineItemProjection[],
+  activeRun: RunProjection | null | undefined,
+  runFeedback: RunFeedbackStatus | null,
+): TimelineBlock[] {
   const blocks: TimelineBlock[] = []
   let index = 0
   while (index < items.length) {
@@ -289,7 +310,27 @@ function createBlocks(items: TimelineItemProjection[]): TimelineBlock[] {
       start = end
     }
   }
+  if (activeRun && runFeedback) {
+    blocks.push({
+      key: `run-status:${activeRun.segmentId}:${runFeedback}`,
+      kind: 'run-status',
+      status: runFeedback,
+    })
+  }
   return blocks
+}
+
+function deriveRunFeedback(
+  activeRun: RunProjection | null | undefined,
+  items: TimelineItemProjection[],
+): RunFeedbackStatus | null {
+  if (!activeRun) return null
+  if (activeRun.state === 'yielding') return 'pausing'
+  if (activeRun.state !== 'running') return null
+  const hasVisibleRunOutput = items.some(
+    (item) => item.runSegmentId === activeRun.segmentId && item.kind !== 'user_message',
+  )
+  return hasVisibleRunOutput ? null : 'thinking'
 }
 
 function coalesceAssistantItems(items: TimelineItemProjection[]) {
@@ -367,6 +408,23 @@ function TimelineBlockView({
   block: TimelineBlock
   onSelectItem?: (item: TimelineItemProjection, trigger?: HTMLElement) => void
 }) {
+  if (block.kind === 'run-status') return <RunStatus status={block.status} />
   if (block.kind === 'item') return <TimelineEvent item={block.item} onSelect={onSelectItem} />
   return <RunSegment items={block.items} onSelectItem={onSelectItem} segmentId={block.segmentId} />
+}
+
+function RunStatus({ status }: { status: RunFeedbackStatus }) {
+  const { t } = useTranslation('tasks')
+  const label = t(`timeline.${status}`)
+  return (
+    <div
+      aria-label={label}
+      className="flex w-fit items-center gap-2 rounded-md px-1 py-1 text-muted-foreground text-sm"
+      data-testid="task-run-status"
+      role="status"
+    >
+      <LoaderCircle aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+      <span>{label}</span>
+    </div>
+  )
 }

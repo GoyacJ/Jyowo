@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { RunProjection } from '@/generated/daemon-protocol'
 import type { DaemonClient } from '@/shared/daemon/client'
 
 import { TaskComposer } from './TaskComposer'
@@ -14,6 +15,7 @@ describe('TaskComposer', () => {
 
     const editor = screen.getByPlaceholderText('Ask Jyowo anything about this project…')
     expect(editor).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument()
     fireEvent.change(editor, { target: { value: 'Inspect the next failure' } })
     fireEvent.click(screen.getByRole('button', { name: 'Queue message' }))
 
@@ -29,6 +31,54 @@ describe('TaskComposer', () => {
         },
         taskId,
         type: 'submit_message',
+      }),
+    )
+  })
+
+  it('requests a safe-point pause for the active foreground run', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderComposer({ client: clientWith(request), taskState: 'running' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        metadata: {
+          commandId: expect.stringMatching(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
+          expectedStreamVersion: 9,
+          idempotencyKey: expect.any(String),
+        },
+        mode: 'safe_point',
+        taskId,
+        type: 'stop_run',
+      }),
+    )
+  })
+
+  it('continues a run that completed a safe-point pause', async () => {
+    const request = vi.fn().mockResolvedValue(acceptedFrame())
+    renderComposer({
+      client: clientWith(request),
+      currentRun: {
+        ...activeRun('interrupted'),
+        endedAt: '2026-07-18T00:00:01Z',
+        terminalReason: 'cancelled',
+      },
+      taskState: 'interrupted',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        indeterminateTools: [],
+        metadata: {
+          commandId: expect.stringMatching(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
+          expectedStreamVersion: 9,
+          idempotencyKey: expect.any(String),
+        },
+        taskId,
+        type: 'continue_task',
       }),
     )
   })
@@ -342,21 +392,38 @@ const taskBId = '01J00000000000000000000006'
 function renderComposer({
   client,
   connectionState = 'connected',
+  currentRun,
   taskState = 'idle',
 }: {
   client: Pick<DaemonClient, 'connect' | 'request'>
   connectionState?: 'connected' | 'disconnected'
-  taskState?: 'idle' | 'running' | 'waiting_permission' | 'yielding'
+  currentRun?: RunProjection
+  taskState?: 'idle' | 'running' | 'waiting_permission' | 'yielding' | 'interrupted'
 }) {
   return render(
     <TaskComposer
       client={client}
       connectionState={connectionState}
+      currentRun={
+        currentRun ??
+        (taskState === 'running' || taskState === 'waiting_permission' || taskState === 'yielding'
+          ? activeRun(taskState)
+          : undefined)
+      }
       streamVersion={9}
       taskId={taskId}
       taskState={taskState}
     />,
   )
+}
+
+function activeRun(state: RunProjection['state']): RunProjection {
+  return {
+    incompleteOutput: false,
+    segmentId: '01J00000000000000000000009',
+    startedAt: '2026-07-18T00:00:00Z',
+    state,
+  }
 }
 
 function clientWith(
@@ -378,7 +445,7 @@ function acceptedFrame(acceptedTaskId = taskId) {
       taskId: acceptedTaskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 6,
+    protocolVersion: 7,
     requestId: 'request-1',
   }
 }

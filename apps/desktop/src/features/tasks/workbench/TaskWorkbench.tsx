@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   ArrowLeft,
   Bot,
   FileDiff,
@@ -8,13 +9,23 @@ import {
   GripVertical,
   ImageIcon,
   ListTree,
+  Maximize2,
   MessageSquareReply,
+  Minimize2,
+  PanelRight,
   Pin,
   PinOff,
   SquareTerminal,
   X,
 } from 'lucide-react'
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ArtifactRenderer } from '@/features/artifacts/ArtifactRenderer'
@@ -28,9 +39,17 @@ import type {
 import type { DaemonClient } from '@/shared/daemon/client'
 import { useUiStore } from '@/shared/state/ui-store'
 import type {
+  TaskWorkbenchResizeEdge,
   TaskWorkbenchTab,
   TaskWorkbenchTarget,
   TaskWorkbenchTargetKind,
+  TaskWorkbenchViewportGeometry,
+  TaskWorkbenchViewportMode,
+} from '@/shared/state/workbench-selection'
+import {
+  clampTaskWorkbenchViewportGeometry,
+  defaultTaskWorkbenchViewportGeometry,
+  resizeTaskWorkbenchViewportGeometry,
 } from '@/shared/state/workbench-selection'
 import { Button } from '@/shared/ui/button'
 
@@ -39,6 +58,7 @@ import { BrowserPanel } from './BrowserPanel'
 import { CommandPanel } from './CommandPanel'
 import { ArtifactText, DiffPanel } from './DiffPanel'
 import { EnvironmentPanel } from './EnvironmentPanel'
+import { HtmlRuntimePanel } from './HtmlRuntimePanel'
 import { SourcesPanel } from './SourcesPanel'
 import { SubagentsPanel } from './SubagentsPanel'
 import { isTaskWorkbenchSidebarTarget } from './task-workbench-target'
@@ -67,20 +87,43 @@ export function TaskWorkbench({
   const closeTab = useUiStore((state) => state.closeTaskWorkbenchTab)
   const closeWorkbench = useUiStore((state) => state.closeTaskWorkbench)
   const setPinned = useUiStore((state) => state.setTaskWorkbenchTabPinned)
+  const setViewportGeometry = useUiStore((state) => state.setTaskWorkbenchViewportGeometry)
+  const setViewportMode = useUiStore((state) => state.setTaskWorkbenchViewportMode)
   const setWidth = useUiStore((state) => state.setTaskWorkbenchWidth)
   const workbenchRef = useRef<HTMLElement>(null)
   const tablistRef = useRef<HTMLDivElement>(null)
   const pendingTabFocusRef = useRef<string | null>(null)
-  const layoutMode = useTaskWorkbenchLayoutMode(workbenchRef)
+  const pointerCleanupRef = useRef<(() => void) | null>(null)
+  const layout = useTaskWorkbenchLayout(workbenchRef)
+  const displayMode = taskWorkbenchDisplayMode(layout.mode, session?.viewportMode ?? 'floating')
   const activeTab = session?.tabs.find((tab) => tab.id === session.activeTabId) ?? null
   const activeTarget = activeTab?.target ?? null
 
   useEffect(() => {
-    if (layoutMode !== 'fullscreen') return
+    if (displayMode !== 'fullscreen') return
     const workbench = workbenchRef.current
     if (!workbench || workbench.contains(document.activeElement)) return
     workbench.querySelector<HTMLButtonElement>('.task-workbench-back')?.focus()
-  }, [layoutMode])
+  }, [displayMode])
+
+  useEffect(
+    () => () => {
+      pointerCleanupRef.current?.()
+    },
+    [],
+  )
+
+  useLayoutEffect(() => {
+    if (displayMode !== 'floating' || !session || layout.width <= 0 || layout.height <= 0) {
+      return
+    }
+    const bounds = { height: layout.height, width: layout.width }
+    const next = session.viewportGeometry
+      ? clampTaskWorkbenchViewportGeometry(session.viewportGeometry, bounds)
+      : defaultTaskWorkbenchViewportGeometry(bounds)
+    if (sameViewportGeometry(session.viewportGeometry, next)) return
+    setViewportGeometry(projection.taskId, next)
+  }, [displayMode, layout.height, layout.width, projection.taskId, session, setViewportGeometry])
 
   useLayoutEffect(() => {
     const tabId = pendingTabFocusRef.current
@@ -109,25 +152,125 @@ export function TaskWorkbench({
     if (closesWorkbench) onClosed?.()
   }
 
+  function changeViewportMode(mode: TaskWorkbenchViewportMode) {
+    setViewportMode(projection.taskId, mode)
+  }
+
+  function restoreViewport() {
+    changeViewportMode(session.viewportRestoreMode)
+  }
+
+  function startViewportDrag(event: ReactPointerEvent<HTMLElement>) {
+    if (displayMode !== 'floating') return
+    startViewportPointerOperation(event, (start, delta, bounds) =>
+      clampTaskWorkbenchViewportGeometry(
+        { ...start, x: start.x + delta.x, y: start.y + delta.y },
+        bounds,
+      ),
+    )
+  }
+
+  function startViewportResize(
+    event: ReactPointerEvent<HTMLElement>,
+    edge: TaskWorkbenchResizeEdge,
+  ) {
+    if (displayMode !== 'floating') return
+    startViewportPointerOperation(event, (start, delta, bounds) =>
+      resizeTaskWorkbenchViewportGeometry(start, edge, delta, bounds),
+    )
+  }
+
+  function startViewportPointerOperation(
+    event: ReactPointerEvent<HTMLElement>,
+    update: (
+      start: TaskWorkbenchViewportGeometry,
+      delta: { x: number; y: number },
+      bounds: { height: number; width: number },
+    ) => TaskWorkbenchViewportGeometry,
+  ) {
+    if (event.button !== 0) return
+    const panel = workbenchRef.current
+    const container = panel?.closest<HTMLElement>('.task-workspace-layout')
+    if (!panel || !container) return
+    event.preventDefault()
+    const containerRect = container.getBoundingClientRect()
+    const panelRect = panel.getBoundingClientRect()
+    const start = {
+      height: panelRect.height,
+      width: panelRect.width,
+      x: panelRect.left - containerRect.left,
+      y: panelRect.top - containerRect.top,
+    }
+    const bounds = { height: containerRect.height, width: containerRect.width }
+    const origin = { x: event.clientX, y: event.clientY }
+    const handle = event.currentTarget
+    const pointerId = event.pointerId
+    const previousUserSelect = document.body.style.userSelect
+    pointerCleanupRef.current?.()
+    document.body.style.userSelect = 'none'
+    handle.setPointerCapture(pointerId)
+
+    const move = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      setViewportGeometry(
+        projection.taskId,
+        update(start, { x: moveEvent.clientX - origin.x, y: moveEvent.clientY - origin.y }, bounds),
+      )
+    }
+    const cleanup = () => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', stop)
+      handle.removeEventListener('pointercancel', stop)
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId)
+      document.body.style.userSelect = previousUserSelect
+      if (pointerCleanupRef.current === cleanup) pointerCleanupRef.current = null
+    }
+    const stop = (stopEvent: PointerEvent) => {
+      if (stopEvent.pointerId !== pointerId) return
+      cleanup()
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', stop)
+    handle.addEventListener('pointercancel', stop)
+    pointerCleanupRef.current = cleanup
+  }
+
+  const panelStyle: CSSProperties = {
+    '--task-workbench-width': `${width}px`,
+    ...(displayMode === 'floating' && session.viewportGeometry
+      ? {
+          height: session.viewportGeometry.height,
+          left: session.viewportGeometry.x,
+          top: session.viewportGeometry.y,
+          width: session.viewportGeometry.width,
+        }
+      : {}),
+  } as CSSProperties
+
   return (
     <aside
       aria-label={t('workbench.label')}
       className="task-workbench-panel z-30 flex min-h-0 shrink-0 flex-col border-border bg-background shadow-xl"
-      data-layout={layoutMode}
+      data-display-mode={displayMode}
+      data-layout={layout.mode}
       data-target-kind={activeTarget.kind}
       data-testid="task-workbench"
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.stopPropagation()
+          if (session.viewportMode === 'fullscreen' && layout.mode !== 'fullscreen') {
+            restoreViewport()
+            return
+          }
           dismissWorkbench()
           return
         }
-        if (event.key === 'Tab' && layoutMode === 'fullscreen') {
+        if (event.key === 'Tab' && displayMode === 'fullscreen') {
           trapTabKey(event, workbenchRef.current)
         }
       }}
       ref={workbenchRef}
-      style={{ '--task-workbench-width': `${width}px` } as CSSProperties}
+      style={panelStyle}
     >
       <button
         aria-label={t('workbench.resize')}
@@ -163,12 +306,21 @@ export function TaskWorkbench({
           >
             <ArrowLeft aria-hidden="true" className="size-4" />
           </Button>
-          <TargetIcon className="size-4 shrink-0 text-muted-foreground" kind={activeTarget.kind} />
-          <div className="min-w-0">
-            <p className="truncate font-medium text-xs">{projection.title}</p>
-            <p className="truncate text-[10px] text-muted-foreground">
-              {t(`workbench.targetKind.${activeTarget.kind}`)}
-            </p>
+          <div
+            className={`flex min-w-0 items-center gap-2 ${displayMode === 'floating' ? 'cursor-move touch-none' : ''}`}
+            data-testid="task-workbench-drag-handle"
+            onPointerDown={startViewportDrag}
+          >
+            <TargetIcon
+              className="size-4 shrink-0 text-muted-foreground"
+              kind={activeTarget.kind}
+            />
+            <div className="min-w-0">
+              <p className="truncate font-medium text-xs">{projection.title}</p>
+              <p className="truncate text-[10px] text-muted-foreground">
+                {t(`workbench.targetKind.${activeTarget.kind}`)}
+              </p>
+            </div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -182,6 +334,48 @@ export function TaskWorkbench({
               variant="ghost"
             >
               <MessageSquareReply aria-hidden="true" className="size-4" />
+            </Button>
+          ) : null}
+          {layout.mode === 'docked' && session.viewportMode !== 'fullscreen' ? (
+            <Button
+              aria-label={
+                displayMode === 'docked'
+                  ? t('workbench.floatViewport')
+                  : t('workbench.dockViewport')
+              }
+              className="size-8"
+              onClick={() => changeViewportMode(displayMode === 'docked' ? 'floating' : 'docked')}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              {displayMode === 'docked' ? (
+                <AppWindow aria-hidden="true" className="size-4" />
+              ) : (
+                <PanelRight aria-hidden="true" className="size-4" />
+              )}
+            </Button>
+          ) : null}
+          {layout.mode !== 'fullscreen' ? (
+            <Button
+              aria-label={
+                displayMode === 'fullscreen'
+                  ? t('workbench.exitFullscreen')
+                  : t('workbench.expandFullscreen')
+              }
+              className="size-8"
+              onClick={() =>
+                displayMode === 'fullscreen' ? restoreViewport() : changeViewportMode('fullscreen')
+              }
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              {displayMode === 'fullscreen' ? (
+                <Minimize2 aria-hidden="true" className="size-4" />
+              ) : (
+                <Maximize2 aria-hidden="true" className="size-4" />
+              )}
             </Button>
           ) : null}
           <Button
@@ -277,6 +471,17 @@ export function TaskWorkbench({
           timeline={timeline}
         />
       </div>
+      {displayMode === 'floating'
+        ? TASK_WORKBENCH_RESIZE_EDGES.map((edge) => (
+            <div
+              aria-hidden="true"
+              className={taskWorkbenchResizeHandleClass(edge)}
+              data-edge={edge}
+              key={edge}
+              onPointerDown={(event) => startViewportResize(event, edge)}
+            />
+          ))
+        : null}
     </aside>
   )
 }
@@ -334,6 +539,7 @@ function WorkbenchContent({
   timeline: TimelineItemProjection[]
 }) {
   const { t } = useTranslation('tasks')
+  const [resolvedMediaTypes, setResolvedMediaTypes] = useState<Record<string, string>>({})
   if (target.kind === 'diff' || target.kind === 'command') {
     return <LegacyArtifactPanel client={client} target={target} />
   }
@@ -355,10 +561,34 @@ function WorkbenchContent({
   }
   if (target.kind === 'file' || target.kind === 'artifact' || target.kind === 'source') {
     if (target.blobId || target.artifact?.previewBlobId || target.artifact?.preview) {
+      const artifact = artifactDescriptorForTarget(target)
+      const blobId = target.blobId
+      const resolvedMediaType = blobId
+        ? (resolvedMediaTypes[blobId] ?? artifact.mediaType)
+        : artifact.mediaType
+      if (blobId && resolvedMediaType.split(';')[0]?.trim() === 'text/html') {
+        return (
+          <HtmlRuntimePanel
+            blobId={blobId}
+            client={client}
+            source={
+              <ArtifactRenderer artifact={artifact} loader={client.readBlob} surface="workbench" />
+            }
+            taskId={projection.taskId}
+            title={target.title}
+          />
+        )
+      }
       return (
         <ArtifactRenderer
-          artifact={artifactDescriptorForTarget(target)}
+          artifact={artifact}
           loader={client.readBlob}
+          onResourceResolved={({ mediaType }) => {
+            if (!blobId) return
+            setResolvedMediaTypes((current) =>
+              current[blobId] === mediaType ? current : { ...current, [blobId]: mediaType },
+            )
+          }}
           surface="workbench"
         />
       )
@@ -451,14 +681,42 @@ function TargetIcon({ className, kind }: { className?: string; kind: TaskWorkben
 }
 
 type TaskWorkbenchLayoutMode = 'docked' | 'fullscreen' | 'overlay'
+type TaskWorkbenchDisplayMode = TaskWorkbenchLayoutMode | 'floating'
 
-function useTaskWorkbenchLayoutMode(workbenchRef: React.RefObject<HTMLElement | null>) {
-  const [mode, setMode] = useState<TaskWorkbenchLayoutMode>('docked')
+const TASK_WORKBENCH_RESIZE_EDGES: TaskWorkbenchResizeEdge[] = [
+  'n',
+  'ne',
+  'e',
+  'se',
+  's',
+  'sw',
+  'w',
+  'nw',
+]
 
-  useEffect(() => {
+function useTaskWorkbenchLayout(workbenchRef: React.RefObject<HTMLElement | null>) {
+  const [layout, setLayout] = useState<{
+    height: number
+    mode: TaskWorkbenchLayoutMode
+    width: number
+  }>({ height: 0, mode: 'docked', width: 0 })
+
+  useLayoutEffect(() => {
     const container = workbenchRef.current?.closest<HTMLElement>('.task-workspace-container')
     if (!container) return
-    const update = () => setMode(layoutModeForWidth(container.getBoundingClientRect().width))
+    const update = () => {
+      const bounds = container.getBoundingClientRect()
+      const next = {
+        height: bounds.height,
+        mode: layoutModeForWidth(bounds.width),
+        width: bounds.width,
+      }
+      setLayout((current) =>
+        current.height === next.height && current.mode === next.mode && current.width === next.width
+          ? current
+          : next,
+      )
+    }
     update()
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(update)
@@ -466,13 +724,50 @@ function useTaskWorkbenchLayoutMode(workbenchRef: React.RefObject<HTMLElement | 
     return () => observer.disconnect()
   }, [workbenchRef])
 
-  return mode
+  return layout
 }
 
 function layoutModeForWidth(width: number): TaskWorkbenchLayoutMode {
   if (width < 720) return 'fullscreen'
   if (width < 1040) return 'overlay'
   return 'docked'
+}
+
+function taskWorkbenchDisplayMode(
+  layoutMode: TaskWorkbenchLayoutMode,
+  viewportMode: TaskWorkbenchViewportMode,
+): TaskWorkbenchDisplayMode {
+  if (layoutMode === 'fullscreen' || viewportMode === 'fullscreen') return 'fullscreen'
+  if (layoutMode === 'overlay') return 'overlay'
+  return viewportMode
+}
+
+function sameViewportGeometry(
+  current: TaskWorkbenchViewportGeometry | null,
+  next: TaskWorkbenchViewportGeometry,
+) {
+  return Boolean(
+    current &&
+      current.height === next.height &&
+      current.width === next.width &&
+      current.x === next.x &&
+      current.y === next.y,
+  )
+}
+
+function taskWorkbenchResizeHandleClass(edge: TaskWorkbenchResizeEdge) {
+  const shared = 'absolute z-50 touch-none'
+  const classes: Record<TaskWorkbenchResizeEdge, string> = {
+    e: 'top-2 -right-1 bottom-2 w-2 cursor-e-resize',
+    n: '-top-1 right-2 left-2 h-2 cursor-n-resize',
+    ne: '-top-1 -right-1 size-3 cursor-ne-resize',
+    nw: '-top-1 -left-1 size-3 cursor-nw-resize',
+    s: 'right-2 -bottom-1 left-2 h-2 cursor-s-resize',
+    se: '-right-1 -bottom-1 size-3 cursor-se-resize',
+    sw: '-bottom-1 -left-1 size-3 cursor-sw-resize',
+    w: 'top-2 bottom-2 -left-1 w-2 cursor-w-resize',
+  }
+  return `${shared} ${classes[edge]}`
 }
 
 function taskWorkbenchTabDomId(taskId: string, tabId: string) {

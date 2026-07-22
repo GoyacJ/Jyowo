@@ -3358,11 +3358,13 @@ name = "jyowo-harness-daemon"
 version = "0.1.4"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "blake3",
  "chrono",
  "fs2",
  "futures",
+ "globset",
  "jyowo-harness-agent-runtime",
  "jyowo-harness-contracts",
  "jyowo-harness-engine",
@@ -3381,6 +3383,7 @@ dependencies = [
  "jyowo-harness-subagent",
  "jyowo-harness-tool",
  "proptest",
+ "regex",
  "rusqlite",
  "rustix",
  "semver",

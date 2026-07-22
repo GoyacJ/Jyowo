@@ -62,7 +62,33 @@ pub enum WorkspaceCleanupOutcome {
 
 const MAX_WORKSPACE_READ_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(unix)]
+const MAX_WORKSPACE_DIRECTORY_DEPTH: u32 = 64;
+#[cfg(unix)]
+const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 100_000;
+#[cfg(unix)]
 static WORKSPACE_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspacePathKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceDirectoryEntry {
+    pub relative_path: PathBuf,
+    pub kind: WorkspacePathKind,
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+    pub content: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceDirectoryReadOptions {
+    pub max_depth: u32,
+    pub include_hidden: bool,
+    pub read_file_contents: bool,
+}
 
 #[derive(Debug)]
 pub struct WorkspaceToolAuthorization {
@@ -88,6 +114,52 @@ impl WorkspaceToolAuthorization {
         {
             let (directory, file_name) = self.open_parent()?;
             read_workspace_file_at(&directory, &file_name).map(|(bytes, _, _)| bytes)
+        }
+    }
+
+    pub fn target_kind(&self) -> Result<WorkspacePathKind, WorkspaceCoordinatorError> {
+        let _operation = self.begin_operation()?;
+        #[cfg(not(unix))]
+        return Err(WorkspaceCoordinatorError::SecureWorkspaceIoUnavailable);
+        #[cfg(unix)]
+        {
+            let target = self.open_target()?;
+            workspace_path_kind(&target.metadata()?)
+        }
+    }
+
+    pub fn visit_directory(
+        &self,
+        options: WorkspaceDirectoryReadOptions,
+        mut visit: impl FnMut(WorkspaceDirectoryEntry) -> Result<(), WorkspaceCoordinatorError>,
+    ) -> Result<(), WorkspaceCoordinatorError> {
+        let _operation = self.begin_operation()?;
+        if options.max_depth == 0 {
+            return Err(std::io::Error::other(
+                "workspace directory max depth must be greater than zero",
+            )
+            .into());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &mut visit;
+            return Err(WorkspaceCoordinatorError::SecureWorkspaceIoUnavailable);
+        }
+        #[cfg(unix)]
+        {
+            let target = self.open_target()?;
+            if workspace_path_kind(&target.metadata()?)? != WorkspacePathKind::Directory {
+                return Err(std::io::Error::other("workspace target is not a directory").into());
+            }
+            let mut entries_seen = 0;
+            visit_workspace_directory(
+                &target,
+                Path::new(""),
+                1,
+                options,
+                &mut entries_seen,
+                &mut visit,
+            )
         }
     }
 
@@ -195,6 +267,153 @@ impl WorkspaceToolAuthorization {
             file_name.ok_or_else(|| std::io::Error::other("workspace target has no file name"))?;
         Ok((directory, file_name))
     }
+
+    #[cfg(unix)]
+    fn open_target(&self) -> Result<File, WorkspaceCoordinatorError> {
+        if self.relative_path.as_os_str().is_empty() {
+            return Ok(self.root.try_clone()?);
+        }
+        let (directory, file_name) = self.open_parent()?;
+        let fd = rustix::fs::openat(
+            &directory,
+            Path::new(&file_name),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(workspace_open_error)?;
+        Ok(File::from(fd))
+    }
+}
+
+#[cfg(unix)]
+fn visit_workspace_directory(
+    directory: &File,
+    relative_dir: &Path,
+    depth: u32,
+    options: WorkspaceDirectoryReadOptions,
+    entries_seen: &mut usize,
+    visit: &mut impl FnMut(WorkspaceDirectoryEntry) -> Result<(), WorkspaceCoordinatorError>,
+) -> Result<(), WorkspaceCoordinatorError> {
+    use std::os::unix::ffi::OsStrExt;
+
+    if depth > MAX_WORKSPACE_DIRECTORY_DEPTH {
+        return Err(
+            WorkspaceCoordinatorError::WorkspaceDirectoryDepthLimitExceeded {
+                limit: MAX_WORKSPACE_DIRECTORY_DEPTH,
+            },
+        );
+    }
+    let entries = rustix::fs::Dir::read_from(directory).map_err(workspace_open_error)?;
+    for entry in entries {
+        let entry = entry.map_err(workspace_open_error)?;
+        let name_bytes = entry.file_name().to_bytes();
+        if matches!(name_bytes, b"." | b"..")
+            || (!options.include_hidden && name_bytes.starts_with(b"."))
+        {
+            continue;
+        }
+        *entries_seen = entries_seen.saturating_add(1);
+        if *entries_seen > MAX_WORKSPACE_DIRECTORY_ENTRIES {
+            return Err(
+                WorkspaceCoordinatorError::WorkspaceDirectoryEntryLimitExceeded {
+                    limit: MAX_WORKSPACE_DIRECTORY_ENTRIES,
+                },
+            );
+        }
+
+        let name = OsStr::from_bytes(name_bytes);
+        let stat = rustix::fs::statat(
+            directory,
+            Path::new(name),
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(workspace_open_error)?;
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
+            continue;
+        }
+
+        let child = rustix::fs::openat(
+            directory,
+            Path::new(name),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(workspace_open_error)?;
+        let child = File::from(child);
+        let metadata = child.metadata()?;
+        let kind = workspace_path_kind(&metadata)?;
+        let relative_path = relative_dir.join(name);
+        let content = if kind == WorkspacePathKind::File && options.read_file_contents {
+            match read_open_workspace_file_bytes(&child) {
+                Ok(content) => Some(content),
+                Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded { .. }) => None,
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        visit(WorkspaceDirectoryEntry {
+            relative_path: relative_path.clone(),
+            kind,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+            content,
+        })?;
+
+        if kind == WorkspacePathKind::Directory && depth < options.max_depth {
+            visit_workspace_directory(
+                &child,
+                &relative_path,
+                depth.saturating_add(1),
+                options,
+                entries_seen,
+                visit,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn workspace_path_kind(
+    metadata: &Metadata,
+) -> Result<WorkspacePathKind, WorkspaceCoordinatorError> {
+    if metadata.is_file() {
+        Ok(WorkspacePathKind::File)
+    } else if metadata.is_dir() {
+        Ok(WorkspacePathKind::Directory)
+    } else {
+        Err(std::io::Error::other("workspace target is not a regular file or directory").into())
+    }
+}
+
+#[cfg(unix)]
+fn read_open_workspace_file_bytes(file: &File) -> Result<Vec<u8>, WorkspaceCoordinatorError> {
+    let metadata = file.metadata()?;
+    validate_workspace_regular_file(&metadata)?;
+    if metadata.len() > MAX_WORKSPACE_READ_BYTES {
+        return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
+            limit: MAX_WORKSPACE_READ_BYTES,
+        });
+    }
+    let reader = file;
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_WORKSPACE_READ_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_WORKSPACE_READ_BYTES {
+        return Err(WorkspaceCoordinatorError::WorkspaceReadLimitExceeded {
+            limit: MAX_WORKSPACE_READ_BYTES,
+        });
+    }
+    Ok(bytes)
 }
 
 #[cfg(unix)]
@@ -444,6 +663,10 @@ pub enum WorkspaceCoordinatorError {
     ExpiredToolAuthorization { lease_id: WorkspaceLeaseId },
     #[error("workspace read exceeds the {limit} byte memory limit")]
     WorkspaceReadLimitExceeded { limit: u64 },
+    #[error("workspace directory traversal exceeds the {limit} level depth limit")]
+    WorkspaceDirectoryDepthLimitExceeded { limit: u32 },
+    #[error("workspace directory traversal exceeds the {limit} entry limit")]
+    WorkspaceDirectoryEntryLimitExceeded { limit: usize },
     #[error("secure workspace file I/O is unavailable on this platform")]
     SecureWorkspaceIoUnavailable,
     #[error("tool path {path} escapes workspace root {root}")]

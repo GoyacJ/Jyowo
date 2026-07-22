@@ -8,12 +8,14 @@ use chrono::{Duration, Utc};
 use harness_contracts::{ActorId, ClientId, CommandId, TaskId, WorkspaceMode};
 use harness_daemon::{
     WorkspaceAccess, WorkspaceAcquireOutcome, WorkspaceCleanupOutcome, WorkspaceCoordinator,
-    WorkspaceCoordinatorError, WorkspaceExecutionKind, WorkspaceLeaseRequest,
-    WorkspaceOverrideCommand, WorkspaceToolAction,
+    WorkspaceCoordinatorError, WorkspaceDirectoryReadOptions, WorkspaceExecutionKind,
+    WorkspaceLeaseRequest, WorkspaceOverrideCommand, WorkspacePathKind, WorkspaceToolAction,
 };
 use harness_journal::{AcceptedCommand, CommandOutcome, NewTaskEvent, TaskStore};
 use serde_json::json;
 
+#[path = "workspace_coordinator/workspace_directory_cases.rs"]
+mod workspace_directory_cases;
 #[path = "workspace_coordinator/workspace_dispatch_cases.rs"]
 mod workspace_dispatch_cases;
 #[path = "workspace_coordinator/workspace_lease_cases.rs"]

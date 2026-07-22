@@ -138,7 +138,7 @@ impl Tool for FileEditTool {
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Write)?;
         let input = authorized.raw_input();
@@ -161,17 +161,24 @@ impl Tool for FileEditTool {
         } else {
             content.replacen(old, new, 1)
         };
+        let diff =
+            super::file_artifact::unified_diff(&path, &ctx.workspace_root, &content, &edited);
         std::fs::write(&path, edited).map_err(|error| ToolError::Message(error.to_string()))?;
         let result_path = path
             .canonicalize()
             .map_err(|error| ToolError::Message(error.to_string()))?;
 
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(json!({
-                "path": result_path,
-                "replacements": replacements
-            })),
-        )])))
+        let mut events = Vec::with_capacity(2);
+        if let Some(artifact) =
+            super::file_artifact::text_artifact_event(&ctx, "diff", &result_path, &diff).await
+        {
+            events.push(artifact);
+        }
+        events.push(ToolEvent::Final(ToolResult::Structured(json!({
+            "path": result_path,
+            "replacements": replacements
+        }))));
+        Ok(Box::pin(stream::iter(events)))
     }
 }
 

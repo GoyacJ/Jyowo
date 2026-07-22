@@ -230,6 +230,16 @@ describe('TaskWorkbench', () => {
     await waitFor(() => expect(screen.queryByTestId('task-workbench')).not.toBeInTheDocument())
   })
 
+  it('floats by default and expands to the task workspace fullscreen', () => {
+    render(<TaskWorkbench client={workbenchClient()} events={events} projection={projection} />)
+
+    expect(screen.getByTestId('task-workbench')).toHaveAttribute('data-display-mode', 'floating')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand viewport' }))
+    expect(screen.getByTestId('task-workbench')).toHaveAttribute('data-display-mode', 'fullscreen')
+    fireEvent.click(screen.getByRole('button', { name: 'Exit expanded view' }))
+    expect(screen.getByTestId('task-workbench')).toHaveAttribute('data-display-mode', 'floating')
+  })
+
   it('previews image blobs and revokes their object URLs', async () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview-image')
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
@@ -262,6 +272,32 @@ describe('TaskWorkbench', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('application/zip · 6 bytes')).toBeInTheDocument()
     expect(screen.queryByText('binary')).not.toBeInTheDocument()
+  })
+
+  it('offers explicit HTML execution after resolving attachment MIME metadata', async () => {
+    const readBlob = vi.fn().mockResolvedValue(blob('<h1>preview</h1>', 'text/html'))
+    const client = workbenchClient(readBlob)
+    client.request.mockResolvedValue({
+      message: {
+        currentUrl: null,
+        error: null,
+        kind: 'html',
+        sessionId: `html-${sourceBlobId}`,
+        status: 'stopped',
+        taskId,
+        title: 'HTML',
+        type: 'runtime_session',
+        view: null,
+      },
+      protocolVersion: 7,
+      requestId: 'runtime-status',
+    })
+    act(() => openTarget(target('file', 'preview.html', { blobId: sourceBlobId })))
+
+    render(<TaskWorkbench client={client} events={events} projection={projection} />)
+
+    expect(await screen.findByRole('button', { name: 'Run HTML' })).toBeInTheDocument()
+    expect(readBlob).toHaveBeenCalledWith(sourceBlobId)
   })
 
   it('shows only the selected subagent', () => {

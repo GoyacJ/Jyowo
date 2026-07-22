@@ -19,8 +19,9 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     decide_consume_next, decide_queue, CheckpointService, CheckpointState, PermissionBroker,
-    PermissionBrokerError, QueueCommand, RunCoordinatorEvent, RunningSegment, StartSegmentRequest,
-    SubagentStopMode, WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinatorError,
+    PermissionBrokerError, QuestionBroker, QuestionBrokerError, QueueCommand, RunCoordinatorEvent,
+    RunningSegment, StartSegmentRequest, SubagentStopMode, WorkspaceBoundRunCoordinatorFactory,
+    WorkspaceCoordinatorError,
 };
 
 #[derive(Debug)]
@@ -93,6 +94,8 @@ pub(crate) enum TaskActorError {
     SubagentStop(#[source] harness_subagent::SubagentError),
     #[error("permission routing failed: {0}")]
     Permission(#[from] PermissionBrokerError),
+    #[error("question routing failed: {0}")]
+    Question(#[from] QuestionBrokerError),
     #[error("workspace coordination failed: {0}")]
     Workspace(#[from] WorkspaceCoordinatorError),
 }
@@ -143,6 +146,7 @@ pub(crate) async fn run_task_actor(
     store: Arc<TaskStore>,
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     permissions: Arc<PermissionBroker>,
+    questions: Arc<QuestionBroker>,
     foreground_runs: Arc<Semaphore>,
     active_segment_state: Arc<Mutex<Option<RunSegmentId>>>,
     pending_start_retry_segment: Option<RunSegmentId>,
@@ -160,7 +164,10 @@ pub(crate) async fn run_task_actor(
         .filter(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                RunState::Running
+                    | RunState::WaitingPermission
+                    | RunState::WaitingInput
+                    | RunState::Yielding
             )
         })
     {
@@ -198,6 +205,7 @@ pub(crate) async fn run_task_actor(
                     &store,
                     &factory,
                     &permissions,
+                    &questions,
                     &foreground_runs,
                     &active_segment_state,
                     &mailbox,
@@ -247,6 +255,7 @@ async fn handle_command(
     store: &TaskStore,
     factory: &Arc<WorkspaceBoundRunCoordinatorFactory>,
     permissions: &PermissionBroker,
+    questions: &QuestionBroker,
     foreground_runs: &Arc<Semaphore>,
     active_segment_state: &Mutex<Option<RunSegmentId>>,
     mailbox: &mpsc::Sender<TaskActorMessage>,
@@ -299,7 +308,10 @@ async fn handle_command(
                 let has_active_run = projection.current_run.as_ref().is_some_and(|run| {
                     matches!(
                         run.state,
-                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                        RunState::Running
+                            | RunState::WaitingPermission
+                            | RunState::WaitingInput
+                            | RunState::Yielding
                     )
                 });
                 if !has_active_run
@@ -320,7 +332,10 @@ async fn handle_command(
                     && (projection.current_run.as_ref().is_some_and(|run| {
                         matches!(
                             run.state,
-                            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                            RunState::Running
+                                | RunState::WaitingPermission
+                                | RunState::WaitingInput
+                                | RunState::Yielding
                         )
                     }) || !projection.queue.is_empty())
                 {
@@ -433,12 +448,17 @@ async fn handle_command(
             let command_id = command.command_id;
             let command_task_id = command.task_id;
             let mut stop_target = None;
-            let pending_permission = store
+            let interaction_projection = store
                 .task_projection(task_id)?
-                .and_then(|projection| projection.pending_permission);
+                .ok_or(TaskActorError::TaskNotFound)?;
+            let pending_permission = interaction_projection.pending_permission;
+            let pending_question = interaction_projection.pending_question;
             let decide = |projection: &harness_contracts::TaskProjection| {
                 let Some(run) = projection.current_run.as_ref().filter(|run| {
-                    matches!(run.state, RunState::Running | RunState::WaitingPermission)
+                    matches!(
+                        run.state,
+                        RunState::Running | RunState::WaitingPermission | RunState::WaitingInput
+                    )
                 }) else {
                     return Err(CommandRejection::InvalidCommand {
                         message: "stop_run requires an active foreground run".into(),
@@ -461,6 +481,17 @@ async fn handle_command(
                 ) {
                     Ok(outcome) => outcome,
                     Err(error) => permission_command_error(error, command_id, command_task_id)?,
+                }
+            } else if let Some(question) = pending_question {
+                match questions.transact_invalidating_command(
+                    command,
+                    question.request_id,
+                    question.revision,
+                    "run stopped by user",
+                    decide,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => question_command_error(error, command_id, command_task_id)?,
                 }
             } else {
                 match store.transact_command(command, decide) {
@@ -555,19 +586,23 @@ async fn handle_command(
             }
             let mut steering_target = None;
             let durable_queue_item = store.queue_item_projection(task_id, queue_item_id)?;
-            let pending_permission = if promotion_mode.is_some() {
-                store
+            let (pending_permission, pending_question) = if promotion_mode.is_some() {
+                let projection = store
                     .task_projection(task_id)?
-                    .and_then(|projection| projection.pending_permission)
+                    .ok_or(TaskActorError::TaskNotFound)?;
+                (projection.pending_permission, projection.pending_question)
             } else {
-                None
+                (None, None)
             };
             let decide = |projection: &harness_contracts::TaskProjection| {
                 if is_submit
                     && !projection.current_run.as_ref().is_some_and(|run| {
                         matches!(
                             run.state,
-                            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                            RunState::Running
+                                | RunState::WaitingPermission
+                                | RunState::WaitingInput
+                                | RunState::Yielding
                         )
                     })
                 {
@@ -584,7 +619,12 @@ async fn handle_command(
                 }
                 if promotion_mode.is_some()
                     && (!projection.current_run.as_ref().is_some_and(|run| {
-                        matches!(run.state, RunState::Running | RunState::WaitingPermission)
+                        matches!(
+                            run.state,
+                            RunState::Running
+                                | RunState::WaitingPermission
+                                | RunState::WaitingInput
+                        )
                     }) || projection
                         .queue
                         .iter()
@@ -626,6 +666,17 @@ async fn handle_command(
                 ) {
                     Ok(outcome) => outcome,
                     Err(error) => permission_command_error(error, command_id, command_task_id)?,
+                }
+            } else if let Some(question) = pending_question {
+                match questions.transact_invalidating_command(
+                    command,
+                    question.request_id,
+                    question.revision,
+                    "superseded by steering",
+                    decide,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => question_command_error(error, command_id, command_task_id)?,
                 }
             } else {
                 match store.transact_command(command, decide) {
@@ -705,7 +756,10 @@ fn handle_submit_message(
         let active_run = projection.current_run.as_ref().is_some_and(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                RunState::Running
+                    | RunState::WaitingPermission
+                    | RunState::WaitingInput
+                    | RunState::Yielding
             )
         });
         if active_run {
@@ -841,7 +895,10 @@ fn handle_start_segment(
         if projection.current_run.as_ref().is_some_and(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                RunState::Running
+                    | RunState::WaitingPermission
+                    | RunState::WaitingInput
+                    | RunState::Yielding
             )
         }) {
             return Err(CommandRejection::InvalidCommand {
@@ -985,6 +1042,22 @@ fn permission_command_error(
             rejection,
         }),
         error => Err(TaskActorError::Permission(error)),
+    }
+}
+
+fn question_command_error(
+    error: QuestionBrokerError,
+    command_id: CommandId,
+    task_id: TaskId,
+) -> Result<CommandOutcome, TaskActorError> {
+    match error {
+        QuestionBrokerError::Store(error) => command_store_error(error, command_id, task_id),
+        QuestionBrokerError::Rejected(rejection) => Ok(CommandOutcome::Rejected {
+            command_id,
+            task_id,
+            rejection,
+        }),
+        error => Err(TaskActorError::Question(error)),
     }
 }
 

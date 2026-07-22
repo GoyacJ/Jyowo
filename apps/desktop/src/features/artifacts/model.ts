@@ -22,6 +22,7 @@ export type ArtifactDescriptor = {
   }
   preview?: string
   size?: number
+  sourceToolUseId?: string
   title: string
 }
 
@@ -117,6 +118,7 @@ export function normalizeArtifactDescriptor(
       : undefined,
     preview: artifact.preview ?? undefined,
     size: artifact.size ?? undefined,
+    sourceToolUseId: artifact.sourceToolUseId ?? undefined,
     title: artifact.title,
   }
 }

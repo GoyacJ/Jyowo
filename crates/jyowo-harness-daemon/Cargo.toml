@@ -32,11 +32,14 @@ jyowo-harness-sandbox = { path = "../jyowo-harness-sandbox", features = ["local"
 jyowo-harness-subagent = { path = "../jyowo-harness-subagent" }
 jyowo-harness-tool = { path = "../jyowo-harness-tool", features = ["minimax-tools", "gemini-tools", "seedance-tools", "zhipu-tools"] }
 async-trait = { workspace = true }
+axum = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 fs2 = { workspace = true }
+globset = { workspace = true }
+regex = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

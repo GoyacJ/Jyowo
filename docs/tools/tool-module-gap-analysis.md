@@ -153,7 +153,7 @@ runtime appended tools 还会在 `ToolPool::assemble()` 之后按 run policy 注
 工具不能任意写 journal 事件。orchestrator 会按 `ToolJournalAuthority` gate `ToolEvent::Journal`：
 
 - `Bash`、`Diagnostics`、`ProcessStart` 使用 `ToolJournalAuthority::Sandbox`。
-- `Clarify` 使用 `ToolJournalAuthority::Clarification`。
+- `AskUserQuestion` 通过 daemon 的 `QuestionBroker` 持久化交互，不写工具自有 journal 事件。
 - `ExecuteCode` 使用 `ToolJournalAuthority::ExecuteCode`。
 - 其他工具默认 `ToolJournalAuthority::None`。
 
@@ -241,7 +241,7 @@ Git：
 
 对话、任务、记忆、技能：
 
-- `Clarify` -> `crates/jyowo-harness-tool/src/builtin/clarify.rs`
+- `AskUserQuestion` -> `crates/jyowo-harness-tool/src/builtin/ask_user_question.rs`
 - `SendMessage` -> `crates/jyowo-harness-tool/src/builtin/send_message.rs`
 - `Todo` -> `crates/jyowo-harness-tool/src/builtin/todo.rs`
 - `Memory` (`memory`) -> `crates/jyowo-harness-tool/src/builtin/memory.rs`
@@ -431,7 +431,7 @@ Git：
 | `ToolNetworkBrokerCap` | `WebFetch`、MiniMax、Seedance | 所有外部网络访问必须通过 broker。MiniMax / Seedance 的 descriptor 不把它列入 `required_capabilities`，但执行时会从 `ToolContext` 获取 broker。需要持续用边界测试防回归。 |
 | `WebSearchBackend` | `WebSearch` | 需要确认 backend 是否执行等价的网络权限、redaction、审计。 |
 | `DiagnosticsRunnerCap` | `Diagnostics` | 需要确认 runner 的工作目录、命令来源、输出清洗、超时策略。 |
-| `ClarifyChannelCap` | `Clarify` | 需要确认 UI 通道存在时才展示工具，或执行前给出清晰错误。 |
+| `AskUserQuestionCap` | `AskUserQuestion` | 仅在前台交互会话且 daemon 注入通道时展示。 |
 | `MemoryToolRuntimeCap` | `Memory` | 需要确认记忆写入、可见性、线程设置、敏感内容过滤。 |
 | `UserMessengerCap` | `SendMessage` | 需要确认 outbound message 通道、目标、审计和失败语义。 |
 | `TodoStoreCap` | `Todo` | 需要确认 todo 合并、状态约束、持久化和并发更新语义。 |
@@ -1257,10 +1257,10 @@ long_running: None,
 
 ### 对话、任务、记忆、技能工具
 
-- [x] `Clarify`
+- [x] `AskUserQuestion`
   - [x] output schema：question、answers、selected。
-  - [ ] permission channel：clarification authority。
-  - [ ] 测试：capability missing、single answer、multi answer、cancel。
+  - [x] permission channel：daemon `QuestionBroker`，工具本身不触发授权升级。
+  - [x] 测试：单选、多选、自由文本、拒绝、失效和错误回答。
 
 - [ ] `SendMessage`
   - [ ] 明确 parent/subagent message 行为。

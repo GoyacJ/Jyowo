@@ -16,11 +16,11 @@ use futures::{future::BoxFuture, stream, FutureExt, Stream, StreamExt};
 use harness_contracts::{
     now, ActionResource, AgentId, AgentTeamRunConfig, AgentTeamSharedMemoryPolicy,
     AgentTeamTopology, AgentToolPolicy, AgentUsePolicy, AgentWorkspaceIsolationMode,
-    CapabilityRegistry, ConversationAttachmentReference, ConversationTurnInput, Event,
-    ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution, InteractivityLevel,
-    McpActivationFailedEvent, McpActivationFailureReason, McpServerId, McpServerScope, ModelError,
-    PermissionMode, PromotionMode, QueueItemState, Redactor, RunId, RunSegmentId,
-    RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
+    AskUserQuestionCap, CapabilityRegistry, ConversationAttachmentReference, ConversationTurnInput,
+    Event, ExecutionDefaultsRecord, FallbackPolicy, IndeterminateToolResolution,
+    InteractivityLevel, McpActivationFailedEvent, McpActivationFailureReason, McpServerId,
+    McpServerScope, ModelError, PermissionMode, PromotionMode, QueueItemState, Redactor, RunId,
+    RunSegmentId, RunTerminalReason, StopReason, TaskId, TenantId, ToolActionPlan, ToolCapability,
     ToolDescriptor, ToolError, ToolErrorPayload, ToolResult, ToolUseFailedEvent, ToolUseId,
     UsageSnapshot, WorkspaceAccess as ToolWorkspaceAccess, WorkspaceLeaseId, WorkspaceLeaseState,
     WorkspaceMode,
@@ -64,10 +64,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     AgentStarterCapabilities, BrowserService, HarnessPermissionBroker, PermissionBroker,
-    PermissionRuntimeAuthority, RunCoordinatorEvent, RunCoordinatorFactory, RunningSegment,
-    RuntimeConfigResolver, RuntimeConfigSnapshot, RuntimeMcpServerConfig, StartSegmentRequest,
-    TaskBrowserRuntime, WorkspaceSubagentRunContext, WorkspaceSubagentRunnerFactory,
-    WorkspaceToolAction, WorkspaceToolDispatcher,
+    PermissionRuntimeAuthority, QuestionBroker, RunCoordinatorEvent, RunCoordinatorFactory,
+    RunningSegment, RuntimeConfigResolver, RuntimeConfigSnapshot, RuntimeMcpServerConfig,
+    StartSegmentRequest, TaskBrowserRuntime, WorkspaceSubagentRunContext,
+    WorkspaceSubagentRunnerFactory, WorkspaceToolAction, WorkspaceToolDispatcher,
 };
 
 struct DaemonAuthorizationEventSink {
@@ -811,6 +811,7 @@ pub struct SdkRunCoordinatorFactory {
     runtime_configs: RuntimeConfigResolver,
     blob_root: PathBuf,
     permissions: Arc<PermissionBroker>,
+    questions: Arc<QuestionBroker>,
     redactor: Arc<dyn Redactor>,
     provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
     browser_service: Arc<BrowserService>,
@@ -1123,11 +1124,16 @@ impl SdkRunCoordinatorFactory {
         redactor: Arc<dyn Redactor>,
         subagent_engines: Arc<SdkSubagentEngineRegistry>,
     ) -> Self {
+        let questions = Arc::new(QuestionBroker::new(
+            Arc::clone(&store),
+            Arc::clone(&redactor),
+        ));
         Self {
             store,
             runtime_configs,
             blob_root: blob_root.into(),
             permissions,
+            questions,
             redactor,
             provider_continuation_store: None,
             browser_service: Arc::new(BrowserService::unavailable(
@@ -1150,6 +1156,12 @@ impl SdkRunCoordinatorFactory {
     #[must_use]
     pub fn with_browser_service_arc(mut self, service: Arc<BrowserService>) -> Self {
         self.browser_service = service;
+        self
+    }
+
+    #[must_use]
+    pub fn with_question_broker_arc(mut self, broker: Arc<QuestionBroker>) -> Self {
+        self.questions = broker;
         self
     }
 
@@ -1176,6 +1188,7 @@ impl SdkRunCoordinatorFactory {
         runtime_configs: RuntimeConfigResolver,
         blob_root: PathBuf,
         permissions: Arc<PermissionBroker>,
+        questions: Arc<QuestionBroker>,
         redactor: Arc<dyn Redactor>,
         provider_continuation_store: Option<Arc<dyn ProviderContinuationStore>>,
         browser_service: Arc<BrowserService>,
@@ -1317,6 +1330,10 @@ impl SdkRunCoordinatorFactory {
                         request.task_id,
                     )),
                 )
+                .with_capability::<dyn AskUserQuestionCap>(
+                    ToolCapability::AskUserQuestion,
+                    questions.channel(request.task_id, request.segment_id),
+                )
                 .with_memory_database_path(memory_database_path);
             let harness_builder = if subagents_enabled {
                 harness_builder.with_subagent_runner(subagent_runner)
@@ -1368,6 +1385,8 @@ impl SdkRunCoordinatorFactory {
                     execution_defaults.context_compression_trigger_ratio,
                 )
                 .with_permission_mode(permission_mode);
+            let session_options =
+                session_options.with_interactivity(InteractivityLevel::FullyInteractive);
             harness
                 .open_or_create_conversation_session(session_options.clone())
                 .await
@@ -1811,6 +1830,15 @@ fn execute_workspace_file_tool(
                 "replacements": replacements,
             }))
         }
+        ("ListDir", WorkspaceToolAction::ReadPath(_)) => {
+            execute_workspace_list_dir(authorized, &authorization)?
+        }
+        ("Glob", WorkspaceToolAction::ReadPath(_)) => {
+            execute_workspace_glob(authorized, &authorization)?
+        }
+        ("Grep", WorkspaceToolAction::ReadPath(_)) => {
+            execute_workspace_grep(authorized, &authorization)?
+        }
         _ => {
             return Err(ToolError::PermissionDenied(format!(
                 "tool {tool_name} has no secure workspace filesystem adapter"
@@ -1820,6 +1848,180 @@ fn execute_workspace_file_tool(
     Ok(Box::pin(stream::iter([
         jyowo_harness_sdk::ext::ToolEvent::Final(final_result),
     ])))
+}
+
+fn execute_workspace_list_dir(
+    authorized: &AuthorizedToolInput,
+    authorization: &crate::WorkspaceToolAuthorization,
+) -> Result<ToolResult, ToolError> {
+    let input = authorized.raw_input();
+    let max_depth = input.get("max_depth").map_or(Ok(1), |value| {
+        value
+            .as_u64()
+            .filter(|value| *value > 0)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                ToolError::Validation("max_depth must be a positive 32-bit integer".to_owned())
+            })
+    })?;
+    let include_hidden = input
+        .get("include_hidden")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut entries = Vec::new();
+    authorization
+        .visit_directory(
+            crate::WorkspaceDirectoryReadOptions {
+                max_depth,
+                include_hidden,
+                read_file_contents: false,
+            },
+            |entry| {
+                entries.push(serde_json::json!({
+                    "path": normalized_workspace_relative_path(&entry.relative_path),
+                    "kind": match entry.kind {
+                        crate::WorkspacePathKind::File => "file",
+                        crate::WorkspacePathKind::Directory => "dir",
+                    },
+                    "size": entry.size,
+                    "modified": entry.modified.map(|time| {
+                        chrono::DateTime::<Utc>::from(time).to_rfc3339()
+                    }),
+                }));
+                Ok(())
+            },
+        )
+        .map_err(workspace_tool_error)?;
+    sort_structured_paths(&mut entries);
+    Ok(ToolResult::Structured(serde_json::Value::Array(entries)))
+}
+
+fn execute_workspace_glob(
+    authorized: &AuthorizedToolInput,
+    authorization: &crate::WorkspaceToolAuthorization,
+) -> Result<ToolResult, ToolError> {
+    let input = authorized.raw_input();
+    let pattern = required_input_string(input, "pattern")?;
+    let mut builder = globset::GlobSetBuilder::new();
+    builder.add(
+        globset::Glob::new(pattern)
+            .map_err(|error| ToolError::Validation(format!("invalid glob pattern: {error}")))?,
+    );
+    let matcher = builder
+        .build()
+        .map_err(|error| ToolError::Validation(error.to_string()))?;
+    let include_hidden = input
+        .get("include_hidden")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut matches = Vec::new();
+    authorization
+        .visit_directory(
+            crate::WorkspaceDirectoryReadOptions {
+                max_depth: u32::MAX,
+                include_hidden,
+                read_file_contents: false,
+            },
+            |entry| {
+                if entry.kind == crate::WorkspacePathKind::File
+                    && matcher.is_match(&entry.relative_path)
+                {
+                    matches.push(serde_json::json!({
+                        "path": normalized_workspace_relative_path(&entry.relative_path),
+                    }));
+                }
+                Ok(())
+            },
+        )
+        .map_err(workspace_tool_error)?;
+    sort_structured_paths(&mut matches);
+    Ok(ToolResult::Structured(serde_json::Value::Array(matches)))
+}
+
+fn execute_workspace_grep(
+    authorized: &AuthorizedToolInput,
+    authorization: &crate::WorkspaceToolAuthorization,
+) -> Result<ToolResult, ToolError> {
+    let pattern = required_input_string(authorized.raw_input(), "pattern")?;
+    let regex =
+        regex::Regex::new(pattern).map_err(|error| ToolError::Message(error.to_string()))?;
+    let root = authorized_filesystem_path(authorized, false)?;
+    let mut matches = Vec::new();
+    match authorization.target_kind().map_err(workspace_tool_error)? {
+        crate::WorkspacePathKind::File => {
+            let bytes = authorization.read_bytes().map_err(workspace_tool_error)?;
+            collect_workspace_grep_matches(&root, &bytes, &regex, &mut matches);
+        }
+        crate::WorkspacePathKind::Directory => {
+            authorization
+                .visit_directory(
+                    crate::WorkspaceDirectoryReadOptions {
+                        max_depth: u32::MAX,
+                        include_hidden: false,
+                        read_file_contents: true,
+                    },
+                    |entry| {
+                        if let Some(content) = entry.content {
+                            collect_workspace_grep_matches(
+                                &root.join(entry.relative_path),
+                                &content,
+                                &regex,
+                                &mut matches,
+                            );
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(workspace_tool_error)?;
+        }
+    }
+    matches.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+            .then_with(|| {
+                left["line"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .cmp(&right["line"].as_u64().unwrap_or_default())
+            })
+    });
+    Ok(ToolResult::Structured(serde_json::Value::Array(matches)))
+}
+
+fn collect_workspace_grep_matches(
+    path: &Path,
+    bytes: &[u8],
+    regex: &regex::Regex,
+    matches: &mut Vec<serde_json::Value>,
+) {
+    let Ok(content) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    for (index, line) in content.lines().enumerate() {
+        if regex.is_match(line) {
+            matches.push(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "line": index + 1,
+                "text": line,
+            }));
+        }
+    }
+}
+
+fn normalized_workspace_relative_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
+fn sort_structured_paths(values: &mut [serde_json::Value]) {
+    values.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+    });
 }
 
 fn positive_line_number(input: &serde_json::Value, field: &str) -> Result<Option<u64>, ToolError> {
@@ -2059,6 +2261,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
             let runtime_configs = self.runtime_configs.clone();
             let blob_root = self.blob_root.clone();
             let permissions = Arc::clone(&self.permissions);
+            let questions = Arc::clone(&self.questions);
             let redactor = Arc::clone(&self.redactor);
             let provider_continuation_store = self.provider_continuation_store.clone();
             let browser_service = Arc::clone(&self.browser_service);
@@ -2076,6 +2279,7 @@ impl RunCoordinatorFactory for SdkRunCoordinatorFactory {
                     runtime_configs,
                     blob_root,
                     permissions,
+                    questions,
                     Arc::clone(&redactor),
                     provider_continuation_store,
                     browser_service,
@@ -3843,6 +4047,17 @@ mod tests {
         for (defaults, subagents, teams, background) in [
             (
                 ExecutionDefaultsRecord::default(),
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Allowed,
+                AgentUsePolicy::Allowed,
+            ),
+            (
+                ExecutionDefaultsRecord {
+                    subagents_enabled: false,
+                    agent_teams_enabled: false,
+                    background_agents_enabled: false,
+                    ..Default::default()
+                },
                 AgentUsePolicy::Off,
                 AgentUsePolicy::Off,
                 AgentUsePolicy::Off,
@@ -3850,6 +4065,8 @@ mod tests {
             (
                 ExecutionDefaultsRecord {
                     subagents_enabled: true,
+                    agent_teams_enabled: false,
+                    background_agents_enabled: false,
                     ..Default::default()
                 },
                 AgentUsePolicy::Allowed,
@@ -3860,6 +4077,7 @@ mod tests {
                 ExecutionDefaultsRecord {
                     subagents_enabled: true,
                     agent_teams_enabled: true,
+                    background_agents_enabled: false,
                     ..Default::default()
                 },
                 AgentUsePolicy::Allowed,
@@ -3869,22 +4087,12 @@ mod tests {
             (
                 ExecutionDefaultsRecord {
                     subagents_enabled: true,
+                    agent_teams_enabled: false,
                     background_agents_enabled: true,
                     ..Default::default()
                 },
                 AgentUsePolicy::Allowed,
                 AgentUsePolicy::Off,
-                AgentUsePolicy::Allowed,
-            ),
-            (
-                ExecutionDefaultsRecord {
-                    subagents_enabled: true,
-                    agent_teams_enabled: true,
-                    background_agents_enabled: true,
-                    ..Default::default()
-                },
-                AgentUsePolicy::Allowed,
-                AgentUsePolicy::Allowed,
                 AgentUsePolicy::Allowed,
             ),
         ] {
@@ -3912,14 +4120,17 @@ mod tests {
 
         for defaults in [
             ExecutionDefaultsRecord {
+                subagents_enabled: false,
                 agent_teams_enabled: true,
                 ..Default::default()
             },
             ExecutionDefaultsRecord {
+                subagents_enabled: false,
                 background_agents_enabled: true,
                 ..Default::default()
             },
             ExecutionDefaultsRecord {
+                subagents_enabled: false,
                 agent_teams_enabled: true,
                 background_agents_enabled: true,
                 ..Default::default()
@@ -5072,13 +5283,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secure_workspace_file_adapters_preserve_builtin_semantics_and_fail_closed_other_tools()
-    {
+    async fn secure_workspace_file_adapters_preserve_builtin_semantics() {
         use futures::StreamExt;
 
         let fixture = Fixture::new();
         let input_path = fixture.workspace_root.join("input.txt");
         std::fs::write(&input_path, "alpha\nbeta\n").unwrap();
+        let nested = fixture.workspace_root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("match.txt"), "first\nneedle here\n").unwrap();
+        let deeper = nested.join("deeper");
+        std::fs::create_dir(&deeper).unwrap();
+        std::fs::write(deeper.join("depth-three.txt"), "no match\n").unwrap();
+        std::fs::write(
+            fixture.workspace_root.join(".hidden.txt"),
+            "needle hidden\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let outside = fixture._root.path().join("outside.txt");
+            std::fs::write(&outside, "needle outside\n").unwrap();
+            std::os::unix::fs::symlink(outside, fixture.workspace_root.join("linked.txt")).unwrap();
+        }
         let registry = super::workspace_tool_registry(
             fixture.workspace_tools.clone(),
             fixture.lease_id,
@@ -5117,15 +5344,77 @@ mod tests {
             "alpha\ngamma\n"
         );
 
-        let list_dir = Arc::clone(registry.snapshot().get("ListDir").unwrap());
+        let list_dir = execute_test_tool_final(
+            &registry,
+            "ListDir",
+            json!({ "path": fixture.workspace_root, "max_depth": 2 }),
+            &fixture.workspace_root,
+        )
+        .await;
+        let harness_contracts::ToolResult::Structured(list_dir) = list_dir else {
+            panic!("ListDir must return structured output");
+        };
+        let listed_paths = list_dir
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .collect::<Vec<_>>();
+        assert!(listed_paths.contains(&"nested"));
+        assert!(listed_paths.contains(&"nested/match.txt"));
+        assert!(listed_paths.contains(&"nested/deeper"));
+        assert!(!listed_paths.contains(&"nested/deeper/depth-three.txt"));
+        assert!(!listed_paths.contains(&".hidden.txt"));
+        assert!(!listed_paths.contains(&"linked.txt"));
+
+        let glob = execute_test_tool_final(
+            &registry,
+            "Glob",
+            json!({ "path": fixture.workspace_root, "pattern": "**/*.txt" }),
+            &fixture.workspace_root,
+        )
+        .await;
+        let harness_contracts::ToolResult::Structured(glob) = glob else {
+            panic!("Glob must return structured output");
+        };
+        let glob_paths = glob
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["path"].as_str())
+            .collect::<Vec<_>>();
+        assert!(glob_paths.contains(&"nested/match.txt"));
+        assert!(!glob_paths.contains(&".hidden.txt"));
+        assert!(!glob_paths.contains(&"linked.txt"));
+
+        let grep = execute_test_tool_final(
+            &registry,
+            "Grep",
+            json!({ "path": fixture.workspace_root, "pattern": "needle" }),
+            &fixture.workspace_root,
+        )
+        .await;
+        let harness_contracts::ToolResult::Structured(grep) = grep else {
+            panic!("Grep must return structured output");
+        };
+        let grep = grep.as_array().unwrap();
+        assert_eq!(grep.len(), 1);
+        assert_eq!(
+            grep[0]["path"].as_str(),
+            Some(nested.join("match.txt").to_string_lossy().as_ref())
+        );
+        assert_eq!(grep[0]["line"], 2);
+        assert_eq!(grep[0]["text"], "needle here");
+
+        let grep_tool = Arc::clone(registry.snapshot().get("Grep").unwrap());
         let ctx = workspace_tool_test_context(&fixture.workspace_root);
-        let authorized =
-            authorize_test_tool(&list_dir, json!({ "path": fixture.workspace_root }), &ctx).await;
-        assert!(matches!(
-            list_dir.execute_authorized(authorized, ctx).await,
-            Err(harness_contracts::ToolError::PermissionDenied(message))
-                if message.contains("no secure workspace filesystem adapter")
-        ));
+        let authorized = authorize_test_tool(
+            &grep_tool,
+            json!({ "path": fixture.workspace_root, "pattern": "[" }),
+            &ctx,
+        )
+        .await;
+        assert!(grep_tool.execute_authorized(authorized, ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -5236,6 +5525,30 @@ mod tests {
         let plan = tool.plan(&input, ctx).await.unwrap();
         let ticket = consumed_test_ticket(&plan, ctx);
         jyowo_harness_sdk::ext::AuthorizedToolInput::new(input, plan, ticket).unwrap()
+    }
+
+    async fn execute_test_tool_final(
+        registry: &jyowo_harness_sdk::ext::ToolRegistry,
+        name: &str,
+        input: serde_json::Value,
+        workspace_root: &Path,
+    ) -> harness_contracts::ToolResult {
+        use futures::StreamExt;
+
+        let tool = Arc::clone(registry.snapshot().get(name).unwrap());
+        let ctx = workspace_tool_test_context(workspace_root);
+        let authorized = authorize_test_tool(&tool, input, &ctx).await;
+        let mut events = tool.execute_authorized(authorized, ctx).await.unwrap();
+        while let Some(event) = events.next().await {
+            match event {
+                jyowo_harness_sdk::ext::ToolEvent::Final(result) => return result,
+                jyowo_harness_sdk::ext::ToolEvent::Error(error) => {
+                    panic!("tool {name} failed: {error}");
+                }
+                _ => {}
+            }
+        }
+        panic!("tool {name} completed without a final result");
     }
 
     fn consumed_test_ticket(

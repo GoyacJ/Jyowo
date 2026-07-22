@@ -1,19 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { TaskList } from '@/features/tasks/TaskList'
 import { createTaskCreationMetadata } from '@/features/tasks/task-command'
 import type { TaskProjection, TypedUlid } from '@/generated/daemon-protocol'
-import { cn } from '@/shared/lib/utils'
 import { useUiStore } from '@/shared/state/ui-store'
 import { pickProjectDirectory } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
-import { Button } from '@/shared/ui/button'
 
-import { CommandPalette, type CommandPaletteAction } from './CommandPalette'
+import {
+  CommandPalette,
+  type CommandPaletteAction,
+  OPEN_COMMAND_PALETTE_EVENT,
+} from './CommandPalette'
 
 const TASKS_QUERY_KEY = ['daemon-tasks'] as const
 const WORKSPACES_QUERY_KEY = ['sidebar-workspaces'] as const
@@ -35,7 +36,6 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
-  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
   const sidebarSections = useUiStore((state) => state.sidebarSections)
   const expandedProjects = useUiStore((state) => state.expandedProjects)
   const setSidebarSectionExpanded = useUiStore((state) => state.setSidebarSectionExpanded)
@@ -218,25 +218,6 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
       className="flex min-h-0 flex-col border-border border-r bg-raised-surface"
       data-collapsed={isCompact}
     >
-      <div
-        className={cn('flex h-12 items-center', isCompact ? 'justify-center' : 'justify-end px-2')}
-      >
-        <Button
-          aria-label={sidebarCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')}
-          className="size-8"
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          size="icon"
-          type="button"
-          variant="ghost"
-        >
-          {sidebarCollapsed ? (
-            <PanelLeftOpen aria-hidden="true" className="size-4" />
-          ) : (
-            <PanelLeftClose aria-hidden="true" className="size-4" />
-          )}
-        </Button>
-      </div>
-
       <TaskList
         activeTaskId={activeTaskId}
         compact={isCompact}
@@ -246,6 +227,7 @@ export function SidebarNav({ compact = false }: SidebarNavProps) {
         loading={tasksQuery.isLoading || workspacesQuery.isLoading}
         onAddProject={() => addProject.mutate()}
         onCreateConversation={(root) => createTask.mutate(root)}
+        onOpenGlobalSearch={() => window.dispatchEvent(new Event(OPEN_COMMAND_PALETTE_EVENT))}
         onMoveProject={(path, direction) => moveProject.mutate({ direction, path })}
         onOpenScheduledTasks={() => void navigate({ to: '/scheduled-tasks' })}
         onRemoveProject={(path) => removeProject.mutate(path)}

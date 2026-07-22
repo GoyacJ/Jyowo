@@ -2,11 +2,17 @@ import type { InputHTMLAttributes, ReactNode } from 'react'
 
 import { cn } from '@/shared/lib/utils'
 
-type RadioCardProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & {
+type SelectionCardProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & {
   children: ReactNode
 }
 
-export function RadioCard({ children, className, disabled, ...props }: RadioCardProps) {
+function SelectionCard({
+  children,
+  className,
+  disabled,
+  type,
+  ...props
+}: SelectionCardProps & { type: 'checkbox' | 'radio' }) {
   return (
     <label
       className={cn(
@@ -14,10 +20,18 @@ export function RadioCard({ children, className, disabled, ...props }: RadioCard
         disabled && 'cursor-not-allowed opacity-60',
         className,
       )}
-      data-slot="radio-card"
+      data-slot={`${type}-card`}
     >
-      <input className="mt-1 size-4 accent-primary" disabled={disabled} type="radio" {...props} />
-      <span className="space-y-1">{children}</span>
+      <input className="mt-1 size-4 accent-primary" disabled={disabled} type={type} {...props} />
+      <span className="min-w-0 flex-1 space-y-1">{children}</span>
     </label>
   )
+}
+
+export function RadioCard(props: SelectionCardProps) {
+  return <SelectionCard type="radio" {...props} />
+}
+
+export function CheckboxCard(props: SelectionCardProps) {
+  return <SelectionCard type="checkbox" {...props} />
 }

@@ -79,12 +79,12 @@ fn default_builtin_toolset_name_snapshot_is_stable() {
         .collect::<Vec<_>>();
 
     let mut expected = vec![
+        "AskUserQuestion",
         "Artifact",
         "Automation",
         "Bash",
         "BrowserDevTools",
         "BrowserUse",
-        "Clarify",
         "ComputerUse",
         "Diagnostics",
         "FileEdit",
@@ -150,7 +150,6 @@ fn default_builtin_toolset_journal_authority_snapshot_is_stable() {
     for (name, _) in snapshot.iter_sorted() {
         let expected = match name.as_str() {
             "Bash" | "Diagnostics" | "ProcessStart" => ToolJournalAuthority::Sandbox,
-            "Clarify" => ToolJournalAuthority::Clarification,
             "execute_code" => ToolJournalAuthority::ExecuteCode,
             _ => ToolJournalAuthority::None,
         };

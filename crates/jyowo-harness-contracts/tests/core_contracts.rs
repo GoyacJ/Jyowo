@@ -284,7 +284,8 @@ fn schema_export_contains_required_surface() {
     assert!(schemas.contains_key("manifest_validation_failed"));
     assert!(schemas.contains_key("plugin_failed"));
     assert!(schemas.contains_key("hook_failed"));
-    assert!(schemas.contains_key("clarify_prompt"));
+    assert!(schemas.contains_key("ask_user_question_request"));
+    assert!(schemas.contains_key("ask_user_question_response"));
     assert!(schemas.contains_key("user_message_delivery"));
     assert!(schemas.contains_key("skill_filter"));
     assert!(schemas.contains_key("skill_summary"));

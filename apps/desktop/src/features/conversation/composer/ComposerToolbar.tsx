@@ -1,10 +1,9 @@
 import { Check, ChevronDown, Database, Paperclip, Shield } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { MemoryThreadMode } from '@/generated/daemon-protocol'
 import { cn } from '@/shared/lib/utils'
-import type { ContextReference, PermissionMode } from '@/shared/tauri/commands'
+import type { PermissionMode } from '@/shared/tauri/commands'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,8 +12,6 @@ import {
 } from '@/shared/ui/dropdown-menu'
 import { Select } from '@/shared/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/shared/ui/tooltip'
-
-import { ReferenceCombobox, type ReferenceComboboxGroup } from './ReferenceCombobox'
 
 export function ComposerToolbar({
   disabled,
@@ -25,20 +22,13 @@ export function ComposerToolbar({
   permissionMode,
   memoryMode,
   memoryModeDisabled,
-  referenceActiveIndex,
-  referenceGroups,
-  referenceLoading,
   referenceOpen,
-  referenceSearch,
   supportsAttachments,
   onAttachFile,
   onModelConfigChange,
   onMemoryModeChange,
   onPermissionModeChange,
   onReferenceOpenChange,
-  onReferenceSearchChange,
-  onReferenceKeyCommand,
-  onSelectReference,
 }: {
   disabled: boolean
   autoModeAvailable: boolean
@@ -48,20 +38,13 @@ export function ComposerToolbar({
   permissionMode: PermissionMode
   memoryMode?: MemoryThreadMode
   memoryModeDisabled: boolean
-  referenceActiveIndex: number
-  referenceGroups: ReferenceComboboxGroup[]
-  referenceLoading: boolean
   referenceOpen: boolean
-  referenceSearch: string
   supportsAttachments: boolean
   onAttachFile: () => void
   onModelConfigChange?: (modelConfigId: string) => void
   onMemoryModeChange?: (mode: MemoryThreadMode) => void
   onPermissionModeChange: (mode: PermissionMode) => void
   onReferenceOpenChange: (open: boolean) => void
-  onReferenceSearchChange: (search: string) => void
-  onReferenceKeyCommand: (event: KeyboardEvent<HTMLInputElement>) => boolean
-  onSelectReference: (reference: ContextReference) => void
 }) {
   const { t } = useTranslation('conversation')
 
@@ -82,27 +65,11 @@ export function ComposerToolbar({
           />
         ) : null}
         <AttachmentPicker disabled={disabled || !supportsAttachments} onAttachFile={onAttachFile} />
-        <ReferenceCombobox
-          activeIndex={referenceActiveIndex}
+        <ReferenceTrigger
           disabled={disabled}
-          groups={referenceGroups}
+          expanded={referenceOpen}
           label={t('composer.referenceObject')}
-          loadingLabel={t('composer.loadingReferences')}
-          loading={referenceLoading}
-          noResultsLabel={t('composer.noReferences')}
-          onSearchChange={onReferenceSearchChange}
-          onSelectReference={onSelectReference}
-          onKeyCommand={onReferenceKeyCommand}
-          open={referenceOpen}
-          search={referenceSearch}
-          searchLabel={t('composer.searchReferences')}
-          trigger={
-            <ReferenceTrigger
-              disabled={disabled}
-              label={t('composer.referenceObject')}
-              onClick={() => onReferenceOpenChange(!referenceOpen)}
-            />
-          }
+          onClick={() => onReferenceOpenChange(!referenceOpen)}
         />
         {modelConfigs.length > 0 ? (
           <Select
@@ -328,10 +295,12 @@ function AttachmentPicker({
 
 function ReferenceTrigger({
   disabled,
+  expanded,
   label,
   onClick,
 }: {
   disabled: boolean
+  expanded: boolean
   label: string
   onClick: () => void
 }) {
@@ -339,6 +308,8 @@ function ReferenceTrigger({
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          aria-expanded={expanded}
+          aria-haspopup="listbox"
           aria-label={label}
           className="rounded-md px-2 py-1 font-mono text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled}

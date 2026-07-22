@@ -11,15 +11,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, stream};
 use harness_contracts::{
-    ActionPlanId, AssistantClarificationRequestedEvent, CapabilityRegistry, ClarifyAnswer,
-    ClarifyChannelCap, ClarifyPrompt, Decision, DecisionScope, DeferredToolHint, Event,
+    ActionPlanId, AskUserQuestionAnswer, AskUserQuestionCap, AskUserQuestionOutcome,
+    AskUserQuestionRequest, CapabilityRegistry, Decision, DecisionScope, DeferredToolHint, Event,
     ExecFingerprint, ExecuteCodeStepInvokedEvent, NetworkAccess, PermissionActorSource,
-    PermissionReview, PermissionSubject, ProviderRestriction, RedactRules, Redactor, RequestId,
-    ResourceLimits, SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary,
-    SandboxScope, Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
+    PermissionReview, PermissionSubject, ProviderRestriction, ResourceLimits,
+    SandboxExecutionStartedEvent, SandboxMode, SandboxPolicy, SandboxPolicySummary, SandboxScope,
+    Severity, TenantId, ToolActionPlan, ToolCapability, ToolDeferredPoolChangedEvent,
     ToolDescriptor, ToolError, ToolExecutionChannel, ToolGroup, ToolOrigin, ToolPoolChangeSource,
     ToolProperties, ToolResult, ToolRuntimeSettings, ToolUseHeartbeatEvent, ToolUseId, TrustLevel,
-    UiSafeText, WorkspaceAccess,
+    WorkspaceAccess,
 };
 use harness_permission::PermissionCheck;
 use harness_tool::{
@@ -395,30 +395,6 @@ async fn tool_journal_rejects_unowned_event_types() {
 }
 
 #[tokio::test]
-async fn tool_journal_rejects_non_owner_clarification_event() {
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Empty)
-        .with_tool(Box::new(test_tool("Clarify", true, Behavior::SpoofClarify)))
-        .build()
-        .unwrap();
-    let pool = pool(&registry).await;
-    let emitter = Arc::new(RecordingEmitter::default());
-    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
-    ctx.event_emitter = emitter.clone();
-
-    let results = ToolOrchestrator::default()
-        .dispatch(vec![call("Clarify")], ctx)
-        .await;
-
-    assert!(matches!(
-        results[0].result,
-        Err(ToolError::PermissionDenied(ref message))
-            if message == "tool journal event producer is not allowed"
-    ));
-    assert!(emitter.events().is_empty());
-}
-
-#[tokio::test]
 async fn tool_journal_rejects_non_owner_sandbox_event() {
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Empty)
@@ -500,7 +476,7 @@ async fn tool_journal_rejects_deferred_pool_change_from_tool_stream() {
 
 #[tokio::test]
 #[cfg(feature = "builtin-toolset")]
-async fn clarify_tool_emits_assistant_clarification_requested_event() {
+async fn ask_user_question_tool_uses_the_interactive_capability() {
     let registry = ToolRegistry::builder()
         .with_builtin_toolset(BuiltinToolset::Default)
         .build()
@@ -508,65 +484,35 @@ async fn clarify_tool_emits_assistant_clarification_requested_event() {
     let pool = pool(&registry).await;
     let emitter = Arc::new(RecordingEmitter::default());
     let mut caps = CapabilityRegistry::default();
-    let clarify: Arc<dyn ClarifyChannelCap> = Arc::new(StaticClarify);
-    caps.install(ToolCapability::ClarifyChannel, clarify);
+    let questions: Arc<dyn AskUserQuestionCap> = Arc::new(StaticQuestionChannel);
+    caps.install(ToolCapability::AskUserQuestion, questions);
     let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
     ctx.tool_context.cap_registry = Arc::new(caps);
     ctx.event_emitter = emitter.clone();
-    let run_id = ctx.tool_context.run_id;
-
-    let results = ToolOrchestrator::default()
-        .dispatch(
-            vec![call_with_input("Clarify", json!({ "prompt": "Pick one" }))],
-            ctx,
-        )
-        .await;
-
-    assert!(matches!(results[0].result, Ok(ToolResult::Structured(_))));
-    assert!(emitter.events().iter().any(|event| {
-        matches!(
-            event,
-            Event::AssistantClarificationRequested(requested)
-                if requested.run_id == run_id && requested.prompt.as_str() == "Pick one"
-        )
-    }));
-}
-
-#[tokio::test]
-#[cfg(feature = "builtin-toolset")]
-async fn clarify_tool_redacts_prompt_before_journaling_clarification_request() {
-    let registry = ToolRegistry::builder()
-        .with_builtin_toolset(BuiltinToolset::Default)
-        .build()
-        .unwrap();
-    let pool = pool(&registry).await;
-    let emitter = Arc::new(RecordingEmitter::default());
-    let mut caps = CapabilityRegistry::default();
-    let clarify: Arc<dyn ClarifyChannelCap> = Arc::new(StaticClarify);
-    caps.install(ToolCapability::ClarifyChannel, clarify);
-    let mut ctx = orchestrator_ctx(pool, vec![Decision::AllowOnce]);
-    ctx.tool_context.cap_registry = Arc::new(caps);
-    ctx.tool_context.redactor = Arc::new(TestRedactor);
-    ctx.event_emitter = emitter.clone();
-
     let results = ToolOrchestrator::default()
         .dispatch(
             vec![call_with_input(
-                "Clarify",
-                json!({ "prompt": "Deploy token SECRET-123?" }),
+                "AskUserQuestion",
+                json!({
+                    "questions": [{
+                        "id": "choice",
+                        "question": "Pick one",
+                        "options": [
+                            { "id": "a", "label": "A" },
+                            { "id": "b", "label": "B" }
+                        ]
+                    }]
+                }),
             )],
             ctx,
         )
         .await;
 
-    assert!(matches!(results[0].result, Ok(ToolResult::Structured(_))));
-    assert!(emitter.events().iter().any(|event| {
-        matches!(
-            event,
-            Event::AssistantClarificationRequested(requested)
-                if requested.prompt.as_str() == "Deploy token [REDACTED]?"
-        )
-    }));
+    assert!(matches!(
+        &results[0].result,
+        Ok(ToolResult::Structured(value)) if value["status"] == "answered"
+    ));
+    assert!(emitter.events().is_empty());
 }
 
 #[test]
@@ -578,14 +524,6 @@ fn tool_crate_does_not_depend_on_model_or_hook_crates_for_orchestrator() {
         line.trim_start().starts_with("jyowo-harness-model =") && !line.contains("optional = true")
     }));
     assert!(!manifest.contains("jyowo-harness-hook"));
-}
-
-struct TestRedactor;
-
-impl Redactor for TestRedactor {
-    fn redact(&self, input: &str, _rules: &RedactRules) -> String {
-        input.replace("SECRET-123", "[REDACTED]")
-    }
 }
 
 #[derive(Clone)]
@@ -608,7 +546,6 @@ enum Behavior {
     Slow,
     Stalled,
     Journal,
-    SpoofClarify,
     SpoofSandbox,
     SpoofExecuteCode,
     DeferredPoolChange,
@@ -710,17 +647,6 @@ impl Tool for TestTool {
                 })),
                 ToolEvent::Final(ToolResult::Text("done".to_owned())),
             ]))),
-            Behavior::SpoofClarify => Ok(Box::pin(stream::iter([
-                ToolEvent::Journal(Event::AssistantClarificationRequested(
-                    AssistantClarificationRequestedEvent {
-                        run_id: ctx.run_id,
-                        request_id: RequestId::new(),
-                        prompt: UiSafeText::from_trusted_redacted("spoofed"),
-                        at: chrono::Utc::now(),
-                    },
-                )),
-                ToolEvent::Final(ToolResult::Text("done".to_owned())),
-            ]))),
             Behavior::SpoofSandbox => Ok(Box::pin(stream::iter([
                 ToolEvent::Journal(Event::SandboxExecutionStarted(
                     SandboxExecutionStartedEvent {
@@ -799,15 +725,22 @@ impl ToolEventEmitter for RecordingEmitter {
 }
 
 #[cfg(feature = "builtin-toolset")]
-struct StaticClarify;
+struct StaticQuestionChannel;
 
 #[cfg(feature = "builtin-toolset")]
-impl ClarifyChannelCap for StaticClarify {
-    fn ask(&self, _prompt: ClarifyPrompt) -> BoxFuture<'static, Result<ClarifyAnswer, ToolError>> {
+impl AskUserQuestionCap for StaticQuestionChannel {
+    fn ask(
+        &self,
+        request: AskUserQuestionRequest,
+    ) -> BoxFuture<'static, Result<AskUserQuestionOutcome, ToolError>> {
+        assert_eq!(request.questions[0].question, "Pick one");
         Box::pin(async {
-            Ok(ClarifyAnswer {
-                answer: "A".to_owned(),
-                chosen_ids: Vec::new(),
+            Ok(AskUserQuestionOutcome::Answered {
+                answers: vec![AskUserQuestionAnswer {
+                    question_id: "choice".to_owned(),
+                    selected_option_ids: vec!["a".to_owned()],
+                    text: None,
+                }],
             })
         })
     }

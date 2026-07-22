@@ -122,18 +122,38 @@ impl Tool for FileWriteTool {
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Write)?;
         let content = content(authorized.raw_input()).map_err(validation_error)?;
         verify_content_hash(&authorized, content)?;
+        let creates_file = !path.exists();
         std::fs::write(&path, content).map_err(|error| ToolError::Message(error.to_string()))?;
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Structured(json!({
-                "path": path,
-                "bytes": content.len()
-            })),
-        )])))
+        let result_path = path;
+        let (artifact_kind, artifact_text) = if creates_file {
+            (
+                "diff",
+                super::file_artifact::created_file_diff(&result_path, &ctx.workspace_root, content),
+            )
+        } else {
+            ("file", content.to_owned())
+        };
+        let mut events = Vec::with_capacity(2);
+        if let Some(artifact) = super::file_artifact::text_artifact_event(
+            &ctx,
+            artifact_kind,
+            &result_path,
+            &artifact_text,
+        )
+        .await
+        {
+            events.push(artifact);
+        }
+        events.push(ToolEvent::Final(ToolResult::Structured(json!({
+            "path": result_path,
+            "bytes": content.len()
+        }))));
+        Ok(Box::pin(stream::iter(events)))
     }
 }
 

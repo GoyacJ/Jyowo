@@ -43,7 +43,7 @@ fn default_builtin_toolset_registers_architecture_m0_tools() {
         "ProcessStart",
         "ProcessRead",
         "ProcessStop",
-        "Clarify",
+        "AskUserQuestion",
         "SendMessage",
         "GitStatus",
         "GitDiff",

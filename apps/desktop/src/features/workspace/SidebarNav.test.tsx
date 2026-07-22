@@ -63,6 +63,15 @@ describe('SidebarNav task navigation', () => {
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' })
   })
 
+  it('starts sidebar actions at the top without an empty spacer', async () => {
+    renderSidebar()
+
+    const sidebar = screen.getByRole('complementary', { name: 'Workspace' })
+    expect(sidebar.firstElementChild).toBe(
+      await screen.findByRole('navigation', { name: 'Conversations' }),
+    )
+  })
+
   it('creates the primary conversation in the default workspace', async () => {
     const request = vi.fn().mockResolvedValue(acceptedFrame())
     mocks.daemonClient = daemonClient({ request })
@@ -81,6 +90,14 @@ describe('SidebarNav task navigation', () => {
       }),
     )
     expect(mocks.navigate).toHaveBeenCalledWith({ search: { taskId }, to: '/' })
+  })
+
+  it('opens the command palette from the global search menu', async () => {
+    renderSidebar()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open global search' }))
+
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument()
   })
 
   it('opens and marks the scheduled task page from the fixed sidebar action', async () => {
@@ -151,6 +168,26 @@ describe('SidebarNav task navigation', () => {
     await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith({ search: {}, to: '/' }))
   })
 
+  it('renames a daemon task from the inline title editor', async () => {
+    const user = userEvent.setup()
+    const listTasks = vi.fn().mockResolvedValue({
+      tasks: [taskProjection({ root: '/repo/alpha' })],
+      type: 'task_list',
+    })
+    const renameTask = vi.fn().mockResolvedValue(acceptedMessage())
+    mocks.daemonClient = daemonClient({ listTasks, renameTask })
+
+    renderSidebar()
+    await user.dblClick(await screen.findByRole('button', { name: 'Daemon conversation' }))
+    const input = screen.getByRole('textbox', { name: 'Conversation name' })
+    await user.clear(input)
+    await user.type(input, 'Renamed from sidebar{Enter}')
+
+    expect(renameTask).toHaveBeenCalledOnce()
+    expect(renameTask).toHaveBeenCalledWith(taskId, 1, 'Renamed from sidebar')
+    await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2))
+  })
+
   it('shows task mutation errors without discarding the current task list', async () => {
     const user = userEvent.setup()
     const listTasks = vi.fn().mockResolvedValue({
@@ -217,7 +254,7 @@ describe('SidebarNav task navigation', () => {
 
     onFrame?.({
       message: { afterOffset: 1, events: [], gap: false, latestOffset: 2, type: 'event_batch' },
-      protocolVersion: 6,
+      protocolVersion: 7,
     })
 
     await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2))
@@ -297,5 +334,5 @@ function acceptedMessage() {
 }
 
 function acceptedFrame() {
-  return { message: acceptedMessage(), protocolVersion: 6 }
+  return { message: acceptedMessage(), protocolVersion: 7 }
 }

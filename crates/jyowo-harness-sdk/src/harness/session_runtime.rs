@@ -614,6 +614,9 @@ impl Harness {
         };
         let tool_registry_snapshot = self.inner.tool_registry.snapshot();
         let mut tool_filter = filter_unavailable_tools(&tool_registry_snapshot, &cap_registry);
+        if options.interactivity != harness_contracts::InteractivityLevel::FullyInteractive {
+            tool_filter.denylist.insert("AskUserQuestion".to_owned());
+        }
         filter_unrouted_service_tools(
             &mut tool_filter,
             &tool_registry_snapshot,

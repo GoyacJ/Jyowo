@@ -19,9 +19,10 @@ use tokio::task::JoinHandle;
 
 use super::IpcError;
 use crate::{
-    BrowserService, MemoryService, MemoryServiceError, PermissionDecisionInput, QueueCommand,
-    ScheduledTaskScheduler, ScheduledTaskSchedulerError, SkillReferenceCandidateService,
-    Supervisor, TaskMetadataMutation, ValidatedTaskCommand,
+    MemoryService, MemoryServiceError, PermissionDecisionInput, QuestionDecisionInput,
+    QueueCommand, RuntimeService, RuntimeServiceError, ScheduledTaskScheduler,
+    ScheduledTaskSchedulerError, SkillReferenceCandidateService, Supervisor, TaskMetadataMutation,
+    ValidatedTaskCommand,
 };
 
 #[derive(Debug, Clone)]
@@ -40,7 +41,7 @@ pub struct IpcConnection {
     skill_reference_candidates: Option<Arc<SkillReferenceCandidateService>>,
     memory_service: Option<Arc<MemoryService>>,
     scheduled_task_scheduler: Option<Arc<ScheduledTaskScheduler>>,
-    browser_service: Option<Arc<BrowserService>>,
+    runtime_service: Option<Arc<RuntimeService>>,
     client_id: Option<ClientId>,
     subscription_offset: Option<u64>,
 }
@@ -55,7 +56,7 @@ impl IpcConnection {
             skill_reference_candidates: None,
             memory_service: None,
             scheduled_task_scheduler: None,
-            browser_service: None,
+            runtime_service: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -74,7 +75,7 @@ impl IpcConnection {
             skill_reference_candidates: None,
             memory_service: None,
             scheduled_task_scheduler: None,
-            browser_service: None,
+            runtime_service: None,
             client_id: None,
             subscription_offset: None,
         }
@@ -105,8 +106,8 @@ impl IpcConnection {
     }
 
     #[must_use]
-    pub fn with_browser_service(mut self, browser_service: Arc<BrowserService>) -> Self {
-        self.browser_service = Some(browser_service);
+    pub fn with_runtime_service(mut self, runtime_service: Arc<RuntimeService>) -> Self {
+        self.runtime_service = Some(runtime_service);
         self
     }
 
@@ -163,10 +164,13 @@ impl IpcConnection {
         }
         if let ClientRequest::Browser { task_id, command } = &request {
             if valid_runtime_frame && self.client_id.is_some() {
-                if let Some(browser_service) = self.browser_service.as_ref() {
+                if let Some(runtime_service) = self.runtime_service.as_ref() {
                     let message = match self.store.task_projection(*task_id)? {
                         Some(task) if !task.removed => {
-                            match browser_service.handle(*task_id, command.clone()).await {
+                            match runtime_service
+                                .handle_browser(*task_id, command.clone())
+                                .await
+                            {
                                 Ok(state) => ServerMessage::BrowserSession(state),
                                 Err(error) => {
                                     tracing::warn!(%task_id, error = %error, "browser service request failed");
@@ -180,6 +184,27 @@ impl IpcConnection {
                                             unavailable_reason: Some(error.to_string()),
                                         },
                                     )
+                                }
+                            }
+                        }
+                        None | Some(_) => {
+                            protocol_error(ProtocolErrorCode::NotFound, "task not found")
+                        }
+                    };
+                    return Ok(vec![server_frame(Some(request_id), message)]);
+                }
+            }
+        }
+        if let ClientRequest::Runtime { task_id, command } = &request {
+            if valid_runtime_frame && self.client_id.is_some() {
+                if let Some(runtime_service) = self.runtime_service.as_ref() {
+                    let message = match self.store.task_projection(*task_id)? {
+                        Some(task) if !task.removed => {
+                            match runtime_service.handle(*task_id, command.clone()).await {
+                                Ok(state) => ServerMessage::RuntimeSession(state),
+                                Err(error) => {
+                                    tracing::warn!(%task_id, error = %error, "runtime service request failed");
+                                    runtime_service_error(error)
                                 }
                             }
                         }
@@ -212,6 +237,23 @@ impl IpcConnection {
             let payload = serde_json::to_value(&request)?;
             let command = accepted_command(client_id, task_id, request.metadata, payload);
             let outcome = supervisor.resolve_permission(command, input)?;
+            return Ok(vec![server_frame(
+                Some(request_id),
+                command_message(outcome),
+            )]);
+        }
+        if let ClientRequest::ResolveQuestion(request) = request {
+            let task_id = request.task_id;
+            let input = QuestionDecisionInput {
+                task_id,
+                request_id: request.question_request_id,
+                request_revision: request.request_revision,
+                response: request.response.clone(),
+                expected_task_version: request.metadata.expected_stream_version,
+            };
+            let payload = serde_json::to_value(&request)?;
+            let command = accepted_command(client_id, task_id, request.metadata, payload);
+            let outcome = supervisor.resolve_question(command, input)?;
             return Ok(vec![server_frame(
                 Some(request_id),
                 command_message(outcome),
@@ -479,7 +521,8 @@ impl IpcConnection {
             | ClientRequest::PromoteQueuedMessage(_)
             | ClientRequest::StopRun(_)
             | ClientRequest::ContinueTask(_)
-            | ClientRequest::ResolvePermission(_) => protocol_error(
+            | ClientRequest::ResolvePermission(_)
+            | ClientRequest::ResolveQuestion(_) => protocol_error(
                 ProtocolErrorCode::InvalidFrame,
                 "command requires the task supervisor",
             ),
@@ -513,6 +556,10 @@ impl IpcConnection {
             ClientRequest::Browser { .. } => protocol_error(
                 ProtocolErrorCode::InvalidFrame,
                 "browser service is not configured",
+            ),
+            ClientRequest::Runtime { .. } => protocol_error(
+                ProtocolErrorCode::InvalidFrame,
+                "runtime service is not configured",
             ),
             ClientRequest::Handshake(_) => unreachable!("handshake handled above"),
         };
@@ -590,6 +637,23 @@ fn memory_service_error(error: MemoryServiceError) -> ServerMessage {
     }
 }
 
+fn runtime_service_error(error: RuntimeServiceError) -> ServerMessage {
+    match error {
+        RuntimeServiceError::NotFound => {
+            protocol_error(ProtocolErrorCode::NotFound, "runtime resource not found")
+        }
+        RuntimeServiceError::InvalidInput(message) => ServerMessage::Error(ProtocolError {
+            code: ProtocolErrorCode::InvalidFrame,
+            message,
+        }),
+        RuntimeServiceError::Browser(_)
+        | RuntimeServiceError::Io(_)
+        | RuntimeServiceError::Store(_) => {
+            protocol_error(ProtocolErrorCode::Internal, "runtime operation failed")
+        }
+    }
+}
+
 fn is_scheduled_task_request(request: &ClientRequest) -> bool {
     matches!(
         request,
@@ -634,6 +698,7 @@ fn requires_task_supervisor(request: &ClientRequest) -> bool {
             | ClientRequest::StopRun(_)
             | ClientRequest::ContinueTask(_)
             | ClientRequest::ResolvePermission(_)
+            | ClientRequest::ResolveQuestion(_)
     )
 }
 

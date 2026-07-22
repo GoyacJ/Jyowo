@@ -1,5 +1,5 @@
 import { AlertCircle, LoaderCircle } from 'lucide-react'
-import { Component, type ReactNode } from 'react'
+import { Component, type ReactNode, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type ArtifactDescriptor, type ArtifactSurface, normalizeArtifactDescriptor } from './model'
 import { artifactRendererRegistry } from './renderers'
@@ -8,10 +8,12 @@ import { type ArtifactBlobLoader, useArtifactResource } from './resource'
 export function ArtifactRenderer({
   artifact: sourceArtifact,
   loader,
+  onResourceResolved,
   surface,
 }: {
   artifact: ArtifactDescriptor
   loader?: ArtifactBlobLoader
+  onResourceResolved?: (resource: { mediaType: string; size: number | null }) => void
   surface: ArtifactSurface
 }) {
   const { t } = useTranslation('tasks')
@@ -24,6 +26,19 @@ export function ArtifactRenderer({
   }
   const definition = artifactRendererRegistry.resolve(resolvedArtifact, surface)
   const View = definition?.views[surface]
+
+  useEffect(() => {
+    if (resource.loading || resource.error || resource.missing || resource.bytes === null) return
+    onResourceResolved?.({ mediaType: resource.mediaType, size: resource.size })
+  }, [
+    onResourceResolved,
+    resource.bytes,
+    resource.error,
+    resource.loading,
+    resource.mediaType,
+    resource.missing,
+    resource.size,
+  ])
 
   if (resource.loading) {
     return (

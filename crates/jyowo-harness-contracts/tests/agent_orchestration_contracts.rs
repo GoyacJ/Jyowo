@@ -22,10 +22,12 @@ fn ui(value: &str) -> UiSafeText {
 fn execution_defaults_require_subagents_for_dependent_capabilities() {
     for record in [
         harness_contracts::ExecutionDefaultsRecord {
+            subagents_enabled: false,
             agent_teams_enabled: true,
             ..Default::default()
         },
         harness_contracts::ExecutionDefaultsRecord {
+            subagents_enabled: false,
             background_agents_enabled: true,
             ..Default::default()
         },

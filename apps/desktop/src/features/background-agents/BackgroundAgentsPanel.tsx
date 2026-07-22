@@ -19,6 +19,7 @@ const stateLabels: Record<TaskState, string> = {
   interrupted: 'state.interrupted',
   running: 'state.running',
   waiting_permission: 'state.waitingForPermission',
+  waiting_input: 'state.waitingForInput',
   yielding: 'state.running',
 }
 
@@ -92,7 +93,9 @@ export function BackgroundAgentsPanel({
                   </div>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
-                  {['running', 'yielding', 'waiting_permission'].includes(task.state) ? (
+                  {['running', 'yielding', 'waiting_permission', 'waiting_input'].includes(
+                    task.state,
+                  ) ? (
                     <>
                       <Button
                         disabled={pauseMutation.isPending}

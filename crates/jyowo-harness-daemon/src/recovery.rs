@@ -76,7 +76,10 @@ impl RecoveryService {
         let segment_id = run.segment_id;
         if matches!(
             run.state,
-            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            RunState::Running
+                | RunState::WaitingPermission
+                | RunState::WaitingInput
+                | RunState::Yielding
         ) && self
             .store
             .pending_segment_start(projection.task_id, segment_id)?
@@ -86,7 +89,10 @@ impl RecoveryService {
         }
         if !matches!(
             run.state,
-            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            RunState::Running
+                | RunState::WaitingPermission
+                | RunState::WaitingInput
+                | RunState::Yielding
         ) {
             if run.terminal_reason == Some(RunTerminalReason::InterruptedByRestart)
                 && !self
@@ -115,6 +121,13 @@ impl RecoveryService {
             events.push(NewTaskEvent::permission_invalidated(
                 permission.request_id,
                 permission.revision,
+                "expired_by_restart",
+            ));
+        }
+        if let Some(question) = &projection.pending_question {
+            events.push(NewTaskEvent::question_invalidated(
+                question.request_id,
+                question.revision,
                 "expired_by_restart",
             ));
         }

@@ -130,6 +130,25 @@ describe('ArtifactRenderer', () => {
     expect(loader).toHaveBeenCalledWith(expectedBlobId)
   })
 
+  it('shows line numbers for file artifacts in the workbench', async () => {
+    render(
+      <ArtifactRenderer
+        artifact={descriptor({
+          artifactKind: 'file',
+          mediaType: 'text/plain',
+          title: 'src/main.rs',
+        })}
+        loader={blobLoader('fn main() {\n    run();\n}', 'text/plain')}
+        surface="workbench"
+      />,
+    )
+
+    const viewer = await screen.findByRole('region', { name: 'src/main.rs' })
+    expect(viewer.querySelectorAll('code')).toHaveLength(3)
+    expect(viewer).toHaveTextContent('fn main()')
+    expect(viewer).toHaveTextContent('3')
+  })
+
   it('falls back to the preview resource in the workbench when the original is absent', async () => {
     const loader = vi.fn<ArtifactBlobLoader>(async (requestedBlobId) =>
       blob(requestedBlobId, 'text/plain', requestedBlobId),

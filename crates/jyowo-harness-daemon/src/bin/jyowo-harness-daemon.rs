@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 use harness_contracts::{Redactor, RunState, PROTOCOL_VERSION};
 use harness_daemon::{
     BrowserService, IpcServerConfig, LocalIpcServer, MemoryService, PermissionBroker,
-    RecoveryService, RuntimeConfigResolver, RuntimeGuard, ScheduledTaskScheduler,
-    SdkRunCoordinatorFactory, SdkSubagentEngineRegistry, SdkWorkspaceSubagentRunnerFactory,
-    SkillReferenceCandidateService, Supervisor, SupervisorQuotas,
-    SupervisorScheduledTaskTaskSubmitter, WorkspaceSubagentRunnerFactory,
+    QuestionBroker, RecoveryService, RuntimeConfigResolver, RuntimeGuard, RuntimeService,
+    ScheduledTaskScheduler, SdkRunCoordinatorFactory, SdkSubagentEngineRegistry,
+    SdkWorkspaceSubagentRunnerFactory, SkillReferenceCandidateService, Supervisor,
+    SupervisorQuotas, SupervisorScheduledTaskTaskSubmitter, WorkspaceSubagentRunnerFactory,
 };
 use harness_journal::TaskStore;
 use harness_observability::DefaultRedactor;
@@ -41,6 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&store),
         Arc::clone(&redactor),
     ));
+    let questions = Arc::new(QuestionBroker::new(
+        Arc::clone(&store),
+        Arc::clone(&redactor),
+    ));
     let subagent_engines = Arc::new(SdkSubagentEngineRegistry::default());
     let provider_continuation_store = Arc::new(FileProviderContinuationStore::open_runtime_dir(
         runtime.runtime_dir(),
@@ -53,6 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let browser_service = Arc::new(BrowserService::from_environment(
         runtime.runtime_dir().join("browser"),
     ));
+    let runtime_service = Arc::new(RuntimeService::new(
+        Arc::clone(&store),
+        blob_root.clone(),
+        Arc::clone(&browser_service),
+    ));
     let run_factory = Arc::new(
         SdkRunCoordinatorFactory::new_with_subagent_engines(
             Arc::clone(&store),
@@ -62,19 +71,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::clone(&redactor),
             Arc::clone(&subagent_engines),
         )
+        .with_question_broker_arc(Arc::clone(&questions))
         .with_browser_service_arc(Arc::clone(&browser_service))
         .with_provider_continuation_store_arc(provider_continuation_store),
     );
     let runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory> =
         Arc::new(SdkWorkspaceSubagentRunnerFactory::new(subagent_engines));
-    let supervisor = Arc::new(Supervisor::start_with_runtime_components(
+    let supervisor = Arc::new(Supervisor::start_with_runtime_components_and_questions(
         Arc::clone(&store),
         run_factory,
         SupervisorQuotas::new(20, 8),
         runner_factory,
         redactor,
         8,
-        permissions,
+        (permissions, questions),
     )?);
     let scheduled_task_scheduler = Arc::new(ScheduledTaskScheduler::new(
         Arc::clone(&store),
@@ -95,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&scheduled_task_scheduler),
-        Arc::clone(&browser_service),
+        Arc::clone(&runtime_service),
     )
     .await?;
     #[cfg(windows)]
@@ -107,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&skill_reference_candidates),
         Arc::clone(&memory_service),
         Arc::clone(&scheduled_task_scheduler),
-        Arc::clone(&browser_service),
+        Arc::clone(&runtime_service),
     )
     .await?;
 
@@ -118,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     wait_for_shutdown(&server, &store).await?;
     server.shutdown().await?;
+    runtime_service.shutdown().await;
     browser_service.shutdown().await;
     Ok(())
 }
@@ -139,7 +150,10 @@ async fn wait_for_shutdown(
                 let active_tasks = store.task_projections()?.into_iter().any(|task| {
                     task.current_run.is_some_and(|run| matches!(
                         run.state,
-                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                        RunState::Running
+                            | RunState::WaitingPermission
+                            | RunState::WaitingInput
+                            | RunState::Yielding
                     ))
                 });
                 if server.connected_clients() == 0 && !active_tasks {

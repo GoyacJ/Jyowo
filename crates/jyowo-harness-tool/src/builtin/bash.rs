@@ -55,8 +55,9 @@ impl Default for BashTool {
                     ),
                     json!({
                         "type": "object",
-                        "required": ["exit_status", "stdout_bytes_observed", "stderr_bytes_observed"],
+                        "required": ["success", "exit_status", "stdout_bytes_observed", "stderr_bytes_observed"],
                         "properties": {
+                            "success": { "type": "boolean" },
                             "exit_status": { "type": "object" },
                             "stdout_bytes_observed": { "type": "integer", "minimum": 0 },
                             "stderr_bytes_observed": { "type": "integer", "minimum": 0 },
@@ -91,14 +92,17 @@ impl Tool for BashTool {
     }
 
     async fn plan(&self, input: &Value, ctx: &ToolContext) -> Result<ToolActionPlan, ToolError> {
+        let script = command(input)
+            .map_err(|error| ToolError::Validation(error.to_string()))?
+            .to_owned();
         let spec = exec_spec_for_input(input);
-        if let Some(rule) = DangerousPatternLibrary::default_unix().detect_command(&spec.command) {
+        if let Some(rule) = dangerous_pattern_library().detect_command(&script) {
             return action_plan_from_permission_check(
                 &self.descriptor,
                 input,
                 ctx,
                 PermissionCheck::DangerousCommand {
-                    command: spec.command.clone(),
+                    command: script,
                     pattern: rule.id.clone(),
                     severity: rule.severity,
                 },
@@ -124,18 +128,18 @@ impl Tool for BashTool {
             PermissionCheck::AskUser {
                 subject: PermissionSubject::CommandExec {
                     command: spec.command.clone(),
-                    argv: Vec::new(),
+                    argv: spec.args.clone(),
                     cwd: spec.cwd.clone(),
                     fingerprint: Some(fingerprint),
                 },
                 scope: DecisionScope::ExactCommand {
-                    command: spec.command.clone(),
+                    command: script,
                     cwd: spec.cwd.clone(),
                 },
             },
             vec![ActionResource::Command {
                 command: spec.command,
-                argv: Vec::new(),
+                argv: spec.args,
                 cwd: spec.cwd,
                 fingerprint,
             }],
@@ -216,8 +220,11 @@ fn exec_spec_from_plan(
 }
 
 fn exec_spec_for_input(input: &Value) -> ExecSpec {
+    let script = command(input).unwrap_or_default().to_owned();
+    let (command, args) = shell_command(script);
     ExecSpec {
-        command: command(input).unwrap_or_default().to_owned(),
+        command,
+        args,
         cwd: cwd(input),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,
@@ -238,10 +245,44 @@ fn command_resource(spec: ExecSpec, ctx: &ToolContext) -> ActionResource {
     let fingerprint = spec.canonical_fingerprint(&base);
     ActionResource::Command {
         command: spec.command,
-        argv: Vec::new(),
+        argv: spec.args,
         cwd: spec.cwd,
         fingerprint,
     }
+}
+
+#[cfg(unix)]
+fn shell_command(script: String) -> (String, Vec<String>) {
+    ("/bin/sh".to_owned(), vec!["-c".to_owned(), script])
+}
+
+#[cfg(windows)]
+fn dangerous_pattern_library() -> DangerousPatternLibrary {
+    DangerousPatternLibrary::default_windows()
+}
+
+#[cfg(not(windows))]
+fn dangerous_pattern_library() -> DangerousPatternLibrary {
+    DangerousPatternLibrary::default_unix()
+}
+
+#[cfg(windows)]
+fn shell_command(script: String) -> (String, Vec<String>) {
+    (
+        "powershell.exe".to_owned(),
+        vec![
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-Command".to_owned(),
+            script,
+        ],
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn shell_command(script: String) -> (String, Vec<String>) {
+    ("sh".to_owned(), vec!["-c".to_owned(), script])
 }
 
 pub(super) fn exec_context(ctx: &ToolContext, event_sink: Arc<dyn EventSink>) -> ExecContext {
@@ -269,6 +310,7 @@ fn stream_process_output(
         journal_events: VecDeque::new(),
         journal_offset: 0,
         event_sink,
+        _cwd_marker: handle.cwd_marker,
         stdout: handle.stdout,
         stderr: handle.stderr,
         stdout_decoder: Utf8ChunkDecoder::default(),
@@ -388,6 +430,7 @@ struct BashStreamState {
     journal_events: VecDeque<Event>,
     journal_offset: usize,
     event_sink: Arc<RecordingEventSink>,
+    _cwd_marker: Option<BoxStream<'static, harness_sandbox::CwdMarkerLine>>,
     stdout: Option<BoxStream<'static, Bytes>>,
     stderr: Option<BoxStream<'static, Bytes>>,
     stdout_decoder: Utf8ChunkDecoder,
@@ -556,6 +599,7 @@ impl Drop for KillOnDrop {
 
 fn outcome_result(outcome: &ExecOutcome) -> ToolResult {
     ToolResult::Structured(json!({
+        "success": outcome.exit_status == SandboxExitStatus::Code(0),
         "exit_status": exit_status_json(&outcome.exit_status),
         "stdout_bytes_observed": outcome.stdout_bytes_observed,
         "stderr_bytes_observed": outcome.stderr_bytes_observed,

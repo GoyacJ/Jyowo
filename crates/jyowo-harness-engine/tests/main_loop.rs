@@ -100,7 +100,9 @@ async fn text_stream_records_deltas_completion_and_run_end() {
     let harness = TestHarness::new(text_events("hello from model")).await;
 
     let events = harness.run("hello").await.unwrap();
+    let requests = harness.model.requests().await;
 
+    assert_eq!(requests[0].max_tokens, Some(1_000));
     assert!(events
         .iter()
         .any(|event| matches!(event, Event::RunStarted(_))));
@@ -419,6 +421,37 @@ async fn invalid_streaming_tool_json_stops_before_tool_execution() {
         event,
         Event::RunEnded(ended)
             if matches!(&ended.reason, EndReason::Error(message) if message.contains("invalid tool input json"))
+    )));
+    assert_single_run_end(&events);
+}
+
+#[tokio::test]
+async fn max_token_stop_does_not_execute_tool_calls() {
+    let mut response = streaming_tool_call_events("provider-call-1", "ListDir", &["{"]);
+    for event in &mut response {
+        if let ModelStreamEvent::MessageDelta { stop_reason, .. } = event {
+            *stop_reason = Some(StopReason::MaxIterations);
+        }
+    }
+    let harness = TestHarness::new(response).await;
+
+    let error = harness.run("list current dir").await.unwrap_err();
+    let events = harness.events().await;
+
+    assert!(error.to_string().contains("token limit"));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::ToolUseRequested(_))));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::PermissionRequested(_))));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::ToolUseCompleted(_))));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::RunEnded(ended)
+            if matches!(&ended.reason, EndReason::Error(message) if message.contains("token limit"))
     )));
     assert_single_run_end(&events);
 }

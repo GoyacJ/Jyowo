@@ -60,7 +60,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Arc<crate::SkillReferenceCandidateService>,
         memory_service: Arc<crate::MemoryService>,
         scheduled_task_scheduler: Arc<crate::ScheduledTaskScheduler>,
-        browser_service: Arc<crate::BrowserService>,
+        runtime_service: Arc<crate::RuntimeService>,
     ) -> Result<Self, IpcError> {
         Self::bind_unix_inner(
             endpoint.as_ref(),
@@ -70,7 +70,7 @@ impl LocalIpcServer {
             Some(skill_reference_candidates),
             Some(memory_service),
             Some(scheduled_task_scheduler),
-            Some(browser_service),
+            Some(runtime_service),
         )
         .await
     }
@@ -83,7 +83,7 @@ impl LocalIpcServer {
         skill_reference_candidates: Option<Arc<crate::SkillReferenceCandidateService>>,
         memory_service: Option<Arc<crate::MemoryService>>,
         scheduled_task_scheduler: Option<Arc<crate::ScheduledTaskScheduler>>,
-        browser_service: Option<Arc<crate::BrowserService>>,
+        runtime_service: Option<Arc<crate::RuntimeService>>,
     ) -> Result<Self, IpcError> {
         let endpoint = endpoint.to_path_buf();
         let listener = UnixListener::bind(&endpoint)?;
@@ -117,8 +117,8 @@ impl LocalIpcServer {
                         if let Some(scheduled_task_scheduler) = scheduled_task_scheduler.as_ref() {
                             connection = connection.with_scheduled_task_scheduler(Arc::clone(scheduled_task_scheduler));
                         }
-                        if let Some(browser_service) = browser_service.as_ref() {
-                            connection = connection.with_browser_service(Arc::clone(browser_service));
+                        if let Some(runtime_service) = runtime_service.as_ref() {
+                            connection = connection.with_runtime_service(Arc::clone(runtime_service));
                         }
                         let client_lease = ClientLease::new(Arc::clone(&server_clients));
                         client_tasks.spawn(async move {

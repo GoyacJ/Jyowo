@@ -7,6 +7,9 @@ import type { ArtifactViewProps } from '../resource'
 export function TextArtifactView({ artifact, resource, surface }: ArtifactViewProps) {
   const text = resource.text ?? artifact.preview
   if (!text) return <EmptyPreview />
+  if (surface === 'workbench' && artifact.artifactKind === 'file') {
+    return <CodeFileView text={text} title={artifact.title} />
+  }
   return (
     <div>
       <pre
@@ -17,6 +20,26 @@ export function TextArtifactView({ artifact, resource, surface }: ArtifactViewPr
         {text}
       </pre>
     </div>
+  )
+}
+
+function CodeFileView({ text, title }: { text: string; title: string }) {
+  return (
+    <section aria-label={title} className="min-h-full overflow-auto py-3">
+      <div className="min-w-max font-mono text-xs leading-5">
+        {text.split('\n').map((line, index) => (
+          <div className="grid grid-cols-[4rem_minmax(0,1fr)]" key={`${index}:${line}`}>
+            <span
+              aria-hidden="true"
+              className="select-none border-border/60 border-r pr-3 text-right text-muted-foreground/70"
+            >
+              {index + 1}
+            </span>
+            <code className="whitespace-pre px-4">{line || ' '}</code>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 

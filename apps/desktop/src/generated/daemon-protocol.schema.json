@@ -76,6 +76,127 @@
         "memory_id"
       ]
     },
+    "AskUserQuestion": {
+      "type": "object",
+      "properties": {
+        "allowCustom": {
+          "type": "boolean"
+        },
+        "header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "multiSelect": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AskUserQuestionOption"
+          }
+        },
+        "question": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "question",
+        "options",
+        "multiSelect",
+        "allowCustom"
+      ]
+    },
+    "AskUserQuestionAnswer": {
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string"
+        },
+        "selectedOptionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "questionId",
+        "selectedOptionIds"
+      ]
+    },
+    "AskUserQuestionOption": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "AskUserQuestionResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "answers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AskUserQuestionAnswer"
+              }
+            },
+            "status": {
+              "type": "string",
+              "const": "answered"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "answers"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "declined"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ]
+        }
+      ]
+    },
     "BrowserCommand": {
       "oneOf": [
         {
@@ -585,6 +706,41 @@
             "permissionRequestId",
             "requestRevision",
             "optionId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "metadata": {
+              "$ref": "#/$defs/CommandMetadata"
+            },
+            "questionRequestId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "requestRevision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "response": {
+              "$ref": "#/$defs/AskUserQuestionResponse"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "resolve_question"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "metadata",
+            "taskId",
+            "questionRequestId",
+            "requestRevision",
+            "response"
           ]
         },
         {
@@ -1246,6 +1402,27 @@
         {
           "type": "object",
           "properties": {
+            "command": {
+              "$ref": "#/$defs/RuntimeCommand"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "type": {
+              "type": "string",
+              "const": "runtime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "taskId",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "base64Data": {
               "type": "string"
             },
@@ -1734,6 +1911,7 @@
         "engine",
         "tool",
         "permission_broker",
+        "question_broker",
         "supervisor",
         "subagent",
         "recovery"
@@ -3407,6 +3585,44 @@
         "run_once"
       ]
     },
+    "PendingQuestionProjection": {
+      "type": "object",
+      "properties": {
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AskUserQuestion"
+          }
+        },
+        "requestId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "segmentId": {
+          "$ref": "#/$defs/TypedUlid"
+        },
+        "toolUseId": {
+          "$ref": "#/$defs/TypedUlid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "revision",
+        "segmentId",
+        "toolUseId",
+        "questions",
+        "expiresAt"
+      ]
+    },
     "PermissionMode": {
       "type": "string",
       "enum": [
@@ -3701,6 +3917,7 @@
       "enum": [
         "running",
         "waiting_permission",
+        "waiting_input",
         "yielding",
         "interrupted",
         "failed",
@@ -3716,6 +3933,128 @@
         "interrupted_by_restart",
         "cancelled",
         "failed"
+      ]
+    },
+    "RuntimeCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "$ref": "#/$defs/RuntimeSpec"
+            },
+            "type": {
+              "type": "string",
+              "const": "open"
+            }
+          },
+          "required": [
+            "type",
+            "spec"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/RuntimeSessionKind"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "status"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/RuntimeSessionKind"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "close"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "kind"
+          ]
+        }
+      ]
+    },
+    "RuntimeSessionKind": {
+      "type": "string",
+      "enum": [
+        "browser",
+        "html",
+        "web_app",
+        "terminal",
+        "external"
+      ]
+    },
+    "RuntimeSessionStatus": {
+      "type": "string",
+      "enum": [
+        "unavailable",
+        "starting",
+        "ready",
+        "stopped",
+        "failed"
+      ]
+    },
+    "RuntimeSpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "browser"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "blobId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "html"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "blobId",
+            "title"
+          ]
+        }
       ]
     },
     "RuntimeToolServiceBindingSummary": {
@@ -3811,6 +4150,54 @@
         "requiredCapabilities",
         "deferPolicy",
         "longRunning"
+      ]
+    },
+    "RuntimeView": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "url"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "channelId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal"
+            }
+          },
+          "required": [
+            "type",
+            "channelId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "external"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
       ]
     },
     "ScheduledTaskRunRecord": {
@@ -4739,6 +5126,61 @@
         {
           "type": "object",
           "properties": {
+            "currentUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/$defs/RuntimeSessionKind"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/RuntimeSessionStatus"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TypedUlid"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "runtime_session"
+            },
+            "view": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RuntimeView"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "sessionId",
+            "taskId",
+            "kind",
+            "status",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "afterOffset": {
               "type": "integer",
               "format": "uint64",
@@ -5130,6 +5572,17 @@
             }
           ]
         },
+        "pendingQuestion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingQuestionProjection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "pinned": {
           "type": "boolean",
           "default": false
@@ -5194,6 +5647,7 @@
         "idle",
         "running",
         "waiting_permission",
+        "waiting_input",
         "yielding",
         "interrupted",
         "failed",
@@ -5283,6 +5737,12 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "sourceToolUseId": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "title": {
           "type": "string"

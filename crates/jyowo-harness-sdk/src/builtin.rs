@@ -64,7 +64,7 @@ pub use harness_tool_search::ToolSearchTool;
 
 #[cfg(feature = "builtin-toolset")]
 pub use harness_tool::{
-    BashTool, ClarifyTool, FileEditTool, FileReadTool, FileWriteTool, GlobTool, GrepTool,
+    AskUserQuestionTool, BashTool, FileEditTool, FileReadTool, FileWriteTool, GlobTool, GrepTool,
     ListDirTool, ReadBlobTool, SendMessageTool, TaskStopTool, TodoTool, WebFetchTool,
     WebSearchTool,
 };

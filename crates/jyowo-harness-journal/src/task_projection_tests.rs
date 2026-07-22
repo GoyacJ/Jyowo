@@ -318,6 +318,7 @@ fn engine_artifacts_project_renderer_metadata_and_rebuild_identically() {
     let run_id = RunId::new();
     let session_id = SessionId::new();
     let blob_id = BlobId::new();
+    let source_tool_use_id = ToolUseId::new();
     let content_hash = *blake3::hash(b"video").as_bytes();
     let at = Utc.with_ymd_and_hms(2026, 7, 12, 1, 2, 3).unwrap();
 
@@ -367,7 +368,7 @@ fn engine_artifacts_project_renderer_metadata_and_rebuild_identically() {
                 status: ArtifactStatus::Ready,
                 source: ArtifactSource::Assistant,
                 source_message_id: None,
-                source_tool_use_id: None,
+                source_tool_use_id: Some(source_tool_use_id),
                 blob_ref: Some(BlobRef {
                     id: blob_id,
                     size: 5,
@@ -397,6 +398,11 @@ fn engine_artifacts_project_renderer_metadata_and_rebuild_identically() {
     assert_eq!(artifact.blob_id, Some(blob_id));
     assert_eq!(artifact.media_type, "video/mp4");
     assert_eq!(artifact.size, Some(5));
+    let expected_source_tool_use_id = source_tool_use_id.to_string();
+    assert_eq!(
+        artifact.source_tool_use_id.as_deref(),
+        Some(expected_source_tool_use_id.as_str())
+    );
     assert_eq!(
         artifact
             .presentation

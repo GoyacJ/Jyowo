@@ -19,12 +19,12 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::task_actor::{run_task_actor, TaskActorError};
 use crate::{
-    PermissionBroker, PermissionBrokerError, PermissionDecisionInput, RecoveryService,
-    RunCoordinatorFactory, SubagentStopMode, SubagentSupervisor, TaskActorMessage,
-    ValidatedTaskCommand, WorkspaceAccess, WorkspaceAcquireOutcome,
-    WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator, WorkspaceCoordinatorError,
-    WorkspaceExecutionKind, WorkspaceLeaseRequest, WorkspaceSubagentRunnerFactory,
-    WorkspaceToolDispatcher,
+    PermissionBroker, PermissionBrokerError, PermissionDecisionInput, QuestionBroker,
+    QuestionBrokerError, QuestionDecisionInput, RecoveryService, RunCoordinatorFactory,
+    SubagentStopMode, SubagentSupervisor, TaskActorMessage, ValidatedTaskCommand, WorkspaceAccess,
+    WorkspaceAcquireOutcome, WorkspaceBoundRunCoordinatorFactory, WorkspaceCoordinator,
+    WorkspaceCoordinatorError, WorkspaceExecutionKind, WorkspaceLeaseRequest,
+    WorkspaceSubagentRunnerFactory, WorkspaceToolDispatcher,
 };
 
 const SUPERVISOR_REQUEST_CAPACITY: usize = 64;
@@ -74,6 +74,8 @@ pub enum SupervisorError {
     Workspace(#[from] WorkspaceCoordinatorError),
     #[error("permission routing failed: {0}")]
     Permission(#[from] PermissionBrokerError),
+    #[error("question routing failed: {0}")]
+    Question(#[from] QuestionBrokerError),
 }
 
 pub struct Supervisor {
@@ -83,6 +85,7 @@ pub struct Supervisor {
     workspace: Arc<WorkspaceCoordinator>,
     subagents: Arc<SubagentSupervisor>,
     permissions: Arc<PermissionBroker>,
+    questions: Arc<QuestionBroker>,
     task: JoinHandle<()>,
 }
 
@@ -146,6 +149,30 @@ impl Supervisor {
         max_depth: u8,
         permissions: Arc<PermissionBroker>,
     ) -> Result<Self, SupervisorError> {
+        let questions = Arc::new(QuestionBroker::new(
+            Arc::clone(&store),
+            Arc::clone(&redactor),
+        ));
+        Self::start_with_runtime_components_and_questions(
+            store,
+            factory,
+            quotas,
+            runner_factory,
+            redactor,
+            max_depth,
+            (permissions, questions),
+        )
+    }
+
+    pub fn start_with_runtime_components_and_questions(
+        store: Arc<TaskStore>,
+        factory: Arc<dyn RunCoordinatorFactory>,
+        quotas: SupervisorQuotas,
+        runner_factory: Arc<dyn WorkspaceSubagentRunnerFactory>,
+        redactor: Arc<dyn Redactor>,
+        max_depth: u8,
+        brokers: (Arc<PermissionBroker>, Arc<QuestionBroker>),
+    ) -> Result<Self, SupervisorError> {
         if quotas.foreground_runs == 0 || quotas.subagents == 0 {
             return Err(SupervisorError::InvalidQuota);
         }
@@ -163,7 +190,16 @@ impl Supervisor {
             max_depth,
             quotas.subagents,
         ));
-        Self::start_inner(store, factory, quotas, workspace, subagents, permissions)
+        let (permissions, questions) = brokers;
+        Self::start_inner(
+            store,
+            factory,
+            quotas,
+            workspace,
+            subagents,
+            permissions,
+            questions,
+        )
     }
 
     fn start_inner(
@@ -173,6 +209,7 @@ impl Supervisor {
         workspace: Arc<WorkspaceCoordinator>,
         subagents: Arc<SubagentSupervisor>,
         permissions: Arc<PermissionBroker>,
+        questions: Arc<QuestionBroker>,
     ) -> Result<Self, SupervisorError> {
         recover_unreconnectable_subagents(&store, &workspace)?;
         recover_terminal_task_leases(&store, &workspace)?;
@@ -189,6 +226,7 @@ impl Supervisor {
             factory,
             Arc::clone(&workspace),
             Arc::clone(&permissions),
+            Arc::clone(&questions),
             Arc::new(Semaphore::new(quotas.foreground_runs)),
             receiver,
             events.clone(),
@@ -200,6 +238,7 @@ impl Supervisor {
             workspace,
             subagents,
             permissions,
+            questions,
             task,
         })
     }
@@ -244,9 +283,22 @@ impl Supervisor {
         Ok(self.permissions.resolve_client_command(command, input)?)
     }
 
+    pub fn resolve_question(
+        &self,
+        command: AcceptedCommand,
+        input: QuestionDecisionInput,
+    ) -> Result<CommandOutcome, SupervisorError> {
+        Ok(self.questions.resolve_client_command(command, input)?)
+    }
+
     #[must_use]
     pub fn permission_broker(&self) -> Arc<PermissionBroker> {
         Arc::clone(&self.permissions)
+    }
+
+    #[must_use]
+    pub fn question_broker(&self) -> Arc<QuestionBroker> {
+        Arc::clone(&self.questions)
     }
 
     #[must_use]
@@ -299,7 +351,10 @@ fn ensure_foreground_workspace(
     let active_run = projection.current_run.as_ref().is_some_and(|run| {
         matches!(
             run.state,
-            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            RunState::Running
+                | RunState::WaitingPermission
+                | RunState::WaitingInput
+                | RunState::Yielding
         )
     });
 
@@ -457,6 +512,7 @@ async fn run_supervisor(
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     workspace: Arc<WorkspaceCoordinator>,
     permissions: Arc<PermissionBroker>,
+    questions: Arc<QuestionBroker>,
     foreground_runs: Arc<Semaphore>,
     mut requests: mpsc::Receiver<SupervisorRequest>,
     events: broadcast::Sender<SupervisorEvent>,
@@ -516,6 +572,7 @@ async fn run_supervisor(
                                 Arc::clone(&store),
                                 Arc::clone(&factory),
                                 Arc::clone(&permissions),
+                                Arc::clone(&questions),
                                 Arc::clone(&foreground_runs),
                                 None,
                                 Duration::ZERO,
@@ -567,6 +624,7 @@ async fn run_supervisor(
                                     Arc::clone(&store),
                                     Arc::clone(&factory),
                                     Arc::clone(&permissions),
+                                    Arc::clone(&questions),
                                     Arc::clone(&foreground_runs),
                                     Some(segment_id),
                                     pending_segment_start_retry_delay(retry.1),
@@ -596,6 +654,7 @@ async fn run_supervisor(
                                     Arc::clone(&store),
                                     Arc::clone(&factory),
                                     Arc::clone(&permissions),
+                                    Arc::clone(&questions),
                                     Arc::clone(&foreground_runs),
                                     None,
                                     Duration::ZERO,
@@ -644,6 +703,7 @@ fn spawn_actor(
     store: Arc<TaskStore>,
     factory: Arc<WorkspaceBoundRunCoordinatorFactory>,
     permissions: Arc<PermissionBroker>,
+    questions: Arc<QuestionBroker>,
     foreground_runs: Arc<Semaphore>,
     pending_start_retry_segment: Option<harness_contracts::RunSegmentId>,
     startup_delay: Duration,
@@ -659,6 +719,7 @@ fn spawn_actor(
             store,
             factory,
             permissions,
+            questions,
             foreground_runs,
             active_segment_state,
             pending_start_retry_segment,
@@ -675,6 +736,7 @@ fn spawn_actor(
                 | TaskActorError::SegmentStartDeliveryNotPending
                 | TaskActorError::SubagentStop(_)
                 | TaskActorError::Permission(_)
+                | TaskActorError::Question(_)
                 | TaskActorError::Workspace(_),
             ))
             | Err(_) => true,
@@ -733,7 +795,10 @@ fn persist_actor_failure(
         let projected_active_segment = projection.current_run.as_ref().and_then(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                RunState::Running
+                    | RunState::WaitingPermission
+                    | RunState::WaitingInput
+                    | RunState::Yielding
             )
             .then_some(run.segment_id)
         });

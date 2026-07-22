@@ -1,4 +1,4 @@
-import { Send, X } from 'lucide-react'
+import { LoaderCircle, Pause, Play, Send, X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -21,11 +21,20 @@ import { clearDraft, getDraft, getEmptyDraft, saveDraft } from './composer/compo
 import {
   flattenReferenceGroups,
   ReferenceCombobox,
+  type ReferenceGroupId,
   referenceGroups,
   referenceKey,
   referenceLabel,
+  referenceListboxId,
+  referenceOptionId,
 } from './composer/ReferenceCombobox'
-import { type SlashCommand, SlashCommandMenu, slashCommands } from './composer/SlashCommandMenu'
+import {
+  type SlashCommand,
+  SlashCommandMenu,
+  slashCommandListboxId,
+  slashCommandOptionId,
+  slashCommands,
+} from './composer/SlashCommandMenu'
 
 export type ComposerSubmitPayload = Omit<StartRunRequest, 'conversationId'>
 export type ComposerMode =
@@ -48,6 +57,10 @@ type ComposerProps = {
   errorMessage?: string
   cancelPending?: boolean
   onCancelRun?: () => Promise<void> | void
+  pausePending?: boolean
+  onPauseRun?: () => Promise<void> | void
+  continuePending?: boolean
+  onContinueRun?: () => Promise<void> | void
   onRetry?: () => void
   onPickAttachmentPath?: (modalities: AttachmentInputModality[]) => Promise<string | null>
   onCreateAttachmentFromPath?: (
@@ -83,6 +96,13 @@ const emptyReferenceCandidates: ListReferenceCandidatesResponse = {
   tools: [],
 }
 
+type ComposerInlineTrigger = {
+  end: number
+  kind: 'reference' | 'slash'
+  query: string
+  start: number
+}
+
 export function Composer({
   conversationId,
   draftKey,
@@ -93,6 +113,10 @@ export function Composer({
   errorMessage,
   cancelPending = false,
   onCancelRun,
+  pausePending = false,
+  onPauseRun,
+  continuePending = false,
+  onContinueRun,
   onRetry,
   onPickAttachmentPath,
   onCreateAttachmentFromPath,
@@ -164,9 +188,12 @@ export function Composer({
     Boolean(onCancelRun)
   const acceptedAttachmentModalities = getAcceptedAttachmentModalities(modelCapability)
   const supportsAttachments = acceptedAttachmentModalities.length > 0
-  const [slashOpen, setSlashOpen] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const editorRef = useRef<HTMLTextAreaElement>(null)
+  const [slashTrigger, setSlashTrigger] = useState<ComposerInlineTrigger | null>(null)
   const [slashActiveIndex, setSlashActiveIndex] = useState(0)
   const [referenceSource, setReferenceSource] = useState<'editor' | 'toolbar' | null>(null)
+  const [referenceTrigger, setReferenceTrigger] = useState<ComposerInlineTrigger | null>(null)
   const [referenceSearch, setReferenceSearch] = useState('')
   const [referenceCandidates, setReferenceCandidates] =
     useState<ListReferenceCandidatesResponse>(emptyReferenceCandidates)
@@ -180,6 +207,51 @@ export function Composer({
     () => flattenReferenceGroups(referenceGroupItems),
     [referenceGroupItems],
   )
+  const filteredSlashCommands = useMemo(() => {
+    const query = slashTrigger?.query.trim().toLocaleLowerCase() ?? ''
+    if (!query) {
+      return slashCommands
+    }
+
+    return slashCommands.filter((command) =>
+      [
+        command.id,
+        t(`conversation:composer.slashCommands.${command.id}`),
+        t(`conversation:composer.slashCommands.descriptions.${command.id}`),
+      ].some((value) => value.toLocaleLowerCase().includes(query)),
+    )
+  }, [slashTrigger?.query, t])
+  const slashOpen = slashTrigger !== null
+  const activeSlashCommand = filteredSlashCommands[slashActiveIndex]
+  const activeReference = referenceItems[referenceActiveIndex]?.reference
+  const suggestionControls = slashOpen
+    ? slashCommandListboxId
+    : referenceSource === 'editor'
+      ? referenceListboxId
+      : undefined
+  const suggestionActiveDescendant =
+    slashOpen && activeSlashCommand
+      ? slashCommandOptionId(activeSlashCommand)
+      : referenceSource === 'editor' && activeReference
+        ? referenceOptionId(activeReference)
+        : undefined
+
+  useEffect(() => {
+    if (!slashOpen && referenceSource === null) {
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!formRef.current?.contains(event.target as Node)) {
+        setSlashTrigger(null)
+        setReferenceSource(null)
+        setReferenceTrigger(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [referenceSource, slashOpen])
 
   async function submitDraft() {
     const submittedDraft = draft
@@ -263,6 +335,26 @@ export function Composer({
     }
   }
 
+  async function handlePauseRun() {
+    if (!onPauseRun || pausePending) return
+    try {
+      setComposerError(null)
+      await onPauseRun()
+    } catch (error) {
+      setComposerError(getCommandErrorMessage(error))
+    }
+  }
+
+  async function handleContinueRun() {
+    if (!onContinueRun || continuePending) return
+    try {
+      setComposerError(null)
+      await onContinueRun()
+    } catch (error) {
+      setComposerError(getCommandErrorMessage(error))
+    }
+  }
+
   function addContextReference(reference: ContextReference) {
     setDraft((currentDraft) => ({
       ...currentDraft,
@@ -284,15 +376,23 @@ export function Composer({
     }
   }
 
-  function openReferenceCombobox(source: 'editor' | 'toolbar') {
-    setSlashOpen(false)
+  function openReferenceCombobox(
+    source: 'editor' | 'toolbar',
+    trigger: ComposerInlineTrigger | null = null,
+  ) {
+    setSlashTrigger(null)
     setReferenceSource(source)
+    setReferenceTrigger(trigger)
     setReferenceActiveIndex(0)
+    if (source === 'toolbar') {
+      setReferenceSearch('')
+    }
     void loadReferenceCandidates()
   }
 
   function closeReferenceCombobox() {
     setReferenceSource(null)
+    setReferenceTrigger(null)
   }
 
   function handleToolbarReferenceOpenChange(nextOpen: boolean) {
@@ -304,68 +404,107 @@ export function Composer({
   }
 
   function selectReference(reference: ContextReference) {
+    const selectedTrigger = referenceSource === 'editor' ? referenceTrigger : null
     addContextReference(reference)
     closeReferenceCombobox()
     setReferenceSearch('')
     setReferenceActiveIndex(0)
     setDraft((currentDraft) => ({
       ...currentDraft,
-      text: removeTrailingReferenceQuery(currentDraft.text),
+      text: selectedTrigger
+        ? replaceComposerTrigger(currentDraft.text, selectedTrigger, '')
+        : currentDraft.text,
     }))
+    restoreEditorFocus(selectedTrigger?.start)
   }
 
   function selectSlashCommand(command: SlashCommand) {
+    const selectedTrigger = slashTrigger
+    if (!selectedTrigger) {
+      return
+    }
+
     setDraft((currentDraft) => ({
       ...currentDraft,
-      text: replaceTrailingSlash(currentDraft.text, command.prompt),
+      text: replaceComposerTrigger(currentDraft.text, selectedTrigger, command.prompt),
     }))
-    setSlashOpen(false)
+    setSlashTrigger(null)
     setSlashActiveIndex(0)
+    restoreEditorFocus(selectedTrigger.start + command.prompt.length)
   }
 
-  function handleTextChange(text: string) {
-    setDraft((currentDraft) => ({
-      ...currentDraft,
-      text,
-    }))
-    if (shouldOpenSlashMenu(text)) {
-      setSlashOpen(true)
-      setSlashActiveIndex(0)
-      closeReferenceCombobox()
-      return
-    }
-    const referenceQuery = trailingReferenceQuery(text)
-    if (referenceQuery !== null) {
-      setReferenceSearch(referenceQuery)
-      setReferenceActiveIndex(0)
-      if (referenceSource !== 'editor') {
-        openReferenceCombobox('editor')
+  function restoreEditorFocus(cursorPosition?: number) {
+    requestAnimationFrame(() => {
+      editorRef.current?.focus()
+      if (cursorPosition !== undefined) {
+        editorRef.current?.setSelectionRange(cursorPosition, cursorPosition)
       }
-      setSlashOpen(false)
+    })
+  }
+
+  function syncInlineSuggestion(text: string, cursorPosition: number) {
+    const trigger = composerInlineTrigger(text, cursorPosition)
+
+    if (trigger?.kind === 'slash') {
+      setSlashTrigger(trigger)
+      setSlashActiveIndex(0)
+      if (referenceSource === 'editor') {
+        closeReferenceCombobox()
+      }
       return
     }
-    setSlashOpen(false)
+
+    if (trigger?.kind === 'reference') {
+      setReferenceSearch(trigger.query)
+      setReferenceActiveIndex(0)
+      setSlashTrigger(null)
+      if (referenceSource !== 'editor') {
+        openReferenceCombobox('editor', trigger)
+      } else {
+        setReferenceTrigger(trigger)
+      }
+      return
+    }
+
+    setSlashTrigger(null)
     if (referenceSource === 'editor') {
       closeReferenceCombobox()
     }
   }
 
+  function handleTextChange(text: string, cursorPosition: number) {
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      text,
+    }))
+    syncInlineSuggestion(text, cursorPosition)
+  }
+
   function handleEditorKeyCommand(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (slashOpen) {
       if (event.key === 'ArrowDown') {
-        setSlashActiveIndex((index) => (index + 1) % slashCommands.length)
+        setSlashActiveIndex((index) =>
+          filteredSlashCommands.length === 0 ? 0 : (index + 1) % filteredSlashCommands.length,
+        )
         return true
       }
       if (event.key === 'ArrowUp') {
-        setSlashActiveIndex((index) => (index - 1 + slashCommands.length) % slashCommands.length)
+        setSlashActiveIndex((index) =>
+          filteredSlashCommands.length === 0
+            ? 0
+            : (index - 1 + filteredSlashCommands.length) % filteredSlashCommands.length,
+        )
         return true
       }
-      if (event.key === 'Enter') {
-        selectSlashCommand(slashCommands[slashActiveIndex] ?? slashCommands[0])
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        const command = filteredSlashCommands[slashActiveIndex]
+        if (command) {
+          selectSlashCommand(command)
+        }
         return true
       }
       if (event.key === 'Escape') {
-        setSlashOpen(false)
+        setSlashTrigger(null)
         return true
       }
     }
@@ -385,7 +524,7 @@ export function Composer({
         )
         return true
       }
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' || event.key === 'Tab') {
         const selectedReference = referenceItems[referenceActiveIndex]?.reference
         if (selectedReference) {
           selectReference(selectedReference)
@@ -419,7 +558,7 @@ export function Composer({
       )
       return true
     }
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' || event.key === 'Tab') {
       const selectedReference = referenceItems[referenceActiveIndex]?.reference
       if (selectedReference) {
         selectReference(selectedReference)
@@ -428,6 +567,7 @@ export function Composer({
     }
     if (event.key === 'Escape') {
       closeReferenceCombobox()
+      restoreEditorFocus()
       return true
     }
     return false
@@ -435,7 +575,8 @@ export function Composer({
 
   return (
     <form
-      className="rounded-md border border-border bg-surface px-3 py-2 shadow-sm focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/10 transition-[border-color,box-shadow] duration-300"
+      ref={formRef}
+      className="relative rounded-md border border-border bg-surface px-3 py-2 shadow-sm focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/10 transition-[border-color,box-shadow] duration-300"
       onSubmit={(event) => {
         event.preventDefault()
         void submitDraft()
@@ -461,8 +602,13 @@ export function Composer({
       ) : null}
 
       <ComposerEditor
+        ref={editorRef}
+        activeDescendant={suggestionActiveDescendant}
+        controls={suggestionControls}
         disabled={editorDisabled}
+        expanded={slashOpen || referenceSource === 'editor'}
         onChange={handleTextChange}
+        onCursorChange={(cursorPosition) => syncInlineSuggestion(draft.text, cursorPosition)}
         onKeyCommand={handleEditorKeyCommand}
         onSubmit={() => {
           void submitDraft()
@@ -471,7 +617,13 @@ export function Composer({
       />
       <SlashCommandMenu
         activeIndex={slashActiveIndex}
+        commands={filteredSlashCommands}
+        emptyLabel={t('conversation:composer.slashCommands.empty')}
+        getCommandDescription={(command) =>
+          t(`conversation:composer.slashCommands.descriptions.${command.id}`)
+        }
         getCommandLabel={(command) => t(`conversation:composer.slashCommands.${command.id}`)}
+        keyboardHint={t('conversation:composer.suggestionKeyboardHint')}
         label={t('conversation:composer.slashCommands.label')}
         onSelect={selectSlashCommand}
         open={slashOpen}
@@ -479,7 +631,11 @@ export function Composer({
       <ReferenceCombobox
         activeIndex={referenceActiveIndex}
         disabled={editorDisabled}
+        getGroupLabel={(groupId: ReferenceGroupId) =>
+          t(`conversation:composer.referenceGroups.${groupId}`)
+        }
         groups={referenceGroupItems}
+        keyboardHint={t('conversation:composer.suggestionKeyboardHint')}
         label={t('conversation:composer.referenceObject')}
         loadingLabel={t('conversation:composer.loadingReferences')}
         loading={referenceLoading}
@@ -490,8 +646,10 @@ export function Composer({
         }}
         onSelectReference={selectReference}
         onKeyCommand={handleReferenceKeyCommand}
-        open={referenceSource === 'editor'}
+        open={referenceSource !== null}
+        resultCountLabel={(count) => t('conversation:composer.referenceResultCount', { count })}
         search={referenceSearch}
+        searchInputVisible={referenceSource === 'toolbar'}
         searchLabel={t('conversation:composer.searchReferences')}
       />
 
@@ -534,20 +692,72 @@ export function Composer({
             }
             onPermissionModeChange?.(nextMode)
           }}
-          referenceActiveIndex={referenceActiveIndex}
-          referenceGroups={referenceGroupItems}
-          referenceLoading={referenceLoading}
           referenceOpen={referenceSource === 'toolbar'}
-          referenceSearch={referenceSearch}
           onReferenceOpenChange={handleToolbarReferenceOpenChange}
-          onReferenceSearchChange={(search) => {
-            setReferenceSearch(search)
-            setReferenceActiveIndex(0)
-          }}
-          onReferenceKeyCommand={handleReferenceKeyCommand}
-          onSelectReference={selectReference}
         />
         <div className="flex shrink-0 items-center gap-1.5">
+          {onPauseRun ? (
+            <button
+              aria-label={t(
+                pausePending
+                  ? 'conversation:composer.pausingRun'
+                  : 'conversation:composer.pauseRun',
+              )}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-2 font-medium text-muted-foreground text-xs transition-[background-color,color,box-shadow,transform,opacity] duration-200 hover:bg-muted hover:text-foreground hover:shadow-sm active:scale-95 disabled:scale-100 disabled:opacity-50 disabled:pointer-events-none"
+              disabled={pausePending}
+              onClick={() => {
+                void handlePauseRun()
+              }}
+              type="button"
+            >
+              {pausePending ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="size-4 animate-spin motion-reduce:animate-none"
+                />
+              ) : (
+                <Pause aria-hidden="true" className="size-4" />
+              )}
+              <span className="task-composer-run-control-label">
+                {t(
+                  pausePending
+                    ? 'conversation:composer.pausingRun'
+                    : 'conversation:composer.pauseRun',
+                )}
+              </span>
+            </button>
+          ) : null}
+          {onContinueRun ? (
+            <button
+              aria-label={t(
+                continuePending
+                  ? 'conversation:composer.continuingRun'
+                  : 'conversation:composer.continueRun',
+              )}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-2 font-medium text-muted-foreground text-xs transition-[background-color,color,box-shadow,transform,opacity] duration-200 hover:bg-muted hover:text-foreground hover:shadow-sm active:scale-95 disabled:scale-100 disabled:opacity-50 disabled:pointer-events-none"
+              disabled={continuePending}
+              onClick={() => {
+                void handleContinueRun()
+              }}
+              type="button"
+            >
+              {continuePending ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="size-4 animate-spin motion-reduce:animate-none"
+                />
+              ) : (
+                <Play aria-hidden="true" className="size-4" />
+              )}
+              <span className="task-composer-run-control-label">
+                {t(
+                  continuePending
+                    ? 'conversation:composer.continuingRun'
+                    : 'conversation:composer.continueRun',
+                )}
+              </span>
+            </button>
+          ) : null}
           {canCancelRun ? (
             <button
               aria-label={t('conversation:composer.cancelRun')}
@@ -600,21 +810,34 @@ function getAcceptedAttachmentModalities(
   )
 }
 
-function shouldOpenSlashMenu(text: string) {
-  return /(^|\s)\/$/.test(text)
+function composerInlineTrigger(text: string, cursorPosition: number): ComposerInlineTrigger | null {
+  const boundedCursor = Math.min(Math.max(cursorPosition, 0), text.length)
+  const beforeCursor = text.slice(0, boundedCursor)
+  const match = /(^|\s)([/@])([^\s]*)$/.exec(beforeCursor)
+  if (!match) {
+    return null
+  }
+
+  const triggerCharacter = match[2]
+  const start = match.index + (match[1]?.length ?? 0)
+  const suffixLength = /^[^\s]*/.exec(text.slice(boundedCursor))?.[0].length ?? 0
+  const end = boundedCursor + suffixLength
+
+  return {
+    end,
+    kind: triggerCharacter === '/' ? 'slash' : 'reference',
+    query: text.slice(start + 1, end),
+    start,
+  }
 }
 
-function trailingReferenceQuery(text: string) {
-  const match = /(?:^|\s)@([^\s]*)$/.exec(text)
-  return match ? match[1] : null
-}
-
-function replaceTrailingSlash(text: string, replacement: string) {
-  return text.replace(/(^|\s)\/$/, (_match, prefix: string) => `${prefix}${replacement}`)
-}
-
-function removeTrailingReferenceQuery(text: string) {
-  return text.replace(/(^|\s)@[^\s]*$/, '$1')
+function replaceComposerTrigger(text: string, trigger: ComposerInlineTrigger, replacement: string) {
+  const prefix = text.slice(0, trigger.start)
+  let suffix = text.slice(trigger.end)
+  if (suffix.startsWith(' ') && (prefix.endsWith(' ') || replacement.endsWith(' '))) {
+    suffix = suffix.slice(1)
+  }
+  return `${prefix}${replacement}${suffix}`
 }
 
 function ComposerContextChips({

@@ -91,9 +91,9 @@ fn command_fingerprint(
 ) -> harness_contracts::ExecFingerprint {
     let PermissionSubject::CommandExec {
         command,
+        argv,
         cwd,
         fingerprint: Some(fingerprint),
-        ..
     } = subject
     else {
         panic!("expected command subject with fingerprint");
@@ -105,11 +105,12 @@ fn command_fingerprint(
     else {
         panic!("expected ExactCommand scope");
     };
-    assert_eq!(command, scope_command);
+    assert_eq!(argv.last(), Some(scope_command));
     assert_eq!(cwd, scope_cwd);
 
     let expected = ExecSpec {
         command: command.clone(),
+        args: argv.clone(),
         cwd: cwd.clone(),
         stdin: StdioSpec::Null,
         stdout: StdioSpec::Piped,

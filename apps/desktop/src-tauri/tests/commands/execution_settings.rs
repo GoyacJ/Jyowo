@@ -60,9 +60,9 @@ fn get_execution_settings_defaults_to_standard_mode() {
     assert_eq!(settings.tool_profile, ToolProfile::Full);
     assert_eq!(settings.context_compression_trigger_ratio, 0.8);
     assert_eq!(settings.auto_mode_available, cfg!(feature = "auto-mode"));
-    assert!(!settings.agent_capabilities.subagents_enabled);
-    assert!(!settings.agent_capabilities.agent_teams_enabled);
-    assert!(!settings.agent_capabilities.background_agents_enabled);
+    assert!(settings.agent_capabilities.subagents_enabled);
+    assert!(settings.agent_capabilities.agent_teams_enabled);
+    assert!(settings.agent_capabilities.background_agents_enabled);
     assert!(!settings.agent_capabilities.subagents_available);
     assert!(!settings.agent_capabilities.agent_teams_available);
     assert!(!settings.agent_capabilities.background_agents_available);
@@ -172,9 +172,9 @@ fn get_execution_settings_ignores_old_runtime_record() {
             .expect("execution settings should load");
 
     assert_eq!(settings.permission_mode, PermissionMode::Default);
-    assert!(!settings.agent_capabilities.subagents_enabled);
-    assert!(!settings.agent_capabilities.agent_teams_enabled);
-    assert!(!settings.agent_capabilities.background_agents_enabled);
+    assert!(settings.agent_capabilities.subagents_enabled);
+    assert!(settings.agent_capabilities.agent_teams_enabled);
+    assert!(settings.agent_capabilities.background_agents_enabled);
     assert!(settings_path.exists());
 }
 
@@ -730,5 +730,7 @@ fn resolve_effective_execution_settings_missing_everything_falls_back_to_contrac
 
     assert_eq!(effective.permission_mode, PermissionMode::Default);
     assert_eq!(effective.tool_profile, ToolProfile::Full);
-    assert!(!effective.subagents_enabled);
+    assert!(effective.subagents_enabled);
+    assert!(effective.agent_teams_enabled);
+    assert!(effective.background_agents_enabled);
 }

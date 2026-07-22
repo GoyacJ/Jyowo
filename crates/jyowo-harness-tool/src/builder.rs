@@ -87,10 +87,7 @@ impl ToolRegistryBuilder {
                     )?;
                     registry.register(Box::<crate::builtin::ProcessReadTool>::default())?;
                     registry.register(Box::<crate::builtin::ProcessStopTool>::default())?;
-                    registry.register_with_journal_authority(
-                        Box::<crate::builtin::ClarifyTool>::default(),
-                        ToolJournalAuthority::Clarification,
-                    )?;
+                    registry.register(Box::<crate::builtin::AskUserQuestionTool>::default())?;
                     registry.register(Box::<crate::builtin::SendMessageTool>::default())?;
                     registry.register(Box::<crate::builtin::TodoTool>::default())?;
                     registry.register(Box::<crate::builtin::MemoryTool>::default())?;
@@ -265,10 +262,7 @@ impl ToolRegistryBuilder {
             BuiltinToolset::Clarification => {
                 #[cfg(feature = "builtin-toolset")]
                 {
-                    registry.register_with_journal_authority(
-                        Box::<crate::builtin::ClarifyTool>::default(),
-                        ToolJournalAuthority::Clarification,
-                    )?;
+                    registry.register(Box::<crate::builtin::AskUserQuestionTool>::default())?;
                 }
                 #[cfg(not(feature = "builtin-toolset"))]
                 {

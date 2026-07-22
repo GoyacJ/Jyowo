@@ -26,7 +26,7 @@ fn default_blocklist_blocks_delegation_escape_tools() {
     for tool in [
         "agent",
         "delegate",
-        "clarify",
+        "AskUserQuestion",
         "memory_write",
         "send_user_message",
         "execute_code",

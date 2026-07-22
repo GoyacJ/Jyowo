@@ -10,13 +10,13 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "blob-file")]
 use fs2::FileExt;
 use harness_contracts::{
-    now, ActorId, BlobId, CheckpointId, ChildAttachment, ClientId, CommandId,
-    ConversationContextReference, Event, EventId, EventSource, EventSourceKind, IdParseError,
-    IndeterminateToolDecision, PermissionMode, QueueItemId, QueueItemProjection, RedactRules,
-    Redactor, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason, ScheduledTaskRunRecord,
-    ScheduledTaskRunStatus, SessionId, SubagentActorState, SubagentId, SubagentParentProjection,
-    SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TenantId,
-    TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
+    now, ActorId, AskUserQuestionOutcome, BlobId, CheckpointId, ChildAttachment, ClientId,
+    CommandId, ConversationContextReference, Event, EventId, EventSource, EventSourceKind,
+    IdParseError, IndeterminateToolDecision, PermissionMode, QueueItemId, QueueItemProjection,
+    RedactRules, Redactor, RequestId, RunId, RunSegmentId, RunState, RunTerminalReason,
+    ScheduledTaskRunRecord, ScheduledTaskRunStatus, SessionId, SubagentActorState, SubagentId,
+    SubagentParentProjection, SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection,
+    TenantId, TimelineItemProjection, ToolUseId, WorkspaceLeaseId, WorkspaceLeaseProjection,
     WorkspaceLeaseState, WorkspaceMode, WorkspaceSelection, MAX_DAEMON_TASK_EVENT_PAGE_BYTES,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -1359,6 +1359,30 @@ impl TaskStore {
     }
 
     #[must_use]
+    pub fn question_broker_authority() -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::QuestionBroker,
+                actor_id: None,
+                client_id: None,
+            },
+            principal_id: "system:question_broker".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn question_broker_command_authority(authority: &EventAuthority) -> EventAuthority {
+        EventAuthority {
+            source: EventSource {
+                kind: EventSourceKind::QuestionBroker,
+                actor_id: None,
+                client_id: authority.source.client_id,
+            },
+            principal_id: authority.principal_id.clone(),
+        }
+    }
+
+    #[must_use]
     pub(crate) fn engine_authority() -> EventAuthority {
         EventAuthority {
             source: EventSource {
@@ -2666,6 +2690,43 @@ impl TaskStore {
             .map_err(TaskStoreError::from)
     }
 
+    pub fn question_resolution_outcome(
+        &self,
+        task_id: TaskId,
+        request_id: RequestId,
+        revision: u64,
+    ) -> Result<Option<AskUserQuestionOutcome>, TaskStoreError> {
+        let connection = self.lock()?;
+        let payload_json = connection
+            .query_row(
+                "SELECT payload_json
+                 FROM event_log
+                 WHERE task_id = ?1
+                   AND event_type = 'question.resolved'
+                   AND json_extract(payload_json, '$.requestId') = ?2
+                   AND json_extract(payload_json, '$.revision') = ?3
+                 ORDER BY global_offset DESC
+                 LIMIT 1",
+                params![
+                    task_id.to_string(),
+                    request_id.to_string(),
+                    sqlite_integer(revision)?,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(payload_json) = payload_json else {
+            return Ok(None);
+        };
+        let payload: Value = serde_json::from_str(&payload_json)?;
+        let outcome = payload.get("outcome").cloned().ok_or_else(|| {
+            TaskStoreError::ProjectionIntegrity("question.resolved is missing outcome".to_owned())
+        })?;
+        serde_json::from_value(outcome)
+            .map(Some)
+            .map_err(TaskStoreError::from)
+    }
+
     pub fn task_events_after_global_offset(
         &self,
         task_id: TaskId,
@@ -2962,7 +3023,7 @@ impl TaskStore {
              FROM task_projection
              WHERE (?1 IS NULL OR task_id > ?1)
                AND json_extract(projection_json, '$.state') IN (
-                   'running', 'waiting_permission', 'yielding', 'interrupted'
+                   'running', 'waiting_permission', 'waiting_input', 'yielding', 'interrupted'
                )
              ORDER BY task_id ASC
              LIMIT ?2",
@@ -5453,6 +5514,7 @@ fn roll_forward_subagent_checkpoint_if_running(
                 run.state,
                 harness_contracts::RunState::Running
                     | harness_contracts::RunState::WaitingPermission
+                    | harness_contracts::RunState::WaitingInput
                     | harness_contracts::RunState::Yielding
             )
         });

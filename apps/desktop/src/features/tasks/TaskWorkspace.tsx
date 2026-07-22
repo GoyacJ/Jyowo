@@ -20,6 +20,7 @@ import { getCommandErrorMessage } from '@/shared/tauri/errors'
 import { pickAttachmentPath } from '@/shared/tauri/file-dialog'
 import { useCommandClient, useDaemonClient } from '@/shared/tauri/react'
 import { PendingPermissionDecision } from './PendingPermissionDecision'
+import { PendingQuestionForm } from './PendingQuestionForm'
 import { QueuedMessages } from './queue/QueuedMessages'
 import { normalizeModelConfigId, TaskComposer } from './TaskComposer'
 import { deriveLiveTaskSnapshot, liveTimelineItems } from './task-live-projection'
@@ -48,6 +49,11 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     queryKey: [...providerSettingsQueryKey, 'list', workspaceRoot ?? null],
   })
   const providerSettings = providerSettingsQuery.data
+  const executionSettingsQuery = useQuery({
+    queryFn: () => commandClient.getExecutionSettings(),
+    queryKey: ['execution-settings', 'effective'],
+  })
+  const executionSettings = executionSettingsQuery.data
   const requiresProviderCatalog =
     providerSettings?.configs.some((config) => !config.hasApiKey) ?? false
   const providerCatalogQuery = useQuery({
@@ -56,13 +62,8 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
     queryKey: ['model-provider-catalog'],
   })
   const providerCatalog = providerCatalogQuery.data
-  const [modelOverride, setModelOverride] = useState<{ taskId: TypedUlid; value: string } | null>(
-    null,
-  )
-  const [permissionOverride, setPermissionOverride] = useState<{
-    taskId: TypedUlid
-    value: PermissionMode
-  } | null>(null)
+  const [modelOverrides, setModelOverrides] = useState<Record<string, string>>({})
+  const [permissionOverrides, setPermissionOverrides] = useState<Record<string, PermissionMode>>({})
   const authenticationFreeProviders = new Set(
     providerCatalog?.providers
       .filter((provider) => provider.runtimeCapability.authScheme === 'none')
@@ -74,22 +75,24 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
         config.modelDescriptor.runtimeStatus.kind === 'runnable' &&
         (config.hasApiKey || authenticationFreeProviders.has(config.providerId)),
     ) ?? []
-  const modelConfigId = normalizeModelConfigId(
-    modelOverride?.taskId === taskId ? modelOverride.value : undefined,
-  )
-  const capabilityModelConfigId =
+  const modelConfigId = normalizeModelConfigId(modelOverrides[taskId])
+  const effectiveModelConfigId =
     modelConfigId ?? normalizeModelConfigId(providerSettings?.defaultConfigId ?? undefined)
-  const selectedModel = configuredModels.find((config) => config.id === capabilityModelConfigId)
+  const selectedModel = configuredModels.find((config) => config.id === effectiveModelConfigId)
   const modelSettingsError =
-    providerSettingsQuery.error ?? (requiresProviderCatalog ? providerCatalogQuery.error : null)
-  const permissionMode =
-    permissionOverride?.taskId === taskId ? permissionOverride.value : undefined
+    providerSettingsQuery.error ??
+    (requiresProviderCatalog ? providerCatalogQuery.error : null) ??
+    executionSettingsQuery.error
+  const permissionMode = permissionOverrides[taskId]
+  const effectivePermissionMode = permissionMode ?? executionSettings?.permissionMode
   return (
     <TaskWorkspaceView
       client={daemonClient}
       connectionError={task.connectionError}
       connectionState={task.connectionState}
       events={task.events}
+      effectiveModelConfigId={effectiveModelConfigId}
+      effectivePermissionMode={effectivePermissionMode}
       modelCapability={selectedModel?.modelDescriptor.conversationCapability ?? null}
       modelConfigId={modelConfigId}
       modelSettingsError={
@@ -102,18 +105,24 @@ export function TaskWorkspace({ taskId }: { taskId: TypedUlid }) {
         }`,
       }))}
       onListReferenceCandidates={() => daemonClient.listReferenceCandidates(taskId)}
-      onModelConfigChange={(value) => setModelOverride({ taskId, value })}
+      onModelConfigChange={(value) =>
+        setModelOverrides((current) => updateTaskModelOverride(current, taskId, value))
+      }
       onRetryModelSettings={() => {
         if (providerSettingsQuery.isError) {
           void providerSettingsQuery.refetch()
-          return
         }
-        if (requiresProviderCatalog) {
+        if (requiresProviderCatalog && providerCatalogQuery.isError) {
           void providerCatalogQuery.refetch()
+        }
+        if (executionSettingsQuery.isError) {
+          void executionSettingsQuery.refetch()
         }
       }}
       onPickAttachmentPath={pickAttachmentPath}
-      onPermissionModeChange={(value) => setPermissionOverride({ taskId, value })}
+      onPermissionModeChange={(value) =>
+        setPermissionOverrides((current) => ({ ...current, [taskId]: value }))
+      }
       permissionMode={permissionMode}
       snapshot={task.snapshot}
     />
@@ -125,6 +134,8 @@ export function TaskWorkspaceView({
   connectionState,
   client,
   events = [],
+  effectiveModelConfigId,
+  effectivePermissionMode,
   modelCapability,
   modelConfigId,
   modelConfigs,
@@ -142,6 +153,8 @@ export function TaskWorkspaceView({
   connectionError?: string | null
   connectionState: TaskConnectionState
   events?: TaskEventEnvelope[]
+  effectiveModelConfigId?: string
+  effectivePermissionMode?: PermissionMode
   modelCapability?: ConversationModelCapability | null
   modelConfigId?: string
   modelConfigs?: Array<{ id: string; label: string }>
@@ -244,6 +257,7 @@ export function TaskWorkspaceView({
   }
 
   const liveSnapshot = deriveLiveTaskSnapshot(snapshot, events)
+  const pendingQuestion = liveSnapshot.projection.pendingQuestion
   const items = liveSnapshot.timeline
   const queue = liveSnapshot.projection.queue
   const taskId = liveSnapshot.projection.taskId
@@ -257,7 +271,10 @@ export function TaskWorkspaceView({
       client?.loadTaskEvents &&
       client.readBlob,
   )
-  const fullscreenWorkbench = showWorkbench && workspaceLayoutMode === 'fullscreen'
+  const fullscreenWorkbench = Boolean(
+    showWorkbench &&
+      (workspaceLayoutMode === 'fullscreen' || workbenchSession?.viewportMode === 'fullscreen'),
+  )
 
   function openTarget(target: TaskWorkbenchTarget, trigger?: HTMLElement | null) {
     if (!isTaskWorkbenchSidebarTarget(target)) return
@@ -333,21 +350,9 @@ export function TaskWorkspaceView({
           ref={readingColumnRef}
           tabIndex={-1}
         >
-          <header className="flex items-start justify-between gap-6 border-border/70 border-b px-1 pb-4">
-            <div className="min-w-0">
-              <h1 className="truncate font-semibold text-lg tracking-[-0.015em]">
-                {liveSnapshot.projection.title}
-              </h1>
-              <p className="mt-1 text-muted-foreground text-xs capitalize">
-                {tTasks(taskStateKey(liveSnapshot.projection.state))}
-              </p>
-            </div>
-            <span className="task-workspace-header-status mt-1 shrink-0 text-muted-foreground text-xs">
-              {tTasks(connectionStateKey(connectionState))}
-            </span>
-          </header>
-          <div className="flex min-h-0 min-w-0 flex-1 pt-6">
+          <div className="flex min-h-0 min-w-0 flex-1 pt-4">
             <TaskTimeline
+              activeRun={liveSnapshot.projection.currentRun}
               blobLoader={client?.readBlob}
               focusRequest={timelineFocusRequest}
               items={items}
@@ -380,6 +385,14 @@ export function TaskWorkspaceView({
                   taskId={liveSnapshot.projection.taskId}
                 />
               ) : null}
+              {pendingQuestion && executeCommand ? (
+                <PendingQuestionForm
+                  executeCommand={executeCommand}
+                  key={`${pendingQuestion.requestId}:${pendingQuestion.revision}`}
+                  pending={pendingQuestion}
+                  taskId={liveSnapshot.projection.taskId}
+                />
+              ) : null}
               <QueuedMessages
                 client={client}
                 expectedStreamVersion={commandStreamVersion}
@@ -391,7 +404,10 @@ export function TaskWorkspaceView({
               <TaskComposer
                 client={client}
                 connectionState={connectionState}
+                currentRun={liveSnapshot.projection.currentRun}
                 executeCommand={executeCommand}
+                effectiveModelConfigId={effectiveModelConfigId}
+                effectivePermissionMode={effectivePermissionMode}
                 modelCapability={modelCapability}
                 modelConfigId={modelConfigId}
                 modelConfigs={modelConfigs}
@@ -442,34 +458,21 @@ export function TaskWorkspaceView({
   )
 }
 
+function updateTaskModelOverride(
+  current: Record<string, string>,
+  taskId: TypedUlid,
+  value: string,
+) {
+  const normalized = normalizeModelConfigId(value)
+  if (normalized) return { ...current, [taskId]: normalized }
+  const { [taskId]: _removed, ...remaining } = current
+  return remaining
+}
+
 type TaskWorkspaceLayoutMode = 'docked' | 'fullscreen' | 'overlay'
 
 export function taskWorkspaceLayoutModeForWidth(width: number): TaskWorkspaceLayoutMode {
   if (width < 720) return 'fullscreen'
   if (width < 1040) return 'overlay'
   return 'docked'
-}
-
-function connectionStateKey(state: TaskConnectionState) {
-  const keys = {
-    connected: 'workspace.connection.connected',
-    connecting: 'workspace.connection.connecting',
-    disconnected: 'workspace.connection.disconnected',
-    protocol_error: 'workspace.connection.protocolError',
-    resyncing: 'workspace.connection.resyncing',
-  } as const
-  return keys[state]
-}
-
-function taskStateKey(state: TaskSnapshot['projection']['state']) {
-  const keys = {
-    completed: 'workspace.state.completed',
-    failed: 'workspace.state.failed',
-    idle: 'workspace.state.idle',
-    interrupted: 'workspace.state.interrupted',
-    running: 'workspace.state.running',
-    waiting_permission: 'workspace.state.waitingPermission',
-    yielding: 'workspace.state.yielding',
-  } as const
-  return keys[state]
 }

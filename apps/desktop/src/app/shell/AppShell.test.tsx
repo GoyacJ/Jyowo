@@ -89,6 +89,7 @@ describe('AppShell', () => {
   afterEach(() => {
     act(() => {
       uiStore.getState().setSidebarCollapsed(false)
+      uiStore.getState().setSidebarWidth(300)
       uiStore.getState().setContextPanelCollapsed(true)
       uiStore.getState().setInspectorOpen(false)
       uiStore.getState().clearActiveRun()
@@ -112,6 +113,10 @@ describe('AppShell', () => {
 
     const workspaceNavigation = screen.getByRole('complementary', { name: 'Workspace' })
     expect(workspaceNavigation).not.toHaveClass('hidden')
+    expect(
+      within(workspaceNavigation).queryByRole('button', { name: 'Collapse sidebar' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     expect(
       within(workspaceNavigation).getByRole('button', { name: 'New conversation' }),
     ).toBeInTheDocument()
@@ -148,6 +153,36 @@ describe('AppShell', () => {
     expect(within(statusBar).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
+  it('places the selected conversation name in the workspace top bar', () => {
+    const selectedTaskId = '01J00000000000000000000991'
+    window.history.pushState(null, '', `/?taskId=${selectedTaskId}`)
+    act(() => {
+      taskStoreFor(selectedTaskId)
+        .getState()
+        .replaceSnapshot({
+          projection: {
+            archived: false,
+            lastGlobalOffset: 0,
+            queue: [],
+            state: 'idle',
+            streamVersion: 0,
+            taskId: selectedTaskId,
+            title: 'Repair scheduler recovery',
+          },
+          snapshotOffset: 0,
+          timeline: [],
+        })
+    })
+
+    renderAppShell()
+
+    expect(
+      within(screen.getByRole('banner')).getByRole('heading', {
+        name: 'Repair scheduler recovery',
+      }),
+    ).toBeInTheDocument()
+  })
+
   it('routes settings from the bottom status bar', () => {
     renderAppShell()
 
@@ -174,12 +209,57 @@ describe('AppShell', () => {
     expect(
       within(workspaceNavigation).queryByRole('button', { name: 'Skills' }),
     ).not.toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: 'Resize sidebar' })).not.toBeInTheDocument()
   })
 
-  it('opens the command palette from the top actions and routes commands', async () => {
+  it('resizes the sidebar with pointer and keyboard input', () => {
+    const { container } = renderAppShell()
+    const separator = screen.getByRole('separator', { name: 'Resize sidebar' })
+
+    expect(separator).toHaveClass('h-full')
+    expect(separator.parentElement).toHaveClass('pointer-events-auto')
+
+    fireEvent.keyDown(separator, { key: 'ArrowRight' })
+
+    expect(uiStore.getState().sidebarWidth).toBe(310)
+    expect(container.firstElementChild?.firstElementChild).toHaveStyle({
+      gridTemplateColumns: '310px minmax(0,1fr)',
+    })
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 310, pointerId: 1 })
+    fireEvent.pointerMove(separator, { clientX: 500, pointerId: 1 })
+    fireEvent.pointerUp(separator, { pointerId: 1 })
+
+    expect(uiStore.getState().sidebarWidth).toBe(420)
+    expect(container.firstElementChild?.firstElementChild).toHaveStyle({
+      gridTemplateColumns: '420px minmax(0,1fr)',
+    })
+  })
+
+  it('collapses to the icon rail and restores the previous expanded width', () => {
+    const { container } = renderAppShell()
+    const layout = container.firstElementChild?.firstElementChild
+
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize sidebar' }), { key: 'End' })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+
+    expect(uiStore.getState().sidebarCollapsed).toBe(true)
+    expect(layout).toHaveStyle({ gridTemplateColumns: '48px minmax(0,1fr)' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+
+    expect(uiStore.getState().sidebarCollapsed).toBe(false)
+    expect(layout).toHaveStyle({ gridTemplateColumns: '420px minmax(0,1fr)' })
+  })
+
+  it('opens the command palette from global search in the sidebar and routes commands', async () => {
     renderAppShell()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    const workspaceNavigation = screen.getByRole('complementary', { name: 'Workspace' })
+    expect(
+      within(screen.getByRole('banner')).queryByRole('button', { name: 'Open command palette' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(within(workspaceNavigation).getByRole('button', { name: 'Open global search' }))
 
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument()
 

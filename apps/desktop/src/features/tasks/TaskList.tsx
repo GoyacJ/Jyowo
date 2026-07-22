@@ -18,9 +18,10 @@ import {
   Pin,
   PinOff,
   Plus,
+  Search,
   Trash2,
 } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { TaskProjection, TypedUlid } from '@/generated/daemon-protocol'
@@ -90,6 +91,7 @@ export function TaskList({
   loading = false,
   onAddProject,
   onCreateConversation,
+  onOpenGlobalSearch,
   onMoveProject,
   onRemoveProject,
   onRemoveTask,
@@ -114,6 +116,7 @@ export function TaskList({
   loading?: boolean
   onAddProject: () => MaybePromise
   onCreateConversation: (root: string) => MaybePromise
+  onOpenGlobalSearch: () => void
   onMoveProject: (path: string, direction: MoveProjectDirection) => MaybePromise
   onRemoveProject: (path: string) => MaybePromise
   onRemoveTask: (task: TaskProjection) => MaybePromise
@@ -135,7 +138,24 @@ export function TaskList({
 
   return (
     <nav aria-label={t('sidebar.navigationLabel')} className="flex min-h-0 flex-1 flex-col">
-      <div className="space-y-1 px-2 pb-2">
+      <div className="space-y-1 px-2 py-2">
+        <button
+          aria-label={t('actions.openGlobalSearch')}
+          className={cn(
+            'flex h-9 w-full items-center rounded-md text-muted-foreground text-sm transition-colors hover:bg-row-muted hover:text-foreground',
+            compact ? 'justify-center px-0' : 'gap-2 px-2.5',
+          )}
+          onClick={onOpenGlobalSearch}
+          type="button"
+        >
+          <Search aria-hidden="true" className="size-4" />
+          {compact ? null : (
+            <>
+              <span>{t('nav.globalSearch')}</span>
+              <kbd className="ml-auto font-sans text-[11px] text-muted-foreground">⌘ K</kbd>
+            </>
+          )}
+        </button>
         <button
           aria-label={t('actions.newConversation')}
           className={cn(
@@ -560,10 +580,26 @@ function TaskRow({
   task: TaskProjection
 }) {
   const { t } = useTranslation('shell')
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(task.title)
+  const titleInputRef = useRef<HTMLInputElement>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [removeOpen, setRemoveOpen] = useState(false)
   const status = taskStatus(task, t)
+
+  useEffect(() => {
+    if (!editingTitle) return
+    setTitleDraft(task.title)
+    titleInputRef.current?.focus()
+    titleInputRef.current?.select()
+  }, [editingTitle, task.title])
+
+  function saveInlineTitle() {
+    const title = titleDraft.trim()
+    setEditingTitle(false)
+    if (title && title !== task.title) void onRenameTask(task, title)
+  }
 
   return (
     <li>
@@ -574,21 +610,48 @@ function TaskRow({
           active && 'bg-selection text-foreground',
         )}
       >
-        <button
-          aria-current={active ? 'page' : undefined}
-          aria-label={compact ? `${task.title}, ${status.label}` : undefined}
-          className={cn(
-            'flex min-w-0 flex-1 items-center text-left',
-            compact ? 'h-9 justify-center' : 'gap-2 px-1.5 py-1.5',
-          )}
-          onClick={() => onSelectTask(task.taskId)}
-          title={compact ? task.title : status.label}
-          type="button"
-        >
-          <TaskStatusIcon status={status.key} />
-          {compact ? null : <span className="truncate text-[13px]">{task.title}</span>}
-        </button>
-        {compact ? null : (
+        {editingTitle ? (
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1">
+            <TaskStatusIcon status={status.key} />
+            <input
+              aria-label={t('sidebar.conversationName')}
+              className="h-6 min-w-0 flex-1 rounded border border-input bg-background px-1.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              maxLength={120}
+              onBlur={saveInlineTitle}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  saveInlineTitle()
+                } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setEditingTitle(false)
+                }
+              }}
+              ref={titleInputRef}
+              value={titleDraft}
+            />
+          </div>
+        ) : (
+          <button
+            aria-current={active ? 'page' : undefined}
+            aria-label={compact ? `${task.title}, ${status.label}` : undefined}
+            className={cn(
+              'flex min-w-0 flex-1 items-center text-left',
+              compact ? 'h-9 justify-center' : 'gap-2 px-1.5 py-1.5',
+            )}
+            onClick={() => onSelectTask(task.taskId)}
+            onDoubleClick={() => {
+              if (!compact) setEditingTitle(true)
+            }}
+            title={compact ? task.title : status.label}
+            type="button"
+          >
+            <TaskStatusIcon status={status.key} />
+            {compact ? null : <span className="truncate text-[13px]">{task.title}</span>}
+          </button>
+        )}
+        {compact || editingTitle ? null : (
           <>
             <button
               aria-label={`${task.pinned ? t('sidebar.unpin') : t('sidebar.pin')} ${task.title}`}
@@ -813,6 +876,9 @@ function taskStatus(
   }
   if (task.state === 'waiting_permission') {
     return { key: 'waiting', label: t('sidebar.status.waitingPermission') }
+  }
+  if (task.state === 'waiting_input') {
+    return { key: 'waiting', label: t('sidebar.status.waitingInput') }
   }
   if (task.queue.some((item) => item.state === 'queued' || item.state === 'promoting')) {
     const count = task.queue.filter(

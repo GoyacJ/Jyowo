@@ -364,8 +364,8 @@ describe('Composer', () => {
       target: { value: '/' },
     })
 
-    expect(await screen.findByRole('menu', { name: 'Slash commands' })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: 'Plan' })).toBeInTheDocument()
+    expect(await screen.findByRole('listbox', { name: 'Slash commands' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Plan' })).toBeInTheDocument()
   })
 
   it('opens the reference combobox from @ and supports keyboard selection', async () => {
@@ -508,12 +508,12 @@ describe('Composer', () => {
     fireEvent.change(screen.getByPlaceholderText('Ask Jyowo anything about this project…'), {
       target: { value: '/' },
     })
-    expect(await screen.findByRole('menu', { name: 'Slash commands' })).toBeInTheDocument()
+    expect(await screen.findByRole('listbox', { name: 'Slash commands' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Reference project object' }))
 
     expect(await screen.findByRole('listbox', { name: 'Reference project object' })).toBeVisible()
-    expect(screen.queryByRole('menu', { name: 'Slash commands' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('listbox', { name: 'Slash commands' })).not.toBeInTheDocument()
   })
 
   it('adds skill, tool, and MCP references from the picker', async () => {

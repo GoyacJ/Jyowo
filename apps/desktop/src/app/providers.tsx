@@ -149,12 +149,14 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
   const theme = useUiStore((state) => state.theme)
   const locale = useUiStore((state) => state.locale)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
   const sidebarSections = useUiStore((state) => state.sidebarSections)
   const expandedProjects = useUiStore((state) => state.expandedProjects)
   const taskWorkbenchWidth = useUiStore((state) => state.taskWorkbenchWidth)
   const setTheme = useUiStore((state) => state.setTheme)
   const setLocale = useUiStore((state) => state.setLocale)
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const setSidebarSectionExpanded = useUiStore((state) => state.setSidebarSectionExpanded)
   const setProjectExpanded = useUiStore((state) => state.setProjectExpanded)
   const setTaskWorkbenchWidth = useUiStore((state) => state.setTaskWorkbenchWidth)
@@ -180,6 +182,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
         setTheme(preferences.theme)
         setLocale(preferences.locale)
         setSidebarCollapsed(preferences.sidebarCollapsed)
+        setSidebarWidth(preferences.sidebarWidth)
         setSidebarSectionExpanded('pinned', preferences.sidebarSections.pinned)
         setSidebarSectionExpanded('projects', preferences.sidebarSections.projects)
         setSidebarSectionExpanded('conversations', preferences.sidebarSections.conversations)
@@ -210,6 +213,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setLocale,
     setProjectExpanded,
     setSidebarCollapsed,
+    setSidebarWidth,
     setSidebarSectionExpanded,
     setTaskWorkbenchWidth,
     setTheme,
@@ -224,6 +228,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
       expandedProjects,
       locale,
       sidebarCollapsed,
+      sidebarWidth,
       sidebarSections,
       taskWorkbenchWidth,
       theme,
@@ -235,6 +240,7 @@ function UiPreferencesProvider({ children }: { children: ReactNode }) {
     hydrated,
     locale,
     sidebarCollapsed,
+    sidebarWidth,
     sidebarSections,
     taskWorkbenchWidth,
     theme,

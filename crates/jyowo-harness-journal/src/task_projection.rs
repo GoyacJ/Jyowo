@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use harness_contracts::{
-    ActorId, ChildAttachment, DeltaChunk, Event, MessageContent, MessagePart, PromotionMode,
-    QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
+    ActorId, ChildAttachment, DeltaChunk, DenyReason, Event, MessageContent, MessagePart,
+    PromotionMode, QueueItemProjection, QueueItemState, RunProjection, RunState, RunTerminalReason,
     SubagentProjection, TaskEventEnvelope, TaskId, TaskProjection, TaskState,
     TimelineArtifactPresentation, TimelineArtifactProjection, TimelineArtifactSurface,
     TimelineContentBlock, TimelineEventKind, TimelineItemProjection, TimelineNoticeLevel,
@@ -219,7 +219,10 @@ fn reduce_task(
                 if run.segment_id != *segment_id
                     || !matches!(
                         run.state,
-                        RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                        RunState::Running
+                            | RunState::WaitingPermission
+                            | RunState::WaitingInput
+                            | RunState::Yielding
                     )
                 {
                     return invalid_transition("task.actor_failed does not match the active run");
@@ -245,12 +248,16 @@ fn reduce_task(
             } else if projection.current_run.as_ref().is_some_and(|run| {
                 matches!(
                     run.state,
-                    RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                    RunState::Running
+                        | RunState::WaitingPermission
+                        | RunState::WaitingInput
+                        | RunState::Yielding
                 )
             }) {
                 return invalid_transition("task.actor_failed requires the active run segment id");
             }
             projection.pending_permission = None;
+            projection.pending_question = None;
             projection.state = TaskState::Failed;
         }
         TaskEvent::RunStarted {
@@ -258,13 +265,16 @@ fn reduce_task(
             started_at,
             ..
         } => {
-            if projection.pending_permission.is_some() {
-                return invalid_transition("run.started requires no pending permission");
+            if projection.pending_permission.is_some() || projection.pending_question.is_some() {
+                return invalid_transition("run.started requires no pending interaction");
             }
             if projection.current_run.as_ref().is_some_and(|run| {
                 matches!(
                     run.state,
-                    RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                    RunState::Running
+                        | RunState::WaitingPermission
+                        | RunState::WaitingInput
+                        | RunState::Yielding
                 )
             }) {
                 return invalid_transition("run.started requires no active run");
@@ -289,6 +299,11 @@ fn reduce_task(
             if projection.pending_permission.is_some() {
                 return invalid_transition(
                     "run.completed requires permission resolution or invalidation",
+                );
+            }
+            if projection.pending_question.is_some() {
+                return invalid_transition(
+                    "run.completed requires question resolution or invalidation",
                 );
             }
             let run = projection
@@ -524,6 +539,54 @@ fn reduce_task(
             projection.state = if let Some(run) = projection.current_run.as_mut() {
                 if run.state != RunState::WaitingPermission {
                     return invalid_transition("pending permission run is not waiting");
+                }
+                run.state = RunState::Running;
+                TaskState::Running
+            } else {
+                TaskState::Idle
+            };
+        }
+        TaskEvent::QuestionRequested { question } => {
+            if projection.pending_question.is_some() {
+                return invalid_transition("question.requested requires no pending question");
+            }
+            if projection.pending_permission.is_some() {
+                return invalid_transition("question.requested conflicts with pending permission");
+            }
+            let run = projection
+                .current_run
+                .as_mut()
+                .ok_or_else(|| projector_error("question.requested requires an active run"))?;
+            if run.segment_id != question.segment_id || run.state != RunState::Running {
+                return invalid_transition(
+                    "question.requested requires the current running segment",
+                );
+            }
+            projection.pending_question = Some(question.clone());
+            run.state = RunState::WaitingInput;
+            projection.state = TaskState::WaitingInput;
+        }
+        TaskEvent::QuestionResolved {
+            request_id,
+            revision,
+            ..
+        }
+        | TaskEvent::QuestionInvalidated {
+            request_id,
+            revision,
+            ..
+        } => {
+            let pending = projection
+                .pending_question
+                .as_ref()
+                .ok_or_else(|| projector_error("question resolution requires a pending request"))?;
+            if pending.request_id != *request_id || pending.revision != *revision {
+                return invalid_transition("question resolution does not match pending request");
+            }
+            projection.pending_question = None;
+            projection.state = if let Some(run) = projection.current_run.as_mut() {
+                if run.state != RunState::WaitingInput {
+                    return invalid_transition("pending question run is not waiting for input");
                 }
                 run.state = RunState::Running;
                 TaskState::Running
@@ -804,6 +867,9 @@ fn project_entity_tables(
                 params![envelope.task_id.to_string(), request_id.to_string()],
             )?;
         }
+        TaskEvent::QuestionRequested { .. }
+        | TaskEvent::QuestionResolved { .. }
+        | TaskEvent::QuestionInvalidated { .. } => {}
         TaskEvent::SubagentSpawned {
             actor_id,
             started_at,
@@ -922,7 +988,10 @@ fn project_timeline(
         let active_segment_id = reduced.projection.current_run.as_ref().and_then(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::WaitingPermission | RunState::Yielding
+                RunState::Running
+                    | RunState::WaitingPermission
+                    | RunState::WaitingInput
+                    | RunState::Yielding
             )
             .then_some(run.segment_id)
         });
@@ -1084,6 +1153,35 @@ fn project_timeline(
             TimelineEventKind::Permission,
             "Permission expired after restart".into(),
             None,
+            false,
+        ),
+        TaskEvent::QuestionRequested { question } => (
+            TimelineEventKind::Notice,
+            question.questions.first().map_or_else(
+                || "User input requested".into(),
+                |item| item.question.clone(),
+            ),
+            Some(question.segment_id),
+            false,
+        ),
+        TaskEvent::QuestionResolved { .. } => (
+            TimelineEventKind::Notice,
+            "User input received".into(),
+            reduced
+                .projection
+                .current_run
+                .as_ref()
+                .map(|run| run.segment_id),
+            false,
+        ),
+        TaskEvent::QuestionInvalidated { .. } => (
+            TimelineEventKind::Notice,
+            "User input request expired".into(),
+            reduced
+                .projection
+                .current_run
+                .as_ref()
+                .map(|run| run.segment_id),
             false,
         ),
         TaskEvent::SubagentSpawned { .. } => (
@@ -1363,6 +1461,7 @@ fn project_engine_timeline(
                 Some(artifact.kind.clone()),
                 artifact.blob_ref.as_ref(),
                 artifact.preview.clone(),
+                artifact.source_tool_use_id.map(|id| id.to_string()),
             );
             artifact_timeline_item(
                 envelope,
@@ -1383,6 +1482,7 @@ fn project_engine_timeline(
                 artifact.kind.clone(),
                 artifact.blob_ref.as_ref(),
                 artifact.preview.clone(),
+                artifact.source_tool_use_id.map(|id| id.to_string()),
             );
             artifact_timeline_item(
                 envelope,
@@ -1425,21 +1525,25 @@ fn project_engine_timeline(
                 None,
                 None,
                 None,
+                false,
             );
         }
         Event::ToolUseDenied(denied) => {
+            let reason = denied_tool_result_message(&denied.reason);
             return update_tool_timeline(
                 transaction,
                 envelope,
                 run_segment_id,
                 denied.tool_use_id.to_string(),
                 TimelineToolStatus::Denied,
+                Some(bounded_tool_text(&reason)),
+                Some(bounded_tool_preview(&reason)),
                 None,
-                None,
-                None,
+                false,
             );
         }
         Event::ToolUseCompleted(completed) => {
+            let command_failed = tool_result_command_failed(&completed.result);
             return update_tool_timeline(
                 transaction,
                 envelope,
@@ -1447,8 +1551,9 @@ fn project_engine_timeline(
                 completed.tool_use_id.to_string(),
                 TimelineToolStatus::Completed,
                 Some(tool_result_summary(&completed.result)),
-                tool_result_preview(&completed.result),
+                tool_result_command_output(&completed.result),
                 Some(completed.duration_ms),
+                command_failed,
             );
         }
         Event::ToolUseFailed(failed) => {
@@ -1461,6 +1566,7 @@ fn project_engine_timeline(
                 Some(bounded_tool_text(&failed.error.message)),
                 Some(bounded_tool_preview(&failed.error.message)),
                 None,
+                false,
             );
         }
         Event::CompactionApplied(_) => engine_timeline_item(
@@ -1563,6 +1669,7 @@ fn update_tool_timeline(
     result_summary: Option<String>,
     output: Option<String>,
     duration_ms: Option<u64>,
+    command_failed: bool,
 ) -> Result<(), TaskStoreError> {
     let mut item = {
         let mut statement = transaction.prepare(
@@ -1609,6 +1716,11 @@ fn update_tool_timeline(
 
     let Some(tool) = item.tool.as_mut() else {
         return integrity("tool timeline item lost its tool projection");
+    };
+    let status = if command_failed && tool.operation == TimelineToolOperation::Command {
+        TimelineToolStatus::Failed
+    } else {
+        status
     };
     tool.status = status;
     if result_summary.is_some() {
@@ -1754,14 +1866,45 @@ fn tool_result_summary(result: &ToolResult) -> String {
     }
 }
 
-fn tool_result_preview(result: &ToolResult) -> Option<String> {
+fn tool_result_command_failed(result: &ToolResult) -> bool {
+    match result {
+        ToolResult::Structured(value) => structured_result_failed(value),
+        ToolResult::Mixed(parts) => parts.iter().any(|part| {
+            matches!(
+                part,
+                ToolResultPart::Structured { value, .. } if structured_result_failed(value)
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn structured_result_failed(value: &serde_json::Value) -> bool {
+    value.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+}
+
+fn denied_tool_result_message(reason: &DenyReason) -> String {
+    match reason {
+        DenyReason::UserDenied => "tool use denied by user".to_owned(),
+        DenyReason::RuleDenied => "tool use denied by rule".to_owned(),
+        DenyReason::DefaultModeDenied => "tool use denied by permission mode".to_owned(),
+        DenyReason::HookBlocked { handler_id } => {
+            format!("tool use blocked by hook `{handler_id}`")
+        }
+        DenyReason::SubagentBlocked => "tool use denied for subagent".to_owned(),
+        DenyReason::PolicyDenied => "tool use denied by runtime policy".to_owned(),
+        DenyReason::Other(message) => format!("tool use denied: {message}"),
+        _ => "tool use denied".to_owned(),
+    }
+}
+
+fn tool_result_command_output(result: &ToolResult) -> Option<String> {
     let preview = match result {
         ToolResult::Text(text) => Some(text.clone()),
-        ToolResult::Structured(value) => serde_json::to_string_pretty(value).ok(),
         ToolResult::Mixed(parts) => {
             let text = parts
                 .iter()
-                .filter_map(tool_result_part_preview)
+                .filter_map(tool_result_part_command_output)
                 .collect::<Vec<_>>()
                 .join("\n");
             (!text.is_empty()).then_some(text)
@@ -1772,19 +1915,10 @@ fn tool_result_preview(result: &ToolResult) -> Option<String> {
     Some(bounded_tool_preview(&preview))
 }
 
-fn tool_result_part_preview(part: &ToolResultPart) -> Option<String> {
+fn tool_result_part_command_output(part: &ToolResultPart) -> Option<String> {
     match part {
         ToolResultPart::Text { text } | ToolResultPart::Code { text, .. } => Some(text.clone()),
-        ToolResultPart::Structured { value, .. } => serde_json::to_string_pretty(value).ok(),
-        ToolResultPart::Blob { summary, .. } | ToolResultPart::Reference { summary, .. } => {
-            summary.clone()
-        }
-        ToolResultPart::Table { caption, .. } => caption.clone(),
-        ToolResultPart::Progress { detail, .. } => detail.clone(),
         ToolResultPart::Error { message, .. } => Some(message.clone()),
-        ToolResultPart::Artifact { preview, title, .. } => {
-            preview.clone().or_else(|| Some(title.clone()))
-        }
         _ => None,
     }
 }
@@ -1822,6 +1956,7 @@ fn timeline_artifact_projection(
     artifact_kind: Option<String>,
     blob_ref: Option<&harness_contracts::BlobRef>,
     preview: Option<String>,
+    source_tool_use_id: Option<String>,
 ) -> TimelineArtifactProjection {
     let media_type = blob_ref
         .and_then(|blob| blob.content_type.clone())
@@ -1840,6 +1975,7 @@ fn timeline_artifact_projection(
             preferred_surface: Some(preferred_surface),
             preview_blob_id: None,
         }),
+        source_tool_use_id,
     }
 }
 
@@ -1917,6 +2053,7 @@ fn default_content_blocks(
                         }),
                         preview_blob_id: None,
                     }),
+                    source_tool_use_id: None,
                 },
             }]
         }
@@ -1958,6 +2095,7 @@ fn user_message_content_blocks(
                     preferred_surface: Some(TimelineArtifactSurface::Card),
                     preview_blob_id: None,
                 }),
+                source_tool_use_id: None,
             },
         });
     }
@@ -2037,6 +2175,7 @@ fn message_artifact_block(
                 )),
                 preview_blob_id: None,
             }),
+            source_tool_use_id: None,
         },
     }
 }
@@ -2285,6 +2424,7 @@ pub(crate) fn empty_task_projection(task_id: TaskId) -> TaskProjection {
         last_global_offset: 0,
         current_run: None,
         pending_permission: None,
+        pending_question: None,
         queue: Vec::new(),
         workspace: None,
         actor_id: None,
@@ -2396,8 +2536,41 @@ fn integrity<T>(message: impl Into<String>) -> Result<T, TaskStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{artifact_timeline_kind, preferred_artifact_surface, timeline_artifact_projection};
-    use harness_contracts::{BlobId, BlobRef, TimelineArtifactSurface, TimelineEventKind};
+    use super::{
+        artifact_timeline_kind, preferred_artifact_surface, timeline_artifact_projection,
+        tool_result_command_failed, tool_result_command_output,
+    };
+    use harness_contracts::{
+        BlobId, BlobRef, TimelineArtifactSurface, TimelineEventKind, ToolResult, ToolResultPart,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn detects_unsuccessful_command_results_with_streamed_output() {
+        let result = ToolResult::Mixed(vec![
+            ToolResultPart::Text {
+                text: "command output".into(),
+            },
+            ToolResultPart::Structured {
+                value: json!({ "success": false, "exit_status": { "code": 127 } }),
+                schema_ref: None,
+            },
+        ]);
+
+        assert!(tool_result_command_failed(&result));
+        assert_eq!(
+            tool_result_command_output(&result).as_deref(),
+            Some("command output")
+        );
+        assert!(!tool_result_command_failed(&ToolResult::Structured(
+            json!({ "success": true, "exit_status": { "code": 0 } })
+        )));
+        assert!(tool_result_command_output(&ToolResult::Structured(json!({
+            "success": true,
+            "exit_status": { "code": 0 }
+        })))
+        .is_none());
+    }
 
     #[test]
     fn preserves_object_identity_for_generated_artifacts() {
@@ -2424,6 +2597,7 @@ mod tests {
                 content_hash: [1; 32],
                 content_type: Some("video/mp4".into()),
             }),
+            None,
             None,
         );
 

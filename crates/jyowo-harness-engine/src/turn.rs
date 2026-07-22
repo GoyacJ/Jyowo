@@ -22,7 +22,7 @@ use harness_contracts::{
     MessageId, MessageMetadata, MessagePart, MessageRole, ModelError, ModelRef,
     ModelRequestOptions, PermissionMode, PricingSnapshotId, RedactRules, Redactor, RequestId,
     RunEndedEvent, RunId, RunModelSnapshot, RunStartedEvent, SessionId, SkillContextConsumedEvent,
-    SkillContextProviderAcceptedEvent, TeamId, TenantId, ToolDescriptor, ToolError,
+    SkillContextProviderAcceptedEvent, StopReason, TeamId, TenantId, ToolDescriptor, ToolError,
     ToolErrorPayload, ToolResult, ToolResultPart, ToolUseCompletedEvent, ToolUseDeniedEvent,
     ToolUseFailedEvent, ToolUseId, ToolUseRequestedEvent, ToolUseStartedEvent, TrustLevel,
     TurnInput, UsageAccumulatedEvent, UsageSnapshot,
@@ -287,7 +287,7 @@ pub(crate) async fn run_turn(
             tools: assembled_tools,
             system: assembled.system,
             temperature: None,
-            max_tokens: None,
+            max_tokens: Some(engine.model_snapshot.max_output_tokens),
             stream: true,
             cache_breakpoints: assembled.cache_breakpoints,
             protocol: engine.protocol,
@@ -424,7 +424,7 @@ pub(crate) async fn run_turn(
                     tools: compacted_tools,
                     system: compacted.prompt.system,
                     temperature: None,
-                    max_tokens: None,
+                    max_tokens: Some(engine.model_snapshot.max_output_tokens),
                     stream: true,
                     cache_breakpoints: compacted.prompt.cache_breakpoints,
                     protocol: engine.protocol,
@@ -701,6 +701,13 @@ pub(crate) async fn run_turn(
             .await?
         {
             return Ok(Box::pin(stream::iter(emitted)));
+        }
+
+        if matches!(assembly.stop_reason(), StopReason::MaxIterations) {
+            let error =
+                "model output reached the token limit; incomplete tool calls were not executed";
+            finalize_run_error(engine, &session, &mut emitted, ctx.run_id, error).await?;
+            return Err(engine_error(error));
         }
 
         working_messages.push(next_input.message.clone());
@@ -2900,10 +2907,10 @@ fn tool_result_events(
             }
             events
         }
-        Err(ToolError::PermissionDenied(_)) => {
+        Err(ToolError::PermissionDenied(message)) => {
             vec![Event::ToolUseDenied(ToolUseDeniedEvent {
                 tool_use_id: result.tool_use_id,
-                reason: DenyReason::PolicyDenied,
+                reason: DenyReason::Other(message.clone()),
                 at: harness_contracts::now(),
             })]
         }

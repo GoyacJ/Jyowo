@@ -240,7 +240,10 @@ pub fn decide_consume_next(
     if projection.current_run.as_ref().is_some_and(|run| {
         matches!(
             run.state,
-            RunState::Running | RunState::WaitingPermission | RunState::Yielding
+            RunState::Running
+                | RunState::WaitingPermission
+                | RunState::WaitingInput
+                | RunState::Yielding
         )
     }) {
         return Err(CommandRejection::InvalidCommand {

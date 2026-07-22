@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { EmptyState } from './empty-state'
 import { FieldControl, FieldDescription, FieldError } from './field'
-import { RadioCard } from './radio-card-group'
+import { CheckboxCard, RadioCard } from './radio-card-group'
 import { Select } from './select'
 import { Textarea } from './textarea'
 
@@ -33,12 +33,16 @@ describe('form controls', () => {
         <RadioCard name="mode" value="auto">
           <span>Auto</span>
         </RadioCard>
+        <CheckboxCard name="targets" value="desktop">
+          <span>Desktop</span>
+        </CheckboxCard>
         <EmptyState>No items</EmptyState>
       </div>,
     )
 
     expect(screen.getByLabelText('Prompt')).toHaveClass('border-input', 'bg-background')
     expect(screen.getByLabelText('Auto')).toHaveAttribute('type', 'radio')
+    expect(screen.getByLabelText('Desktop')).toHaveAttribute('type', 'checkbox')
     expect(screen.getByText('No items')).toHaveClass('border-dashed', 'bg-background')
   })
 })

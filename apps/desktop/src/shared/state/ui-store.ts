@@ -2,9 +2,12 @@ import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
 import { type AppLocale, DEFAULT_APP_LOCALE } from '@/shared/i18n/locales'
+import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from '@/shared/state/sidebar-layout'
 import type {
   TaskWorkbenchSession,
   TaskWorkbenchTarget,
+  TaskWorkbenchViewportGeometry,
+  TaskWorkbenchViewportMode,
   WorkbenchSelection,
 } from '@/shared/state/workbench-selection'
 import {
@@ -14,6 +17,8 @@ import {
   DEFAULT_TASK_WORKBENCH_WIDTH,
   openTaskWorkbenchTarget,
   setTaskWorkbenchTabPinned,
+  setTaskWorkbenchViewportGeometry,
+  setTaskWorkbenchViewportMode,
 } from '@/shared/state/workbench-selection'
 
 type ThemeMode = 'light' | 'dark' | 'system'
@@ -49,6 +54,7 @@ export interface UiState {
   theme: ThemeMode
   locale: AppLocale
   sidebarCollapsed: boolean
+  sidebarWidth: number
   sidebarSections: SidebarSections
   expandedProjects: Record<string, boolean>
   contextPanelCollapsed: boolean
@@ -66,6 +72,7 @@ export interface UiState {
   setTheme: (theme: ThemeMode) => void
   setLocale: (locale: AppLocale) => void
   setSidebarCollapsed: (sidebarCollapsed: boolean) => void
+  setSidebarWidth: (sidebarWidth: number) => void
   setSidebarSectionExpanded: (section: SidebarSection, expanded: boolean) => void
   setProjectExpanded: (path: string, expanded: boolean) => void
   setContextPanelCollapsed: (contextPanelCollapsed: boolean) => void
@@ -76,6 +83,11 @@ export interface UiState {
   activateTaskWorkbenchTab: (taskId: string, tabId: string) => void
   closeTaskWorkbenchTab: (taskId: string, tabId: string) => void
   setTaskWorkbenchTabPinned: (taskId: string, tabId: string, pinned: boolean) => void
+  setTaskWorkbenchViewportGeometry: (
+    taskId: string,
+    geometry: TaskWorkbenchViewportGeometry,
+  ) => void
+  setTaskWorkbenchViewportMode: (taskId: string, mode: TaskWorkbenchViewportMode) => void
   setTaskWorkbenchSummaryCollapsed: (collapsed: boolean) => void
   setTaskWorkbenchWidth: (width: number) => void
   requestTimelineScroll: (anchorId: string) => void
@@ -92,6 +104,7 @@ export function createUiStore() {
     theme: initialTheme(),
     locale: DEFAULT_APP_LOCALE,
     sidebarCollapsed: false,
+    sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     sidebarSections: {
       pinned: true,
       projects: true,
@@ -146,6 +159,7 @@ export function createUiStore() {
     setTheme: (theme) => set({ theme }),
     setLocale: (locale) => set({ locale }),
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+    setSidebarWidth: (sidebarWidth) => set({ sidebarWidth: clampSidebarWidth(sidebarWidth) }),
     setSidebarSectionExpanded: (section, expanded) =>
       set((state) => ({
         sidebarSections: {
@@ -214,6 +228,28 @@ export function createUiStore() {
           taskWorkbenchByTaskId: {
             ...state.taskWorkbenchByTaskId,
             [taskId]: setTaskWorkbenchTabPinned(session, tabId, pinned),
+          },
+        }
+      }),
+    setTaskWorkbenchViewportGeometry: (taskId, geometry) =>
+      set((state) => {
+        const session = state.taskWorkbenchByTaskId[taskId]
+        if (!session) return state
+        return {
+          taskWorkbenchByTaskId: {
+            ...state.taskWorkbenchByTaskId,
+            [taskId]: setTaskWorkbenchViewportGeometry(session, geometry),
+          },
+        }
+      }),
+    setTaskWorkbenchViewportMode: (taskId, mode) =>
+      set((state) => {
+        const session = state.taskWorkbenchByTaskId[taskId]
+        if (!session) return state
+        return {
+          taskWorkbenchByTaskId: {
+            ...state.taskWorkbenchByTaskId,
+            [taskId]: setTaskWorkbenchViewportMode(session, mode),
           },
         }
       }),

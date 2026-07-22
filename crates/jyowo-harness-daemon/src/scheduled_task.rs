@@ -541,6 +541,7 @@ fn scheduled_task_terminal_status(
         TaskState::Idle
         | TaskState::Running
         | TaskState::WaitingPermission
+        | TaskState::WaitingInput
         | TaskState::Yielding => None,
     })
 }

@@ -45,16 +45,35 @@ export type TaskWorkbenchTab = {
   target: TaskWorkbenchTarget
 }
 
+export type TaskWorkbenchViewportMode = 'docked' | 'floating' | 'fullscreen'
+
+export type TaskWorkbenchViewportGeometry = {
+  height: number
+  width: number
+  x: number
+  y: number
+}
+
+export type TaskWorkbenchResizeEdge = 'e' | 'n' | 'ne' | 'nw' | 's' | 'se' | 'sw' | 'w'
+
 export type TaskWorkbenchSession = {
   activeTabId: string | null
   open: boolean
   previewTabId: string | null
   tabs: TaskWorkbenchTab[]
+  viewportGeometry: TaskWorkbenchViewportGeometry | null
+  viewportMode: TaskWorkbenchViewportMode
+  viewportRestoreMode: Exclude<TaskWorkbenchViewportMode, 'fullscreen'>
 }
 
 export const DEFAULT_TASK_WORKBENCH_WIDTH = 400
 const MIN_TASK_WORKBENCH_WIDTH = 360
 const MAX_TASK_WORKBENCH_WIDTH = 640
+export const DEFAULT_TASK_WORKBENCH_VIEWPORT_WIDTH = 560
+export const DEFAULT_TASK_WORKBENCH_VIEWPORT_HEIGHT = 400
+export const MIN_TASK_WORKBENCH_VIEWPORT_WIDTH = 360
+export const MIN_TASK_WORKBENCH_VIEWPORT_HEIGHT = 240
+const TASK_WORKBENCH_VIEWPORT_MARGIN = 16
 
 export function createTaskWorkbenchSession(): TaskWorkbenchSession {
   return {
@@ -62,6 +81,9 @@ export function createTaskWorkbenchSession(): TaskWorkbenchSession {
     open: false,
     previewTabId: null,
     tabs: [],
+    viewportGeometry: null,
+    viewportMode: 'floating',
+    viewportRestoreMode: 'floating',
   }
 }
 
@@ -156,6 +178,101 @@ export function setTaskWorkbenchTabPinned(
   }
 
   return { ...session, previewTabId, tabs }
+}
+
+export function setTaskWorkbenchViewportGeometry(
+  session: TaskWorkbenchSession,
+  viewportGeometry: TaskWorkbenchViewportGeometry,
+): TaskWorkbenchSession {
+  return { ...session, viewportGeometry }
+}
+
+export function setTaskWorkbenchViewportMode(
+  session: TaskWorkbenchSession,
+  viewportMode: TaskWorkbenchViewportMode,
+): TaskWorkbenchSession {
+  if (viewportMode === session.viewportMode) return session
+  if (viewportMode === 'fullscreen') {
+    return {
+      ...session,
+      viewportMode,
+      viewportRestoreMode:
+        session.viewportMode === 'fullscreen' ? session.viewportRestoreMode : session.viewportMode,
+    }
+  }
+  return { ...session, viewportMode, viewportRestoreMode: viewportMode }
+}
+
+export function defaultTaskWorkbenchViewportGeometry(bounds: {
+  height: number
+  width: number
+}): TaskWorkbenchViewportGeometry {
+  const width = Math.min(
+    DEFAULT_TASK_WORKBENCH_VIEWPORT_WIDTH,
+    Math.max(0, bounds.width - TASK_WORKBENCH_VIEWPORT_MARGIN * 2),
+  )
+  const height = Math.min(
+    DEFAULT_TASK_WORKBENCH_VIEWPORT_HEIGHT,
+    Math.max(0, bounds.height - TASK_WORKBENCH_VIEWPORT_MARGIN * 2),
+  )
+  return clampTaskWorkbenchViewportGeometry(
+    {
+      height,
+      width,
+      x: bounds.width - width - TASK_WORKBENCH_VIEWPORT_MARGIN,
+      y: TASK_WORKBENCH_VIEWPORT_MARGIN,
+    },
+    bounds,
+  )
+}
+
+export function clampTaskWorkbenchViewportGeometry(
+  geometry: TaskWorkbenchViewportGeometry,
+  bounds: { height: number; width: number },
+): TaskWorkbenchViewportGeometry {
+  const width = Math.min(
+    Math.max(0, bounds.width),
+    Math.max(MIN_TASK_WORKBENCH_VIEWPORT_WIDTH, geometry.width),
+  )
+  const height = Math.min(
+    Math.max(0, bounds.height),
+    Math.max(MIN_TASK_WORKBENCH_VIEWPORT_HEIGHT, geometry.height),
+  )
+  return {
+    height,
+    width,
+    x: Math.min(Math.max(0, geometry.x), Math.max(0, bounds.width - width)),
+    y: Math.min(Math.max(0, geometry.y), Math.max(0, bounds.height - height)),
+  }
+}
+
+export function resizeTaskWorkbenchViewportGeometry(
+  geometry: TaskWorkbenchViewportGeometry,
+  edge: TaskWorkbenchResizeEdge,
+  delta: { x: number; y: number },
+  bounds: { height: number; width: number },
+): TaskWorkbenchViewportGeometry {
+  const start = clampTaskWorkbenchViewportGeometry(geometry, bounds)
+  const minWidth = Math.min(MIN_TASK_WORKBENCH_VIEWPORT_WIDTH, bounds.width)
+  const minHeight = Math.min(MIN_TASK_WORKBENCH_VIEWPORT_HEIGHT, bounds.height)
+  let left = start.x
+  let right = start.x + start.width
+  let top = start.y
+  let bottom = start.y + start.height
+
+  if (edge.includes('w')) left = Math.min(Math.max(0, left + delta.x), right - minWidth)
+  if (edge.includes('e')) right = Math.max(Math.min(bounds.width, right + delta.x), left + minWidth)
+  if (edge.includes('n')) top = Math.min(Math.max(0, top + delta.y), bottom - minHeight)
+  if (edge.includes('s')) {
+    bottom = Math.max(Math.min(bounds.height, bottom + delta.y), top + minHeight)
+  }
+
+  return {
+    height: bottom - top,
+    width: right - left,
+    x: left,
+    y: top,
+  }
 }
 
 export function clampTaskWorkbenchWidth(width: number) {

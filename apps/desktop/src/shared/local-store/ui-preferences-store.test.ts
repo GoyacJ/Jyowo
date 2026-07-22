@@ -42,6 +42,7 @@ describe('ui-preferences-store', () => {
       theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
+      sidebarWidth: 300,
       sidebarSections: {
         pinned: true,
         projects: true,
@@ -59,6 +60,7 @@ describe('ui-preferences-store', () => {
         theme: 'system',
         locale: 'zh-CN',
         sidebarCollapsed: false,
+        sidebarWidth: 300,
         sidebarSections: {
           pinned: true,
           projects: true,
@@ -77,6 +79,7 @@ describe('ui-preferences-store', () => {
     storeFixture.state.set('theme', 'blue')
     storeFixture.state.set('locale', 'pirate')
     storeFixture.state.set('sidebarCollapsed', 'yes')
+    storeFixture.state.set('sidebarWidth', 'wide')
     storeFixture.state.set('sidebarSections', { pinned: 'yes' })
     storeFixture.state.set('expandedProjects', { '/repo/alpha': 'yes' })
     storeFixture.state.set('taskWorkbenchWidth', 'wide')
@@ -89,6 +92,7 @@ describe('ui-preferences-store', () => {
       theme: 'system',
       locale: 'zh-CN',
       sidebarCollapsed: false,
+      sidebarWidth: 300,
       sidebarSections: {
         pinned: true,
         projects: true,
@@ -108,6 +112,7 @@ describe('ui-preferences-store', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarWidth: 360,
       sidebarSections: {
         pinned: false,
         projects: true,
@@ -121,6 +126,7 @@ describe('ui-preferences-store', () => {
     expect(storeFixture.set).toHaveBeenCalledWith('theme', 'dark')
     expect(storeFixture.set).toHaveBeenCalledWith('locale', 'en-US')
     expect(storeFixture.set).toHaveBeenCalledWith('sidebarCollapsed', true)
+    expect(storeFixture.set).toHaveBeenCalledWith('sidebarWidth', 360)
     expect(storeFixture.set).toHaveBeenCalledWith('sidebarSections', {
       pinned: false,
       projects: true,
@@ -133,6 +139,7 @@ describe('ui-preferences-store', () => {
       theme: 'dark',
       locale: 'en-US',
       sidebarCollapsed: true,
+      sidebarWidth: 360,
       sidebarSections: {
         pinned: false,
         projects: true,

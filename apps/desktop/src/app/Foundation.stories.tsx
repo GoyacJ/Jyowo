@@ -64,6 +64,7 @@ const uiPreferencesSmoke: UiPreferences = {
   theme: 'system',
   locale: 'zh-CN',
   sidebarCollapsed: false,
+  sidebarWidth: 300,
   sidebarSections: { pinned: true, projects: true, conversations: true },
   expandedProjects: {},
   taskWorkbenchWidth: 400,

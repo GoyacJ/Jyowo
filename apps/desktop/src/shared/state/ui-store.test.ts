@@ -11,6 +11,7 @@ describe('ui-store', () => {
     const store = createUiStore()
 
     expect(store.getState().theme).toBe('system')
+    expect(store.getState().sidebarWidth).toBe(300)
     expect(store.getState().sidebarSections).toEqual({
       pinned: true,
       projects: true,
@@ -19,6 +20,7 @@ describe('ui-store', () => {
     expect(store.getState().expandedProjects).toEqual({})
 
     store.getState().setSidebarCollapsed(true)
+    store.getState().setSidebarWidth(500)
     store.getState().setSidebarSectionExpanded('pinned', false)
     store.getState().setProjectExpanded('/repo/alpha', true)
     store.getState().setContextPanelCollapsed(true)
@@ -30,6 +32,7 @@ describe('ui-store', () => {
     expect(store.getState().activeRunConversationId).toBe('conversation-001')
     expect(store.getState().activeRunId).toBe('run-001')
     expect(store.getState().sidebarCollapsed).toBe(true)
+    expect(store.getState().sidebarWidth).toBe(420)
     expect(store.getState().sidebarSections.pinned).toBe(false)
     expect(store.getState().expandedProjects['/repo/alpha']).toBe(true)
     expect(store.getState().contextPanelCollapsed).toBe(true)
@@ -145,11 +148,21 @@ describe('ui-store', () => {
     })
     store.getState().closeTaskWorkbench('task-1')
     store.getState().setTaskWorkbenchWidth(900)
+    store.getState().setTaskWorkbenchViewportMode('task-2', 'fullscreen')
+    store.getState().setTaskWorkbenchViewportGeometry('task-2', {
+      height: 400,
+      width: 560,
+      x: 600,
+      y: 16,
+    })
 
     expect(store.getState().taskWorkbenchByTaskId['task-1']).toMatchObject({ open: false })
     expect(store.getState().taskWorkbenchByTaskId['task-2']).toMatchObject({
       activeTabId: 'command:command-1',
       open: true,
+      viewportGeometry: { height: 400, width: 560, x: 600, y: 16 },
+      viewportMode: 'fullscreen',
+      viewportRestoreMode: 'floating',
     })
     expect(store.getState().taskWorkbenchWidth).toBe(640)
   })

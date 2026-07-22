@@ -1,5 +1,7 @@
 import type {
+  AskUserQuestion,
   ConversationContextReference,
+  PendingQuestionProjection,
   PermissionProjection,
   QueueItemProjection,
   RunProjection,
@@ -17,7 +19,6 @@ import type {
   TimelineToolStatus,
   TypedUlid,
 } from '@/generated/daemon-protocol'
-
 import type { TaskSnapshot } from './task-store'
 
 type SkillContextReference = Extract<ConversationContextReference, { kind: 'skill' }>
@@ -34,6 +35,9 @@ export function deriveLiveTaskSnapshot(
     pendingPermission: snapshot.projection.pendingPermission
       ? { ...snapshot.projection.pendingPermission }
       : snapshot.projection.pendingPermission,
+    pendingQuestion: snapshot.projection.pendingQuestion
+      ? { ...snapshot.projection.pendingQuestion }
+      : snapshot.projection.pendingQuestion,
     queue: snapshot.projection.queue.map((item) => ({ ...item })),
     subagents: snapshot.projection.subagents?.map((item) => ({ ...item })),
   }
@@ -102,7 +106,9 @@ function applyProjectionEvent(
       const activeRun =
         segmentId &&
         projection.currentRun?.segmentId === segmentId &&
-        ['running', 'waiting_permission', 'yielding'].includes(projection.currentRun.state)
+        ['running', 'waiting_permission', 'waiting_input', 'yielding'].includes(
+          projection.currentRun.state,
+        )
           ? projection.currentRun
           : null
       const wasYielding = activeRun?.state === 'yielding'
@@ -122,6 +128,7 @@ function applyProjectionEvent(
         }
       }
       projection.pendingPermission = null
+      projection.pendingQuestion = null
       return
     }
     case 'run.started': {
@@ -135,6 +142,7 @@ function applyProjectionEvent(
         state: 'running',
       }
       projection.pendingPermission = null
+      projection.pendingQuestion = null
       projection.state = 'running'
       return
     }
@@ -151,6 +159,7 @@ function applyProjectionEvent(
         terminalReason,
       }
       projection.pendingPermission = null
+      projection.pendingQuestion = null
       projection.state = state
       return
     }
@@ -174,6 +183,27 @@ function applyProjectionEvent(
       projection.pendingPermission = null
       if (projection.currentRun?.state === 'waiting_permission') {
         projection.currentRun.state = 'running'
+        projection.state = 'running'
+      } else if (!projection.currentRun) {
+        projection.state = 'idle'
+      }
+      return
+    case 'question.requested': {
+      const question = questionProjection(payload)
+      if (!question) return
+      projection.pendingQuestion = question
+      projection.state = 'waiting_input'
+      if (projection.currentRun) {
+        projection.currentRun.state = 'waiting_input'
+      }
+      return
+    }
+    case 'question.resolved':
+    case 'question.invalidated':
+      projection.pendingQuestion = null
+      if (projection.currentRun?.state === 'waiting_input') {
+        const currentRun = projection.currentRun
+        if (currentRun) currentRun.state = 'running'
         projection.state = 'running'
       } else if (!projection.currentRun) {
         projection.state = 'idle'
@@ -445,15 +475,19 @@ function projectToolTimelineEvent(
   const resultSummary =
     type === 'tool_use_failed'
       ? boundedToolText(stringValue(record(event.error)?.message) ?? 'Tool failed')
-      : type === 'tool_use_completed'
-        ? toolResultSummary(event.result)
-        : undefined
+      : type === 'tool_use_denied'
+        ? boundedToolText(toolDeniedReason(event.reason))
+        : type === 'tool_use_completed'
+          ? toolResultSummary(event.result)
+          : undefined
   const resultOutput =
     type === 'tool_use_failed'
       ? boundedToolPreview(stringValue(record(event.error)?.message) ?? 'Tool failed')
-      : type === 'tool_use_completed'
-        ? toolResultPreview(event.result)
-        : undefined
+      : type === 'tool_use_denied'
+        ? boundedToolPreview(toolDeniedReason(event.reason))
+        : type === 'tool_use_completed'
+          ? toolResultCommandOutput(event.result)
+          : undefined
   const durationMs = type === 'tool_use_completed' ? numberValue(event.duration_ms) : undefined
 
   if (!previous?.tool) {
@@ -479,6 +513,12 @@ function projectToolTimelineEvent(
     return
   }
 
+  const projectedStatus =
+    type === 'tool_use_completed' &&
+    previous.tool.operation === 'command' &&
+    toolResultCommandFailed(event.result)
+      ? 'failed'
+      : status
   previous.tool = {
     ...previous.tool,
     durationMs: durationMs ?? previous.tool.durationMs,
@@ -487,9 +527,9 @@ function projectToolTimelineEvent(
         ? (resultOutput ?? previous.tool.output)
         : previous.tool.output,
     resultSummary: resultSummary ?? previous.tool.resultSummary,
-    status,
+    status: projectedStatus,
   }
-  previous.incomplete = status === 'requested' || status === 'running'
+  previous.incomplete = projectedStatus === 'requested' || projectedStatus === 'running'
   previous.summary = timelineToolSummary(previous.tool)
   previous.contentBlocks = [{ activity: previous.tool, type: 'tool_activity' }]
 }
@@ -607,36 +647,59 @@ function toolResultSummary(value: unknown) {
   return 'Result received'
 }
 
-function toolResultPreview(value: unknown) {
+function toolResultCommandOutput(value: unknown) {
   const result = record(value)
   if (!result) return undefined
   const text = stringValue(result.text)
   if (text !== undefined) return boundedToolPreview(text)
-  if ('structured' in result) {
-    return boundedToolPreview(JSON.stringify(result.structured, null, 2))
-  }
   const mixed = Array.isArray(result.mixed) ? result.mixed : null
   if (!mixed) return undefined
   const parts = mixed
-    .map((part) => toolResultPartPreview(part))
+    .map((part) => toolResultPartCommandOutput(part))
     .filter((part): part is string => Boolean(part))
   return parts.length > 0 ? boundedToolPreview(parts.join('\n')) : undefined
 }
 
-function toolResultPartPreview(value: unknown) {
+function toolResultCommandFailed(value: unknown) {
+  const result = record(value)
+  if (!result) return false
+  if ('structured' in result) return structuredResultFailed(result.structured)
+  const mixed = Array.isArray(result.mixed) ? result.mixed : []
+  return mixed.some((part) => structuredResultFailed(record(part)?.value))
+}
+
+function structuredResultFailed(value: unknown) {
+  return record(value)?.success === false
+}
+
+function toolDeniedReason(value: unknown) {
+  if (typeof value === 'string') {
+    const messages: Record<string, string> = {
+      default_mode_denied: 'Tool use denied by permission mode',
+      policy_denied: 'Tool use denied by runtime policy',
+      rule_denied: 'Tool use denied by rule',
+      subagent_blocked: 'Tool use denied for subagent',
+      user_denied: 'Tool use denied by user',
+    }
+    return messages[value] ?? 'Tool use denied'
+  }
+  const reason = record(value)
+  if (!reason) return 'Tool use denied'
+  const other = stringValue(reason.other)
+  if (other) return `Tool use denied: ${other}`
+  const hook = record(reason.hook_blocked)
+  const handlerId = stringValue(hook?.handler_id)
+  return handlerId ? `Tool use blocked by hook ${handlerId}` : 'Tool use denied'
+}
+
+function toolResultPartCommandOutput(value: unknown) {
   const part = record(value)
   if (!part) return undefined
+  const kind = stringValue(part.kind)
+  if (kind !== 'text' && kind !== 'code' && kind !== 'error') return undefined
   const text = stringValue(part.text)
   if (text !== undefined) return text
-  if ('value' in part) return JSON.stringify(part.value, null, 2)
-  return (
-    stringValue(part.summary) ??
-    stringValue(part.detail) ??
-    stringValue(part.message) ??
-    stringValue(part.preview) ??
-    stringValue(part.title) ??
-    stringValue(part.caption)
-  )
+  return stringValue(part.message)
 }
 
 function boundedToolText(value: string) {
@@ -674,6 +737,12 @@ function taskTimelineDescription(
       return description('permission', 'Permission requested')
     case 'permission.resolved':
       return description('permission', 'Permission resolved')
+    case 'question.requested':
+      return description('notice', 'User input requested')
+    case 'question.resolved':
+      return description('notice', 'User input received')
+    case 'question.invalidated':
+      return description('notice', 'User input request expired')
     case 'run.started':
       return description('notice', 'Run started')
     case 'run.completed':
@@ -806,6 +875,7 @@ function timelineArtifactProjection(
     },
     preview: stringValue(event.preview),
     size: numberValue(blob?.size),
+    sourceToolUseId: stringValue(event.source_tool_use_id),
     title,
   }
 }
@@ -951,6 +1021,64 @@ function permissionProjection(value: Record<string, unknown>): PermissionProject
     requestId,
     revision,
     route,
+  }
+}
+
+function questionProjection(
+  value: Record<string, unknown> | null,
+): PendingQuestionProjection | null {
+  if (!value) return null
+  const requestId = typedId(value.requestId)
+  const revision = numberValue(value.revision)
+  const segmentId = typedId(value.segmentId)
+  const toolUseId = typedId(value.toolUseId)
+  const expiresAt = stringValue(value.expiresAt)
+  if (!requestId || revision === undefined || !segmentId || !toolUseId || !expiresAt) return null
+  if (!Array.isArray(value.questions)) return null
+  const questions = value.questions.map(askUserQuestion)
+  if (questions.some((question) => question === null)) return null
+  return {
+    expiresAt,
+    questions: questions as AskUserQuestion[],
+    requestId,
+    revision,
+    segmentId,
+    toolUseId,
+  }
+}
+
+function askUserQuestion(value: unknown): AskUserQuestion | null {
+  const object = record(value)
+  if (!object || !Array.isArray(object.options)) return null
+  const id = stringValue(object.id)
+  const question = stringValue(object.question)
+  if (
+    !id ||
+    !question ||
+    typeof object.multiSelect !== 'boolean' ||
+    typeof object.allowCustom !== 'boolean'
+  ) {
+    return null
+  }
+  const options = object.options.map((value) => {
+    const option = record(value)
+    const optionId = stringValue(option?.id)
+    const label = stringValue(option?.label)
+    if (!optionId || !label) return null
+    return {
+      description: stringValue(option?.description),
+      id: optionId,
+      label,
+    }
+  })
+  if (options.some((option) => option === null)) return null
+  return {
+    allowCustom: object.allowCustom,
+    header: stringValue(object.header),
+    id,
+    multiSelect: object.multiSelect,
+    options: options as AskUserQuestion['options'],
+    question,
   }
 }
 

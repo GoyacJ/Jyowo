@@ -99,6 +99,23 @@ describe('TaskList', () => {
     expect(onCreateConversation).toHaveBeenCalledWith('/repo/alpha')
   })
 
+  it('opens global search directly above new conversation', () => {
+    const onOpenGlobalSearch = vi.fn()
+    renderTaskList({ onOpenGlobalSearch })
+
+    const actions = screen.getAllByRole('button')
+    const globalSearchIndex = actions.findIndex(
+      (button) => button.getAttribute('aria-label') === 'Open global search',
+    )
+    const newConversationIndex = actions.findIndex(
+      (button) => button.getAttribute('aria-label') === 'New conversation',
+    )
+
+    expect(globalSearchIndex).toBe(newConversationIndex - 1)
+    fireEvent.click(screen.getByRole('button', { name: 'Open global search' }))
+    expect(onOpenGlobalSearch).toHaveBeenCalledOnce()
+  })
+
   it('opens scheduled tasks directly below new conversation', () => {
     const onOpenScheduledTasks = vi.fn()
     renderTaskList({ onOpenScheduledTasks })
@@ -162,6 +179,27 @@ describe('TaskList', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Remove' }))
     await user.click(screen.getByRole('button', { name: 'Remove conversation' }))
     expect(onRemoveTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskId(2) }))
+  })
+
+  it('renames a conversation inline after double-clicking its title', async () => {
+    const user = userEvent.setup()
+    const onRenameTask = vi.fn()
+    renderTaskList({ onRenameTask })
+
+    await user.dblClick(screen.getByRole('button', { name: 'Task 2' }))
+    const input = screen.getByRole('textbox', { name: 'Conversation name' })
+    expect(input).toHaveFocus()
+    expect(input).toHaveValue('Task 2')
+
+    await user.clear(input)
+    await user.type(input, 'Renamed inline{Enter}')
+
+    expect(onRenameTask).toHaveBeenCalledOnce()
+    expect(onRenameTask).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: taskId(2) }),
+      'Renamed inline',
+    )
+    expect(screen.queryByRole('textbox', { name: 'Conversation name' })).not.toBeInTheDocument()
   })
 
   it('offers inline pin and remove actions around the task overflow menu', async () => {
@@ -248,6 +286,7 @@ function renderTaskList(overrides: TaskListOverrides = {}, locale: 'en-US' | 'zh
         expandedProjects={{ '/repo/alpha': true, '/repo/beta': false }}
         onAddProject={vi.fn()}
         onCreateConversation={vi.fn()}
+        onOpenGlobalSearch={vi.fn()}
         onMoveProject={vi.fn()}
         onOpenScheduledTasks={vi.fn()}
         onRemoveProject={vi.fn()}

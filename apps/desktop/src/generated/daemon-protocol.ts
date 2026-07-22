@@ -105,6 +105,14 @@ export type ClientRequest =
       type: 'resolve_permission'
     }
   | {
+      metadata: CommandMetadata
+      questionRequestId: TypedUlid
+      requestRevision: number
+      response: AskUserQuestionResponse
+      taskId: TypedUlid
+      type: 'resolve_question'
+    }
+  | {
       afterOffset: number
       type: 'subscribe_events'
     }
@@ -246,6 +254,11 @@ export type ClientRequest =
       type: 'browser'
     }
   | {
+      command: RuntimeCommand
+      taskId: TypedUlid
+      type: 'runtime'
+    }
+  | {
       base64Data: string
       mediaType: string
       taskId: TypedUlid
@@ -358,6 +371,18 @@ export type StopMode = 'safe_point' | 'force'
 export type IndeterminateToolResolution = 'treat_as_failed' | 'execute_again'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AskUserQuestionResponse".
+ */
+export type AskUserQuestionResponse =
+  | {
+      answers: AskUserQuestionAnswer[]
+      status: 'answered'
+    }
+  | {
+      status: 'declined'
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "MemoryCandidateState".
  */
 export type MemoryCandidateState =
@@ -431,6 +456,44 @@ export type BrowserCommand =
   | {
       type: 'show'
     }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeCommand".
+ */
+export type RuntimeCommand =
+  | {
+      spec: RuntimeSpec
+      type: 'open'
+    }
+  | {
+      kind: RuntimeSessionKind
+      sessionId: string
+      type: 'status'
+    }
+  | {
+      kind: RuntimeSessionKind
+      sessionId: string
+      type: 'close'
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeSpec".
+ */
+export type RuntimeSpec =
+  | {
+      kind: 'browser'
+      url?: string | null
+    }
+  | {
+      blobId: TypedUlid
+      kind: 'html'
+      title: string
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeSessionKind".
+ */
+export type RuntimeSessionKind = 'browser' | 'html' | 'web_app' | 'terminal' | 'external'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ServerMessage".
@@ -602,6 +665,17 @@ export type ServerMessage =
       unavailableReason?: string | null
     }
   | {
+      currentUrl?: string | null
+      error?: string | null
+      kind: RuntimeSessionKind
+      sessionId: string
+      status: RuntimeSessionStatus
+      taskId: TypedUlid
+      title: string
+      type: 'runtime_session'
+      view?: RuntimeView | null
+    }
+  | {
       afterOffset: number
       events: TaskEventEnvelope[]
       gap: boolean
@@ -683,6 +757,7 @@ export type CommandRejectionReason =
 export type RunState =
   | 'running'
   | 'waiting_permission'
+  | 'waiting_input'
   | 'yielding'
   | 'interrupted'
   | 'failed'
@@ -716,6 +791,7 @@ export type TaskState =
   | 'idle'
   | 'running'
   | 'waiting_permission'
+  | 'waiting_input'
   | 'yielding'
   | 'interrupted'
   | 'failed'
@@ -816,6 +892,7 @@ export type EventSourceKind =
   | 'engine'
   | 'tool'
   | 'permission_broker'
+  | 'question_broker'
   | 'supervisor'
   | 'subagent'
   | 'recovery'
@@ -1022,6 +1099,27 @@ export type ScheduledTaskRunStatus = 'started' | 'succeeded' | 'failed' | 'cance
 export type BrowserSessionStatus = 'unavailable' | 'starting' | 'ready' | 'stopped' | 'failed'
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeSessionStatus".
+ */
+export type RuntimeSessionStatus = 'unavailable' | 'starting' | 'ready' | 'stopped' | 'failed'
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "RuntimeView".
+ */
+export type RuntimeView =
+  | {
+      type: 'url'
+      url: string
+    }
+  | {
+      channelId: string
+      type: 'terminal'
+    }
+  | {
+      type: 'external'
+    }
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "ProtocolErrorCode".
  */
 export type ProtocolErrorCode =
@@ -1095,6 +1193,15 @@ export interface WorkspaceSelection {
 export interface IndeterminateToolDecision {
   resolution: IndeterminateToolResolution
   toolUseId: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AskUserQuestionAnswer".
+ */
+export interface AskUserQuestionAnswer {
+  questionId: string
+  selectedOptionIds: string[]
+  text?: string | null
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
@@ -1327,6 +1434,7 @@ export interface TaskProjection {
   lastGlobalOffset: number
   parent?: SubagentParentProjection | null
   pendingPermission?: PermissionProjection | null
+  pendingQuestion?: PendingQuestionProjection | null
   pinned?: boolean
   queue: QueueItemProjection[]
   removed?: boolean
@@ -1396,6 +1504,39 @@ export interface PermissionOption {
 }
 /**
  * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "PendingQuestionProjection".
+ */
+export interface PendingQuestionProjection {
+  expiresAt: string
+  questions: AskUserQuestion[]
+  requestId: TypedUlid
+  revision: number
+  segmentId: TypedUlid
+  toolUseId: TypedUlid
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AskUserQuestion".
+ */
+export interface AskUserQuestion {
+  allowCustom: boolean
+  header?: string | null
+  id: string
+  multiSelect: boolean
+  options: AskUserQuestionOption[]
+  question: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
+ * via the `definition` "AskUserQuestionOption".
+ */
+export interface AskUserQuestionOption {
+  description?: string | null
+  id: string
+  label: string
+}
+/**
+ * This interface was referenced by `DaemonProtocol`'s JSON-Schema
  * via the `definition` "SubagentProjection".
  */
 export interface SubagentProjection {
@@ -1442,6 +1583,7 @@ export interface TimelineArtifactProjection {
   presentation?: TimelineArtifactPresentation | null
   preview?: string | null
   size?: number | null
+  sourceToolUseId?: string | null
   title: string
 }
 /**

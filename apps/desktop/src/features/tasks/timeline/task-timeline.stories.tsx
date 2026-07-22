@@ -37,26 +37,29 @@ const storyClient = {
     }
     const text =
       blobId === fileBlobId
-        ? '# Recovery report\n\nThe committed projection matches the replayed state.'
-        : 'diff --git a/src/recovery.rs b/src/recovery.rs\n+assert_eq!(replayed, committed);'
+        ? 'pub fn replay_committed() {\n    assert_eq!(replayed, committed);\n}'
+        : 'diff --git a/src/recovery.rs b/src/recovery.rs\n@@ -41,0 +42,1 @@\n+    assert_eq!(replayed, committed);'
     return {
       blobId,
       bytes: new TextEncoder().encode(text),
       contentHash: Array.from({ length: 32 }, () => 1),
-      mediaType: blobId === fileBlobId ? 'text/markdown' : 'text/x-diff',
+      mediaType: blobId === fileBlobId ? 'text/plain' : 'text/x-diff',
       missing: false,
       size: text.length,
     }
   },
   request: async (request: ClientRequest) => ({
     message: {
-      commandId: request.type === 'resolve_permission' ? request.metadata.commandId : taskId,
+      commandId:
+        request.type === 'resolve_permission' || request.type === 'resolve_question'
+          ? request.metadata.commandId
+          : taskId,
       committedOffset: 4,
       streamVersion: 4,
       taskId,
       type: 'command_accepted' as const,
     },
-    protocolVersion: 6,
+    protocolVersion: 7,
   }),
 }
 
@@ -86,6 +89,37 @@ export const IdleTask: Story = workspaceStory(
   ]),
 )
 
+export const Thinking: Story = workspaceStory(
+  snapshot(
+    'running',
+    [
+      item(1, 'user_message', 'Trace the journal replay path.', segmentId),
+      item(2, 'notice', 'Run started', segmentId),
+    ],
+    {
+      currentRun: {
+        incompleteOutput: false,
+        segmentId,
+        startedAt: '2026-07-18T00:00:00Z',
+        state: 'running',
+      },
+    },
+  ),
+)
+
+export const Paused: Story = workspaceStory(
+  snapshot('interrupted', [item(1, 'user_message', 'Trace the journal replay path.', segmentId)], {
+    currentRun: {
+      endedAt: '2026-07-18T00:00:01Z',
+      incompleteOutput: false,
+      segmentId,
+      startedAt: '2026-07-18T00:00:00Z',
+      state: 'interrupted',
+      terminalReason: 'cancelled',
+    },
+  }),
+)
+
 export const ActiveStreaming: Story = workspaceStory(
   snapshot(
     'running',
@@ -106,6 +140,17 @@ export const ActiveStreaming: Story = workspaceStory(
       queue: [queue(6, 'Review the recovery invariant'), queue(7, 'Run the release gate')],
     },
   ),
+)
+
+export const FileActivity: Story = workspaceStory(
+  snapshot('completed', [
+    item(1, 'user_message', '检查并修复恢复逻辑。'),
+    toolItem(2, 'read', 'completed', 'FileRead', 'src/recovery.rs', 38),
+    linkedArtifactItem(3, 'file', 'src/recovery.rs', 'tool-2', fileBlobId),
+    toolItem(4, 'edit', 'completed', 'FileEdit', 'src/recovery.rs', 54),
+    linkedArtifactItem(5, 'diff', 'src/recovery.rs', 'tool-4', diffBlobId),
+    item(6, 'assistant_text', '恢复路径已经更新，并保留了当次文件快照。', segmentId),
+  ]),
 )
 
 export const ReferenceProcessFlow: Story = {
@@ -151,6 +196,67 @@ export const PermissionWaiting: Story = workspaceStory(
         requestId: '01J00000000000000000000009',
         revision: 1,
         route: 'foreground_task',
+      },
+    },
+  ),
+)
+
+export const QuestionWaiting: Story = workspaceStory(
+  snapshot(
+    'waiting_input',
+    [
+      item(1, 'user_message', '为商城产品整理一份可供研发使用的 PRD。'),
+      item(2, 'notice', 'Run started', segmentId),
+    ],
+    {
+      currentRun: {
+        incompleteOutput: false,
+        segmentId,
+        startedAt: '2026-07-18T00:00:00Z',
+        state: 'waiting_input',
+      },
+      pendingQuestion: {
+        expiresAt: '2026-07-18T01:00:00Z',
+        questions: [
+          {
+            allowCustom: true,
+            header: '需求范围',
+            id: 'scope',
+            multiSelect: false,
+            options: [
+              { id: 'product', label: '完整产品', description: '覆盖端到端产品能力' },
+              { id: 'module', label: '单个模块', description: '只描述本次新增或改造范围' },
+            ],
+            question: '这份 PRD 需要覆盖什么范围？',
+          },
+          {
+            allowCustom: true,
+            header: '客户端',
+            id: 'clients',
+            multiSelect: true,
+            options: [
+              { id: 'mini-program', label: '微信小程序' },
+              { id: 'mobile-web', label: 'H5 / 移动 Web' },
+              { id: 'native', label: 'iOS / Android' },
+            ],
+            question: '需要覆盖哪些客户端？',
+          },
+          {
+            allowCustom: false,
+            header: '交付深度',
+            id: 'depth',
+            multiSelect: false,
+            options: [
+              { id: 'exploration', label: '方向探索', description: '确认目标、范围和核心流程' },
+              { id: 'delivery', label: '开发就绪', description: '补齐状态、边界和验收标准' },
+            ],
+            question: '这次需要做到什么深度？',
+          },
+        ],
+        requestId: '01J00000000000000000000011',
+        revision: 1,
+        segmentId,
+        toolUseId: '01J00000000000000000000012',
       },
     },
   ),
@@ -532,6 +638,31 @@ function toolItem(
       toolName,
       toolUseId: `tool-${globalOffset}`,
     },
+  }
+}
+
+function linkedArtifactItem(
+  globalOffset: number,
+  kind: 'diff' | 'file',
+  title: string,
+  sourceToolUseId: string,
+  blobId: string,
+): TimelineItemProjection {
+  return {
+    ...item(globalOffset, kind, title, segmentId, false, blobId),
+    contentBlocks: [
+      {
+        artifact: {
+          artifactKind: kind,
+          blobId,
+          mediaType: 'text/plain',
+          presentation: { preferredSurface: 'card' },
+          sourceToolUseId,
+          title,
+        },
+        type: 'artifact',
+      },
+    ],
   }
 }
 

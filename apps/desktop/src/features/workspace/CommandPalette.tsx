@@ -124,6 +124,7 @@ export function CommandPalette({ onAction }: CommandPaletteProps) {
           <CommandInput
             aria-label={t('commandPalette.searchLabel')}
             autoFocus
+            className="pr-8"
             placeholder={t('commandPalette.searchPlaceholder')}
           />
           <CommandList>

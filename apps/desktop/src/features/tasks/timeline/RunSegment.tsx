@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { artifactDescriptorFromTimelineItem } from '@/features/artifacts/model'
 import type { TimelineItemProjection } from '@/generated/daemon-protocol'
 
 import { isLowValueLifecycleItem, TimelineEvent } from './TimelineEvent'
@@ -33,12 +34,24 @@ function renderItems(
     if (!item) break
     if (isProjectedToolItem(item)) {
       const toolItems: ToolTimelineItem[] = []
-      while (items[index] && isProjectedToolItem(items[index] as TimelineItemProjection)) {
-        toolItems.push(items[index] as ToolTimelineItem)
-        index += 1
+      const linkedArtifacts: TimelineItemProjection[] = []
+      while (items[index]) {
+        const candidate = items[index] as TimelineItemProjection
+        if (isProjectedToolItem(candidate)) {
+          toolItems.push(candidate)
+          index += 1
+          continue
+        }
+        if (isLinkedFileArtifact(candidate, toolItems)) {
+          linkedArtifacts.push(candidate)
+          index += 1
+          continue
+        }
+        break
       }
       rendered.push(
         <ToolActivityGroup
+          artifacts={linkedArtifacts}
           items={toolItems}
           key={`tools:${toolItems[0]?.tool.toolUseId}`}
           onSelectItem={onSelectItem}
@@ -91,4 +104,13 @@ function LifecycleSummary({
 
 function isProjectedToolItem(item: TimelineItemProjection): item is ToolTimelineItem {
   return item.kind === 'tool_activity' && Boolean(item.tool)
+}
+
+function isLinkedFileArtifact(item: TimelineItemProjection, toolItems: ToolTimelineItem[]) {
+  const artifact = artifactDescriptorFromTimelineItem(item)
+  return Boolean(
+    artifact?.sourceToolUseId &&
+      ['diff', 'file', 'patch'].includes(artifact.artifactKind ?? '') &&
+      toolItems.some((toolItem) => toolItem.tool.toolUseId === artifact.sourceToolUseId),
+  )
 }

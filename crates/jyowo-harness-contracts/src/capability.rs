@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -418,8 +419,11 @@ pub trait DiagnosticsRunnerCap: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<DiagnosticsRawOutput, ToolError>>;
 }
 
-pub trait ClarifyChannelCap: Send + Sync + 'static {
-    fn ask(&self, prompt: ClarifyPrompt) -> BoxFuture<'static, Result<ClarifyAnswer, ToolError>>;
+pub trait AskUserQuestionCap: Send + Sync + 'static {
+    fn ask(
+        &self,
+        request: AskUserQuestionRequest,
+    ) -> BoxFuture<'static, Result<AskUserQuestionOutcome, ToolError>>;
 }
 
 pub trait UserMessengerCap: Send + Sync + 'static {
@@ -880,24 +884,58 @@ pub struct SkillShellInvocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ClarifyPrompt {
-    pub prompt: String,
-    pub choices: Vec<ClarifyChoice>,
-    pub multiple: bool,
-    pub timeout_seconds: Option<u32>,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskUserQuestionRequest {
+    pub request_id: crate::RequestId,
+    pub tool_use_id: ToolUseId,
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub actor_source: crate::PermissionActorSource,
+    pub questions: Vec<AskUserQuestion>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ClarifyChoice {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskUserQuestion {
+    pub id: String,
+    pub header: Option<String>,
+    pub question: String,
+    pub options: Vec<AskUserQuestionOption>,
+    pub multi_select: bool,
+    pub allow_custom: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskUserQuestionOption {
     pub id: String,
     pub label: String,
-    pub hint: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ClarifyAnswer {
-    pub answer: String,
-    pub chosen_ids: Vec<String>,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskUserQuestionAnswer {
+    pub question_id: String,
+    pub selected_option_ids: Vec<String>,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AskUserQuestionResponse {
+    Answered { answers: Vec<AskUserQuestionAnswer> },
+    Declined,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AskUserQuestionOutcome {
+    Answered { answers: Vec<AskUserQuestionAnswer> },
+    Declined,
+    TimedOut,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -6,22 +6,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse, BlobId,
-    CheckpointId, ClientId, CommandId, ConversationContextReference, EventId,
-    GetMemoryRecallTraceRequest, GetMemoryRecallTraceResponse, GetMemorySettingsRequest,
-    GetMemorySettingsResponse, GetModelRequestPreviewRequest, GetModelRequestPreviewResponse,
-    GetThreadMemorySettingsRequest, GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest,
-    ListMemoryCandidatesResponse, ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse,
-    MemoryId, MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode,
-    QueueItemId, RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId,
-    RunSegmentId, ScheduledTaskDeletedResponse, ScheduledTaskEnabledResponse,
-    ScheduledTaskRunResponse, ScheduledTaskRunsResponse, ScheduledTaskSavedResponse,
-    ScheduledTaskSpec, ScheduledTasksResponse, SessionId, SkillId, SkillSourceKind, SubagentId,
-    TaskId, UpdateMemorySettingsRequest, UpdateMemorySettingsResponse,
-    UpdateThreadMemorySettingsRequest, UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
+    ActionPlanId, ActorId, ApproveMemoryCandidateRequest, ApproveMemoryCandidateResponse,
+    AskUserQuestion, AskUserQuestionResponse, BlobId, CheckpointId, ClientId, CommandId,
+    ConversationContextReference, EventId, GetMemoryRecallTraceRequest,
+    GetMemoryRecallTraceResponse, GetMemorySettingsRequest, GetMemorySettingsResponse,
+    GetModelRequestPreviewRequest, GetModelRequestPreviewResponse, GetThreadMemorySettingsRequest,
+    GetThreadMemorySettingsResponse, ListMemoryCandidatesRequest, ListMemoryCandidatesResponse,
+    ListMemoryRecallTracesRequest, ListMemoryRecallTracesResponse, MemoryId,
+    MergeMemoryCandidateRequest, MergeMemoryCandidateResponse, PermissionMode, QueueItemId,
+    RejectMemoryCandidateRequest, RejectMemoryCandidateResponse, RequestId, RunSegmentId,
+    ScheduledTaskDeletedResponse, ScheduledTaskEnabledResponse, ScheduledTaskRunResponse,
+    ScheduledTaskRunsResponse, ScheduledTaskSavedResponse, ScheduledTaskSpec,
+    ScheduledTasksResponse, SessionId, SkillId, SkillSourceKind, SubagentId, TaskId, ToolUseId,
+    UpdateMemorySettingsRequest, UpdateMemorySettingsResponse, UpdateThreadMemorySettingsRequest,
+    UpdateThreadMemorySettingsResponse, WorkspaceLeaseId,
 };
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// Maximum JSON body accepted by the length-prefixed local daemon transport.
 pub const MAX_DAEMON_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -75,6 +76,7 @@ pub enum ClientRequest {
     StopRun(StopRunCommand),
     ContinueTask(ContinueTaskCommand),
     ResolvePermission(ResolvePermissionCommand),
+    ResolveQuestion(ResolveQuestionCommand),
     SubscribeEvents {
         after_offset: u64,
     },
@@ -184,6 +186,10 @@ pub enum ClientRequest {
         task_id: TaskId,
         command: BrowserCommand,
     },
+    Runtime {
+        task_id: TaskId,
+        command: RuntimeCommand,
+    },
     StageBlob(StageBlobCommand),
     ReadBlob {
         blob_id: BlobId,
@@ -238,6 +244,7 @@ pub enum ServerMessage {
     ScheduledTaskRun(ScheduledTaskRunResponse),
     ScheduledTaskRuns(ScheduledTaskRunsResponse),
     BrowserSession(BrowserSessionState),
+    RuntimeSession(RuntimeSessionState),
     EventBatch(TaskEventBatch),
     Blob(BlobPayload),
     Error(ProtocolError),
@@ -275,6 +282,82 @@ pub struct BrowserSessionState {
     pub current_url: Option<String>,
     pub title: Option<String>,
     pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RuntimeCommand {
+    Open {
+        spec: RuntimeSpec,
+    },
+    Status {
+        session_id: String,
+        kind: RuntimeSessionKind,
+    },
+    Close {
+        session_id: String,
+        kind: RuntimeSessionKind,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RuntimeSpec {
+    Browser { url: Option<String> },
+    Html { blob_id: BlobId, title: String },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionKind {
+    Browser,
+    Html,
+    WebApp,
+    Terminal,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionStatus {
+    Unavailable,
+    Starting,
+    Ready,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RuntimeView {
+    Url { url: String },
+    Terminal { channel_id: String },
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeSessionState {
+    pub session_id: String,
+    pub task_id: TaskId,
+    pub kind: RuntimeSessionKind,
+    pub status: RuntimeSessionStatus,
+    pub title: String,
+    pub view: Option<RuntimeView>,
+    pub current_url: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -582,6 +665,16 @@ pub struct ResolvePermissionCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveQuestionCommand {
+    pub metadata: CommandMetadata,
+    pub task_id: TaskId,
+    pub question_request_id: RequestId,
+    pub request_revision: u64,
+    pub response: AskUserQuestionResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StageBlobCommand {
     pub task_id: TaskId,
     pub media_type: String,
@@ -655,6 +748,7 @@ pub enum TaskState {
     Idle,
     Running,
     WaitingPermission,
+    WaitingInput,
     Yielding,
     Interrupted,
     Failed,
@@ -675,6 +769,7 @@ pub enum QueueItemState {
 pub enum RunState {
     Running,
     WaitingPermission,
+    WaitingInput,
     Yielding,
     Interrupted,
     Failed,
@@ -830,6 +925,8 @@ pub struct TimelineArtifactProjection {
     pub preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<TimelineArtifactPresentation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool_use_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -901,6 +998,7 @@ pub enum EventSourceKind {
     Engine,
     Tool,
     PermissionBroker,
+    QuestionBroker,
     Supervisor,
     Subagent,
     Recovery,
@@ -982,6 +1080,8 @@ pub struct TaskProjection {
     pub last_global_offset: u64,
     pub current_run: Option<RunProjection>,
     pub pending_permission: Option<PermissionProjection>,
+    #[serde(default)]
+    pub pending_question: Option<PendingQuestionProjection>,
     pub queue: Vec<QueueItemProjection>,
     #[serde(default)]
     pub workspace: Option<WorkspaceSelection>,
@@ -993,6 +1093,21 @@ pub struct TaskProjection {
     pub parent: Option<SubagentParentProjection>,
     #[serde(default)]
     pub subagents: Vec<SubagentProjection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingQuestionProjection {
+    pub request_id: RequestId,
+    pub revision: u64,
+    pub segment_id: RunSegmentId,
+    pub tool_use_id: ToolUseId,
+    pub questions: Vec<AskUserQuestion>,
+    #[serde(
+        serialize_with = "strict_rfc3339::serialize",
+        deserialize_with = "strict_rfc3339::deserialize"
+    )]
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

@@ -1,20 +1,21 @@
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { Command as CommandIcon } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import { useStore } from 'zustand'
 import { ActivityRail } from '@/features/activity/ActivityRail'
+import { deriveLiveTaskSnapshot } from '@/features/tasks/task-live-projection'
 import { taskStoreFor } from '@/features/tasks/use-task'
-import { OPEN_COMMAND_PALETTE_EVENT } from '@/features/workspace/CommandPalette'
+import { SidebarDivider } from '@/features/workspace/SidebarDivider'
 import { SidebarNav } from '@/features/workspace/SidebarNav'
+import { COLLAPSED_SIDEBAR_WIDTH } from '@/shared/state/sidebar-layout'
 import { useUiStore } from '@/shared/state/ui-store'
-import { Button } from '@/shared/ui/button'
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { t } = useTranslation(['shell', 'activity'])
   const navigate = useNavigate()
   const activeRunsByConversation = useUiStore((state) => state.activeRunsByConversation)
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed)
+  const sidebarWidth = useUiStore((state) => state.sidebarWidth)
+  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed)
+  const setSidebarWidth = useUiStore((state) => state.setSidebarWidth)
   const compactSidebar = useMediaQuery('(max-width: 720px)')
   const currentSearch = useRouterState({
     select: (state) => state.location.search,
@@ -24,7 +25,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   })
   const selectedTaskId = typeof currentSearch.taskId === 'string' ? currentSearch.taskId : undefined
   const selectedActiveRun = selectOnlyActiveRun(activeRunsByConversation)
-  const sidebarWidth = sidebarCollapsed || compactSidebar ? '48px' : '300px'
+  const renderedSidebarWidth =
+    sidebarCollapsed || compactSidebar ? COLLAPSED_SIDEBAR_WIDTH : sidebarWidth
 
   function openSettings() {
     void navigate({ to: '/settings' })
@@ -36,24 +38,26 @@ export function AppShell({ children }: { children: ReactNode }) {
       style={{ gridTemplateRows: 'minmax(0, 1fr) 32px' }}
     >
       <div
-        className="grid min-h-0"
+        className="relative grid min-h-0"
         style={{
-          gridTemplateColumns: `${sidebarWidth} minmax(0,1fr)`,
+          gridTemplateColumns: `${renderedSidebarWidth}px minmax(0,1fr)`,
         }}
       >
         <SidebarNav compact={compactSidebar} />
+        <SidebarDivider
+          collapsed={sidebarCollapsed}
+          compact={compactSidebar}
+          onCollapsedChange={setSidebarCollapsed}
+          onWidthChange={setSidebarWidth}
+          width={sidebarWidth}
+        />
         <div className="grid min-h-0 grid-rows-[52px_minmax(0,1fr)]">
-          <header className="flex items-center justify-end gap-2 px-4">
-            <Button
-              aria-label={t('actions.openCommandPalette')}
-              className="size-8"
-              onClick={() => window.dispatchEvent(new Event(OPEN_COMMAND_PALETTE_EVENT))}
-              size="icon"
-              type="button"
-              variant="outline"
-            >
-              <CommandIcon aria-hidden="true" className="size-4" />
-            </Button>
+          <header className="flex min-w-0 items-center justify-between gap-3 px-6 xl:px-8">
+            {pathname === '/' && selectedTaskId ? (
+              <SelectedTaskTitle taskId={selectedTaskId} />
+            ) : (
+              <span aria-hidden="true" />
+            )}
           </header>
           <main className="min-h-0 min-w-0 overflow-hidden px-6 pb-6 xl:px-8">
             <div key={pathname} className="h-full min-h-0 min-w-0 animate-page-enter">
@@ -68,6 +72,19 @@ export function AppShell({ children }: { children: ReactNode }) {
         <ActivityRail activeRunId={selectedActiveRun?.runId} onOpenSettings={openSettings} />
       )}
     </div>
+  )
+}
+
+function SelectedTaskTitle({ taskId }: { taskId: string }) {
+  const store = taskStoreFor(taskId)
+  const snapshot = useStore(store, (state) => state.snapshot)
+  const events = useStore(store, (state) => state.events)
+  const title = snapshot ? deriveLiveTaskSnapshot(snapshot, events).projection.title : null
+
+  return title ? (
+    <h1 className="min-w-0 flex-1 truncate font-semibold text-sm tracking-[-0.01em]">{title}</h1>
+  ) : (
+    <span aria-hidden="true" className="min-w-0 flex-1" />
   )
 }
 

@@ -115,20 +115,25 @@ impl Tool for FileReadTool {
     async fn execute_authorized(
         &self,
         authorized: AuthorizedToolInput,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> Result<ToolStream, ToolError> {
         let path = authorized_file_path(&authorized, AuthorizedFileResourceKind::Read)?;
         let input = authorized.raw_input();
-        let content =
-            std::fs::read_to_string(path).map_err(|error| ToolError::Message(error.to_string()))?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| ToolError::Message(error.to_string()))?;
         let content = slice_lines(
             &content,
             line_number(input, "start_line").map_err(validation_error)?,
             line_number(input, "end_line").map_err(validation_error)?,
         );
-        Ok(Box::pin(stream::iter([ToolEvent::Final(
-            ToolResult::Text(content),
-        )])))
+        let mut events = Vec::with_capacity(2);
+        if let Some(artifact) =
+            super::file_artifact::text_artifact_event(&ctx, "file", &path, &content).await
+        {
+            events.push(artifact);
+        }
+        events.push(ToolEvent::Final(ToolResult::Text(content)));
+        Ok(Box::pin(stream::iter(events)))
     }
 }
 

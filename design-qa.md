@@ -278,6 +278,200 @@
 
 final result: passed
 
+## 输入框快捷面板验收
+
+视觉真值：
+
+- 斜杠指令：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-419b1860-6782-4548-897a-3633c3665097.png`（1576 × 912 px）。
+- 引用选择：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-0acbaaca-5b2c-488b-85c3-2e87f7e2eb80.png`（1576 × 912 px）。
+
+实现证据：
+
+- 斜杠面板：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-slash-panel-1440x900.png`。
+- 引用面板：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-reference-panel-1440x900.png`。
+- 工具栏引用搜索：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-toolbar-reference-panel-1440x900.png`。
+- 480px 窄屏：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-slash-panel-480x800.png`。
+- 斜杠全图比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-slash-reference-vs-implementation.png`。
+- 引用全图比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-reference-reference-vs-implementation.png`。
+- 斜杠局部比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-slash-focused-comparison.png`。
+- 引用局部比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/composer-reference-focused-comparison.png`。
+
+实现截图使用 1440 × 900 CSS px 视口；窄屏使用 480 × 800 CSS px。浏览器截图已按 CSS 像素保存。检查状态包含 `/` 初始态、`/rev` 筛选态、编辑器内 `@`、工具栏 `@` 搜索态和窄屏态。
+
+全图比较确认面板固定在输入框上方，并与输入框同宽。局部比较确认候选行统一使用图标、名称、说明和整行选中态。`@` 面板按对象类型分组；编辑器内触发没有第二个搜索输入，工具栏触发时搜索输入自动聚焦。
+
+必查表面：
+
+- 字体与排版：沿用现有字体栈；命令、名称、说明分层稳定，长路径和说明均截断，不产生异常换行。
+- 间距与布局：面板、列表和键盘提示使用统一内边距；桌面和 480px 宽度均无重叠或横向溢出。
+- 颜色与设计变量：只使用现有语义变量和 `shadow-deep`；没有新增原始色值或任意阴影。
+- 图像与资产：类型图标使用项目现有 Lucide 图标库；没有新增位图、手写 SVG、Emoji 或 CSS 图形。
+- 文案与内容：四条指令和七类引用均有中英文名称；命令说明、分组名称、空状态、结果数和键盘提示均通过 i18next 提供。
+- 图标：指令和引用类型采用不同语义图标，尺寸和线宽一致。
+- 响应式与可访问性：列表使用 `listbox/option`；编辑器通过 `aria-controls`、`aria-expanded` 和 `aria-activedescendant` 关联候选项；支持方向键、Enter、Tab、Esc；480px 下 `clientWidth` 与 `scrollWidth` 均为 480px。
+
+浏览器交互验证覆盖 `/rev` 过滤、Tab 插入 `/review `、编辑器内 `@`、工具栏搜索自动聚焦、Esc 关闭和点击外部关闭。浏览器控制台 `error` 与 `warn` 均为空。定向 Vitest 共 55 项通过，TypeScript 类型检查和设计变量检查通过。前端全量测试中的 8 项失败来自既有 Node `localStorage` 测试环境问题。`pnpm check:quick` 被仓库内既有超限测试文件阻断，本次新增测试文件不在超限列表中。
+
+本轮没有未解决的 P0、P1 或 P2 设计缺陷。
+
+final result: passed
+
+## 侧栏双击重命名与顶部间距验收（2026-07-18）
+
+视觉真值：
+
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-698af8e3-4357-426c-bbcd-33c6ba0364e1.png`
+
+实现证据：
+
+- 默认态：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/sidebar-inline-rename-final-2048x1280.png`
+- 双击编辑态：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/sidebar-inline-rename-editing-2048x1280.png`
+- 全图组合比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/sidebar-reference-vs-final-4096x1280.png`
+- 侧栏局部比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/sidebar-focused-reference-vs-final-720x700.png`
+
+视口为 2048 × 1280，深色主题，已选择并运行中的会话。参考图包含 macOS 原生窗口边框；浏览器实现图不包含原生边框，因此全图按内容高度归一化，侧栏局部按相同逻辑宽度比较。
+
+全图比较确认现有阅读列、环境卡片、Composer 和状态栏没有被本次侧栏调整影响。局部比较确认新建会话按钮上方的 48px 空白已移除，仅保留 8px 组件内边距；按钮、定时任务和分组列表的横向对齐保持不变。
+
+双击会话名称后，标题在原行切换为输入框并自动聚焦、全选。回车和失焦保存；Esc 取消。编辑时行内操作按钮隐藏，避免挤压输入区域。折叠图标侧栏不进入编辑态。
+
+必查表面：字体继续使用项目既有 Inter/system 字体栈与 13px 侧栏层级；间距使用 8px 设计节奏，输入框保持 24px 高度；颜色全部来自 `background`、`input`、`ring` 和状态 token；状态图标继续使用现有 Lucide 资产，没有新增图片、CSS 绘图或手写 SVG；文案复用现有中英文“会话名称”资源。
+
+交互检查覆盖双击进入编辑、焦点与选区、Esc 取消和默认态恢复。浏览器控制台没有 `error`、`warn` 或布局异常。
+
+比较历史：
+
+| 级别 | 先前问题 | 修复 | 修复后证据 |
+|---|---|---|---|
+| P2 | 删除顶部占位后，新建会话按钮紧贴浏览器内容边缘 | 顶部动作容器增加 8px 纵向内边距 | 按钮 `top=8px`，圆角完整，侧栏仍无大块空白 |
+
+当前没有未解决的 P0、P1 或 P2。定向测试 2 个文件、24 项测试通过；类型检查和 Biome 检查通过。完整前端检查被本功能范围外的 `PendingQuestionForm.test.tsx` 既有可访问名称断言拦截；`pnpm check:quick` 被仓库既有超长测试文件拦截于 test-architecture gate。
+
+final result: passed
+
+## 会话名称顶部定位验收
+
+视觉真值：
+
+- 目标位置：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-bf313926-27d2-48b8-aa2a-b0c3a2b3cd06.png`
+- 调整前状态：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-b337444f-6a5e-4a99-86a2-5e540916e84d.png`
+
+实现证据：
+
+- 浏览器截图：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/conversation-title-topbar-1920x1280.png`
+- 全图组合比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/conversation-title-position-comparison.jpg`
+
+视口为 1920 × 1280，状态为已选择、运行中的会话。会话名称显示在右侧区域顶部栏左侧，相对右侧区域偏移为 x=32px、y=16px。正文区域不再重复显示标题。690 × 844 窄屏复核中标题保持可见，`body.clientWidth` 与 `body.scrollWidth` 均为 690px。
+
+全图比较已覆盖整体位置、顶部栏层级和右侧区域对齐。标题在同一画面中可读，不需要额外局部放大。
+
+字体沿用现有字体栈，使用 14px 半粗标题；间距沿用顶部栏的 52px 高度和设计 token；颜色沿用前景色；没有新增图片或替代资产；标题内容直接来自当前会话投影并支持截断。浏览器控制台无 `error` 或 `warn`。
+
+首次比较没有发现 P0、P1 或 P2 差异，因此没有修复迭代。相关组件测试 15 项通过，类型检查和 Biome 检查通过。完整前端测试被当前 Node 26.5.0 的无 `localStorage` 测试环境拦截；`pnpm check:quick` 被仓库中 11 个既有超长测试文件拦截，均与本次标题布局无关。
+
+final result: passed
+
+## 对话文件活动与 Diff 验收（2026-07-18）
+
+参考截图：
+
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-ff6d951b-dc6e-4e3d-88b3-c69a82d9025b.png`
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-6fc7ba91-7044-4e27-902d-87ed44f90ae6.png`
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-5281f260-759d-439b-b38e-43a49de343f4.png`
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-28e722cb-84bb-4e39-9de3-055fd8dae5c2.png`
+
+实现截图：
+
+- 1440 × 900 内联文件活动：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-file-activity-inline-final-1440x900.jpg`
+- 1440 × 900 文件查看器：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-file-activity-file-viewer-final-1440x900.jpg`
+- 1440 × 900 Diff 工作台：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-file-activity-diff-workbench-1440x900.jpg`
+- 690 × 844 内联文件活动：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-file-activity-inline-690x844.jpg`
+
+组合比较证据：
+
+- 全图：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/comparison-inline-full.jpg`
+- 文件活动与内联 Diff 局部：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/comparison-inline-focused.jpg`
+- 文件查看器：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/comparison-file-viewer.jpg`
+
+| 视口 | 状态 | 结果 |
+|---|---|---|
+| 1440 × 900 | 文件读取与编辑完成 | 活动按真实操作类型显示图标、文件名和耗时；关联产物不再作为重复时间线项出现 |
+| 1440 × 900 | 内联 Diff 展开 | 文件标题、新增/删除统计、hunk、行号与增删背景均可读；内容区独立滚动 |
+| 1440 × 900 | 点击读取记录 | 文件工作台打开对应快照；等宽文本和行号稳定对齐 |
+| 1440 × 900 | 点击编辑记录 | Diff 工作台打开同一补丁；内联与工作台内容一致 |
+| 690 × 844 | 文件活动展开 | 活动、统计和 Diff 在会话列内回流；无横向页面溢出 |
+
+全图比较确认实现保留 Jyowo 既有浅色任务页面、右侧工作台和设计变量，没有复制参考应用的深色外壳。局部比较使用同一“文件操作完成、Diff 展开”状态，结构顺序与参考一致：操作记录、已编辑文件分组、文件标题、统计和逐行 Diff。参考图是裁剪画面，因此局部证据按内容区域归一化宽度比较，不作为整页像素复刻基准。
+
+文件查看器继续使用既有任务工作台，不新增独立全屏编辑器。读取记录打开持久化文件快照；编辑记录打开持久化 unified diff。文件视图补充行号，长行和 Diff 内容在自身区域滚动。代码语法着色属于后续 P3，不影响文件内容、行号、选择和补丁检查。
+
+本轮修复历史：
+
+| 级别 | 问题 | 修复 | 验收结果 |
+|---|---|---|---|
+| P1 | 文件工具只有过程文字，历史任务没有可打开的文件内容或补丁 | FileRead、FileEdit、FileWrite 将文件快照或 unified diff 写入 blob，并记录关联 `source_tool_use_id` 的产物事件 | 历史投影可恢复文件与 Diff；点击对应工具记录可打开工作台 |
+| P1 | 关联产物作为独立时间线项显示，和工具记录重复 | 连续工具组按 `toolUseId` 吸收关联 file/diff 产物 | 每次读取或编辑只保留一条可点击活动记录 |
+| P2 | 完成态统一使用对勾，无法快速区分读取、搜索和编辑 | 完成态改用操作类型图标；运行和失败仍保留状态图标 | 文件读取与编辑可在同组内快速扫描 |
+| P2 | 内联 Diff 缺少文件统计 | 根据解析后的增删行计算并显示 `+新增/-删除` | 标题行与参考层级一致，读屏同时获得完整数量描述 |
+| P2 | 文件工作台只有纯文本块，没有行号 | file artifact 的工作台视图增加稳定行号列 | 文件快照可按行定位；行号不参与正文语义 |
+| P2 | 窄屏可能被 Diff 长行撑宽 | Diff 表格保留内部横向滚动，活动容器允许收缩 | 690 × 844 截图无页面级横向溢出 |
+
+浏览器交互覆盖读取记录、编辑记录、内联 Diff、文件工作台、Diff 工作台和窄屏。控制台 `error` 与 `warn` 均为空。当前没有未解决的 P0、P1 或 P2。
+
+自动验证：
+
+- 前端定向测试：5 个测试文件、88 项测试通过。
+- `pnpm check:frontend:fast`：67 个测试文件、685 项测试通过。
+- `pnpm check:daemon-protocol`：通过。
+- `pnpm check:design-tokens`：通过；输出仅包含仓库已有警告。
+- `pnpm check:rust:fast`：通过。
+- File artifact Rust 单元测试：2 项通过。
+- FileRead/FileEdit/FileWrite Rust 集成测试：35 项通过。
+- Journal 投影 Rust 测试：9 项通过。
+- `pnpm check:quick`：被本功能范围外的 10 个既有超长测试文件拦截于 test-architecture gate；后续前端、Rust 和协议 gate 已分别执行并通过。
+
+final result: passed
+
+## 右侧任务区域运行反馈与控制验收
+
+参考截图：
+
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-5d8dca97-3cf3-49ff-9bb4-bdc1d3852a4d.png`
+- `/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-f7f5619c-cfb2-48ce-854c-7a7e5db55114.png`
+
+实现证据：
+
+- 完整运行态：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-run-feedback-integrated-1920x1280.png`
+- 顶部标题：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-title-app-header-1920x1280.png`
+- 暂停后继续：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-run-paused-1920x1280.png`
+- 窄屏：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/task-run-feedback-narrow-690x844.png`
+
+参考图与实现图在同一比较输入中检查。实现沿用原有深色背景、阅读列宽度、右侧环境卡片、Composer 和 Lucide 图标，没有引入新的视觉体系。
+
+| 视口 | 状态 | 结果 |
+|---|---|---|
+| 1920 × 1280 | 运行中、当前段尚无助手输出 | 会话名称位于顶部栏左侧；阅读列不再显示标题、“已连接”或普通任务状态；时间线显示“正在思考”；Composer 显示暂停和排队 |
+| 1920 × 1280 | 安全暂停完成 | Composer 显示继续；点击继续请求成功；浏览器控制台无 `error` 或 `warn` |
+| 690 × 844 | 运行中 | 标题、等待反馈和暂停入口可见；`clientWidth`、`scrollWidth` 和 `body.scrollWidth` 均为 690px |
+
+交互与状态检查：
+
+- 暂停使用 daemon 的 `stop_run`，模式为 `safe_point`；等待安全点时显示“正在暂停”并禁用重复请求。
+- 安全暂停产生 `interrupted + cancelled` 后显示继续，并发送 `continue_task`。
+- 运行时仍可编辑并排队下一条消息。
+- “正在思考”和“正在暂停”使用 `role=status`；动画支持减少动态效果。
+- 暂停和继续均有可见文字、图标和可访问名称。
+
+自动验证：
+
+- `pnpm check:frontend:fast`：66 个测试文件、680 项测试通过。
+- 相关组件测试：5 个测试文件、118 项测试通过。
+- `pnpm check:quick`：已执行；被仓库内其他既有测试架构硬限制阻断。本次涉及的 `TaskWorkspace.test.tsx` 已拆分到 1200 行以内。
+
+当前没有未解决的 P0、P1 或 P2 设计缺陷。
+
+final result: passed
+
 ## 工具设置页重设计验收
 
 旧页面证据：
@@ -318,5 +512,37 @@ final result: passed
 - 浏览器控制台 `error` 和 `warn`：均为空。
 
 当前没有未解决的 P0、P1 或 P2。
+
+final result: passed
+
+## 全局搜索入口迁移验收
+
+视觉真值：
+
+- 命令弹框：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-19bde467-af20-47c8-a24c-3982e28b2b5d.png`（1142 × 476 px）。
+- 原顶部按钮：`/var/folders/r6/yxptvvk91mn385_y6sw55nx40000gn/T/codex-clipboard-d47d4411-681f-4aa3-8d00-0cf1184e35cb.png`（168 × 166 px）。
+
+实现证据：
+
+- 侧栏入口：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/global-search-sidebar-implementation.png`（1280 × 720 px）。
+- 弹框打开态：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/global-search-popup-implementation.png`（1280 × 720 px）。
+- 全图组合比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/global-search-reference-vs-implementation.jpg`。
+- 局部组合比较：`/Users/goya/Repo/Git/Jyowo/artifacts/design-qa/global-search-focused-comparison.jpg`。
+
+视口为 1280 × 720 CSS px。浏览器设备像素比为 2；实现截图已归一化为 1280 × 720 px。状态为浅色主题、侧栏展开、无选中会话，并分别检查弹框关闭态和打开态。
+
+全图比较确认顶部栏不再保留独立命令按钮。全局搜索位于侧栏顶部，并在新建会话之前。收起侧栏时入口只显示搜索图标。局部比较确认弹框的输入框、操作分组、默认选中项、三个命令和关闭按钮与视觉真值保持同一结构。
+
+必查表面：
+
+- 字体与排版：沿用现有字体栈、14px 菜单文字和 11px 快捷键提示；没有截断或异常换行。
+- 间距与布局：入口使用侧栏既有 36px 行高、圆角、水平内边距和 4px 行间距；新建会话位置下移一行，无重叠或横向溢出。
+- 颜色与设计变量：只使用现有前景、弱前景、行悬停和表面变量；没有新增原始色值或自定义阴影。
+- 图像与资产：搜索图标使用项目现有 Lucide 图标库；没有新增位图资产、手写 SVG、Emoji 或 CSS 绘图。
+- 文案与内容：新增“全局搜索 / Global search”和对应可访问名称；弹框原有命令文案保持不变。
+
+浏览器验证覆盖点击“全局搜索”打开命令弹框、搜索输入自动聚焦、三个命令项可见和弹框关闭按钮可见。控制台 `error` 为空。自动测试覆盖入口顺序、点击打开弹框和设置命令路由。
+
+本轮没有发现 P0、P1 或 P2 设计缺陷。首次前端全量测试受 Node 本地存储参数影响；补充隔离的 `--localstorage-file` 后，68 个测试文件、699 项测试全部通过。`pnpm check:quick` 被仓库内既有超限测试文件阻断，本次涉及文件不在超限列表中。
 
 final result: passed

@@ -288,7 +288,7 @@ impl Default for DelegationBlocklist {
             tools: [
                 "delegate",
                 "agent",
-                "clarify",
+                "AskUserQuestion",
                 "memory_write",
                 "send_user_message",
                 "execute_code",

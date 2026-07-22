@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { I18nextProvider } from 'react-i18next'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { TimelineItemProjection } from '@/generated/daemon-protocol'
+import type { RunProjection, TimelineItemProjection } from '@/generated/daemon-protocol'
 import { createAppI18n } from '@/shared/i18n/i18n'
 import { uiStore } from '@/shared/state/ui-store'
 import { TaskTimeline } from './TaskTimeline'
@@ -29,6 +29,35 @@ const items: TimelineItemProjection[] = [
 ]
 
 describe('TaskTimeline', () => {
+  it('shows thinking until the active run produces visible output', () => {
+    const activeRun = run('running')
+    const waitingItems = [
+      item(1, 'user_message', 'Inspect the scheduler', activeRun.segmentId),
+      item(2, 'notice', 'Run started', activeRun.segmentId),
+    ]
+    const { rerender } = render(<TaskTimeline activeRun={activeRun} items={waitingItems} />)
+
+    expect(screen.getByRole('status', { name: 'Thinking…' })).toBeInTheDocument()
+
+    rerender(
+      <TaskTimeline
+        activeRun={activeRun}
+        items={[
+          ...waitingItems,
+          item(3, 'assistant_text', 'I found the scheduler.', activeRun.segmentId, true),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByTestId('task-run-status')).not.toBeInTheDocument()
+  })
+
+  it('shows a pausing state while the run yields at a safe point', () => {
+    render(<TaskTimeline activeRun={run('yielding')} items={[]} />)
+
+    expect(screen.getByRole('status', { name: 'Pausing…' })).toBeInTheDocument()
+  })
+
   it('preserves global offset order and uses the Codex visual hierarchy', () => {
     render(<TaskTimeline items={[...items].reverse()} />)
 
@@ -504,16 +533,93 @@ describe('TaskTimeline', () => {
     render(<TaskTimeline items={[read, command]} onSelectItem={onSelectItem} />)
 
     expect(screen.getByText('Read 1 file · Ran 1 command')).toBeInTheDocument()
-    expect(screen.getByText('Read 1 file · Ran 1 command').closest('details')).toHaveAttribute(
+    expect(screen.getByText('Read 1 file · Ran 1 command').closest('details')).not.toHaveAttribute(
       'open',
     )
-    expect(screen.getByRole('region', { name: 'Command output' })).toHaveTextContent('$ pnpm test')
-    expect(screen.getByRole('region', { name: 'Command output' })).toHaveTextContent(
-      '69 test files passed',
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'Open Command output' }))
+    const commandOutput = screen.getByRole('region', { name: 'Command output' })
+    const openCommand = screen.getByRole('button', { name: 'Open Command output' })
+    expect(commandOutput).toHaveTextContent('$ pnpm test')
+    expect(commandOutput).toHaveTextContent('69 test files passed')
+    expect(openCommand).not.toContainElement(commandOutput)
+    fireEvent.click(openCommand)
     expect(onSelectItem).toHaveBeenCalledWith(command, expect.any(HTMLButtonElement))
     expect(screen.getByRole('status')).toHaveTextContent('Task update: Ran command')
+  })
+
+  it('links file snapshots and inline diffs to their tool activity', () => {
+    const read = {
+      ...item(1_910, 'tool_activity', 'Read src/scheduler.rs', 'segment-files'),
+      tool: {
+        operation: 'read' as const,
+        status: 'completed' as const,
+        subject: 'src/scheduler.rs',
+        toolName: 'FileRead',
+        toolUseId: 'tool-file-read',
+      },
+    }
+    const readArtifact = {
+      ...item(1_911, 'file', 'src/scheduler.rs', 'segment-files'),
+      contentBlocks: [
+        {
+          artifact: {
+            artifactKind: 'file',
+            mediaType: 'text/plain',
+            preview: 'fn schedule() {}',
+            sourceToolUseId: 'tool-file-read',
+            title: 'src/scheduler.rs',
+          },
+          type: 'artifact' as const,
+        },
+      ],
+    }
+    const edit = {
+      ...item(1_912, 'tool_activity', 'Edited src/scheduler.rs', 'segment-files'),
+      tool: {
+        operation: 'edit' as const,
+        status: 'completed' as const,
+        subject: 'src/scheduler.rs',
+        toolName: 'FileEdit',
+        toolUseId: 'tool-file-edit',
+      },
+    }
+    const diffArtifact = {
+      ...item(1_913, 'diff', 'src/scheduler.rs', 'segment-files'),
+      contentBlocks: [
+        {
+          artifact: {
+            artifactKind: 'diff',
+            mediaType: 'text/plain',
+            preview:
+              'diff --git a/src/scheduler.rs b/src/scheduler.rs\n--- a/src/scheduler.rs\n+++ b/src/scheduler.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+            sourceToolUseId: 'tool-file-edit',
+            title: 'src/scheduler.rs',
+          },
+          type: 'artifact' as const,
+        },
+      ],
+    }
+    const onSelectItem = vi.fn()
+
+    render(
+      <TaskTimeline items={[read, readArtifact, edit, diffArtifact]} onSelectItem={onSelectItem} />,
+    )
+
+    expect(screen.getByText('1 edited file')).toBeInTheDocument()
+    expect(screen.getByTestId('unified-diff')).toHaveAttribute('data-diff-surface', 'inline')
+    expect(screen.getByText('+new')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open File changes' }))
+    expect(onSelectItem).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: read.id, kind: 'file' }),
+      expect.any(HTMLButtonElement),
+    )
+    expect(onSelectItem).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: edit.id, kind: 'diff' }),
+      expect.any(HTMLButtonElement),
+    )
   })
 
   it.each([
@@ -586,4 +692,13 @@ function item(
   incomplete = false,
 ): TimelineItemProjection {
   return { globalOffset, id: `event-${globalOffset}`, incomplete, kind, runSegmentId, summary }
+}
+
+function run(state: RunProjection['state']): RunProjection {
+  return {
+    incompleteOutput: false,
+    segmentId: '01J00000000000000000000992',
+    startedAt: '2026-07-18T00:00:00Z',
+    state,
+  }
 }

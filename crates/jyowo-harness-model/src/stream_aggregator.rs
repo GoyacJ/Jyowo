@@ -126,6 +126,7 @@ impl fmt::Debug for StreamAggregate {
 #[derive(Debug, Default)]
 pub struct StreamAggregator {
     pending: BTreeMap<u32, PendingToolUse>,
+    stop_reason: Option<StopReason>,
     terminal: bool,
     thinking_normalizer: ThinkingTagNormalizer,
 }
@@ -146,14 +147,23 @@ impl StreamAggregator {
                 vec![StreamAggregate::MessageStart { usage }]
             }
             ModelStreamEvent::ContentBlockDelta { index, delta } => self.push_delta(index, delta),
-            ModelStreamEvent::ContentBlockStop { index } => self.finish(index),
+            ModelStreamEvent::ContentBlockStop { .. } => {
+                // Providers can report the terminal reason after closing content blocks.
+                // Defer tool JSON parsing until MessageStop so truncated calls can be discarded.
+                Vec::new()
+            }
             ModelStreamEvent::MessageDelta {
                 stop_reason,
                 usage_delta,
-            } => vec![StreamAggregate::MessageDelta {
-                stop_reason,
-                usage_delta,
-            }],
+            } => {
+                if let Some(reason) = stop_reason.as_ref() {
+                    self.stop_reason = Some(reason.clone());
+                }
+                vec![StreamAggregate::MessageDelta {
+                    stop_reason,
+                    usage_delta,
+                }]
+            }
             ModelStreamEvent::MessageStop => self.finish_message(),
             ModelStreamEvent::ProviderContinuationDelta { kind, payload } => {
                 vec![StreamAggregate::ProviderContinuationDelta { kind, payload }]
@@ -229,19 +239,15 @@ impl StreamAggregator {
         }
     }
 
-    fn finish(&mut self, index: u32) -> Vec<StreamAggregate> {
-        self.pending
-            .remove(&index)
-            .map_or_else(Vec::new, |pending| self.finish_pending(pending))
-    }
-
     fn finish_message(&mut self) -> Vec<StreamAggregate> {
         let mut output = Vec::new();
         let pending = std::mem::take(&mut self.pending);
-        for pending in pending.into_values() {
-            output.extend(self.finish_pending(pending));
-            if self.terminal {
-                return output;
+        if !matches!(self.stop_reason.as_ref(), Some(StopReason::MaxIterations)) {
+            for pending in pending.into_values() {
+                output.extend(self.finish_pending(pending));
+                if self.terminal {
+                    return output;
+                }
             }
         }
         self.terminal = true;

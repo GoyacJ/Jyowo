@@ -92,7 +92,7 @@ fn provider_resolver_waits_for_complete_generation_commit() {
 }
 
 #[test]
-fn missing_execution_defaults_use_the_disabled_contract_defaults() {
+fn missing_execution_defaults_enable_agent_capabilities_by_default() {
     let config = ConfigFixture::new();
 
     let defaults = ProviderConfigResolver::new(config.path())
@@ -100,7 +100,9 @@ fn missing_execution_defaults_use_the_disabled_contract_defaults() {
         .expect("missing execution defaults should use contract defaults");
 
     assert_eq!(defaults, ExecutionDefaultsRecord::default());
-    assert!(!defaults.subagents_enabled);
+    assert!(defaults.subagents_enabled);
+    assert!(defaults.agent_teams_enabled);
+    assert!(defaults.background_agents_enabled);
 }
 
 #[test]

@@ -11,11 +11,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{future::BoxFuture, stream, StreamExt};
 use harness_contracts::{
-    ActionResource, BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, ClarifyAnswer,
-    ClarifyPrompt, Event, OutboundUserMessage, PermissionSubject, RedactRules, Redactor,
-    SandboxError, SandboxExecutionStartedEvent, SandboxExitStatus, SandboxPolicySummary, Severity,
-    TenantId, ToolActionPlan, ToolCapability, ToolError, ToolExecutionChannel, ToolResult,
-    ToolRuntimeSettings, ToolUseId, UserMessageDelivery, WorkspaceAccess,
+    ActionResource, AskUserQuestionAnswer, AskUserQuestionOutcome, AskUserQuestionRequest,
+    BlobError, BlobMeta, BlobRef, BlobStore, CapabilityRegistry, Event, OutboundUserMessage,
+    PermissionSubject, RedactRules, Redactor, SandboxError, SandboxExecutionStartedEvent,
+    SandboxExitStatus, SandboxPolicySummary, Severity, TenantId, ToolActionPlan, ToolCapability,
+    ToolError, ToolExecutionChannel, ToolResult, ToolRuntimeSettings, ToolUseId,
+    UserMessageDelivery, WorkspaceAccess,
 };
 use harness_sandbox::{
     ActivityHandle, ExecContext, ExecOutcome, ExecSpec, KillScope, NetworkPolicySupport,
@@ -24,8 +25,8 @@ use harness_sandbox::{
 };
 use harness_tool::{
     builtin::{
-        BashTool, ClarifyTool, SendMessageTool, WebFetchTool, WebSearchBackend, WebSearchRequest,
-        WebSearchResult, WebSearchTool, WEB_SEARCH_BACKEND_CAPABILITY,
+        AskUserQuestionTool, BashTool, SendMessageTool, WebFetchTool, WebSearchBackend,
+        WebSearchRequest, WebSearchResult, WebSearchTool, WEB_SEARCH_BACKEND_CAPABILITY,
     },
     canonical_action_plan_hash, AuthorizedNetworkPermit, AuthorizedTicketSummary,
     AuthorizedToolCall, AuthorizedToolInput, BuiltinToolset, HttpMethod, InterruptToken,
@@ -37,6 +38,45 @@ use harness_tool::{
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
+#[cfg(unix)]
+fn expected_shell_program() -> &'static str {
+    "/bin/sh"
+}
+
+#[cfg(windows)]
+fn expected_shell_program() -> &'static str {
+    "powershell.exe"
+}
+
+#[cfg(not(any(unix, windows)))]
+fn expected_shell_program() -> &'static str {
+    "sh"
+}
+
+#[cfg(unix)]
+fn expected_shell_args(script: &str) -> Vec<String> {
+    vec!["-c".to_owned(), script.to_owned()]
+}
+
+#[cfg(windows)]
+fn expected_shell_args(script: &str) -> Vec<String> {
+    [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn expected_shell_args(script: &str) -> Vec<String> {
+    vec!["-c".to_owned(), script.to_owned()]
+}
+
 #[tokio::test]
 async fn bash_requires_sandbox_and_maps_command_permission() {
     let tool = BashTool::default();
@@ -45,10 +85,11 @@ async fn bash_requires_sandbox_and_maps_command_permission() {
         .plan(&input, &tool_ctx(CapabilityRegistry::default(), None))
         .await;
 
-    assert!(matches!(
-        plan.unwrap().subject,
-        PermissionSubject::CommandExec { ref command, .. } if command == "printf hi"
-    ));
+    let PermissionSubject::CommandExec { command, argv, .. } = plan.unwrap().subject else {
+        panic!("expected command permission subject");
+    };
+    assert_eq!(command, expected_shell_program());
+    assert_eq!(argv, expected_shell_args("printf hi"));
 
     let error = execute_error(&tool, input, tool_ctx(CapabilityRegistry::default(), None)).await;
     assert!(matches!(
@@ -117,6 +158,7 @@ async fn bash_executes_through_sandbox_and_returns_output() {
     let Some(harness_tool::ToolEvent::Final(ToolResult::Structured(value))) = events.last() else {
         panic!("expected structured bash result");
     };
+    assert_eq!(value["success"], true);
     assert_eq!(value["exit_status"], json!({ "code": 0 }));
     assert_eq!(value["stdout_bytes_observed"], 6);
     assert_eq!(value["stderr_bytes_observed"], 5);
@@ -125,7 +167,8 @@ async fn bash_executes_through_sandbox_and_returns_output() {
 
     let specs = sandbox.recorded_execs();
     assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].command, "echo hello");
+    assert_eq!(specs[0].command, expected_shell_program());
+    assert_eq!(specs[0].args, expected_shell_args("echo hello"));
     assert_eq!(
         specs[0].workspace_access,
         WorkspaceAccess::ReadWrite {
@@ -663,29 +706,36 @@ async fn web_fetch_does_not_inline_non_text_response_bodies() {
 }
 
 #[tokio::test]
-async fn clarify_and_send_message_use_capability_registry() {
+async fn ask_user_question_and_send_message_use_capability_registry() {
     let mut caps = CapabilityRegistry::default();
-    let clarify: Arc<dyn harness_contracts::ClarifyChannelCap> = Arc::new(FakeClarify);
+    let questions: Arc<dyn harness_contracts::AskUserQuestionCap> = Arc::new(FakeQuestionChannel);
     let messenger: Arc<dyn harness_contracts::UserMessengerCap> = Arc::new(FakeMessenger);
-    caps.install(ToolCapability::ClarifyChannel, clarify);
+    caps.install(ToolCapability::AskUserQuestion, questions);
     caps.install(ToolCapability::UserMessenger, messenger);
 
-    let clarify_result = execute_final(
-        &ClarifyTool::default(),
+    let question_result = execute_final(
+        &AskUserQuestionTool::default(),
         json!({
-            "prompt": "Pick one",
-            "choices": [{ "id": "a", "label": "A" }],
-            "multiple": false
+            "questions": [{
+                "id": "choice",
+                "question": "Pick one",
+                "options": [
+                    { "id": "a", "label": "A" },
+                    { "id": "b", "label": "B" }
+                ]
+            }]
         }),
         tool_ctx(caps.clone(), None),
     )
     .await;
-    let ToolResult::Structured(clarify_value) = clarify_result else {
-        panic!("expected structured clarify result");
+    let ToolResult::Structured(question_value) = question_result else {
+        panic!("expected structured question result");
     };
-    assert_eq!(clarify_value["answer"], json!("A"));
-    assert_eq!(clarify_value["chosen_ids"], json!(["a"]));
-    assert!(clarify_value["answered_at"].as_str().is_some());
+    assert_eq!(question_value["status"], json!("answered"));
+    assert_eq!(
+        question_value["answers"][0]["selectedOptionIds"],
+        json!(["a"])
+    );
 
     let send_result = execute_final(
         &SendMessageTool::default(),
@@ -703,11 +753,11 @@ async fn clarify_and_send_message_use_capability_registry() {
 }
 
 #[tokio::test]
-async fn clarify_plan_declares_clarification_resource() {
-    let tool = ClarifyTool::default();
+async fn ask_user_question_plan_declares_clarification_resource_without_permission_escalation() {
+    let tool = AskUserQuestionTool::default();
     let plan = tool
         .plan(
-            &json!({ "prompt": "Pick one" }),
+            &json!({ "questions": [{ "id": "choice", "question": "Pick one" }] }),
             &tool_ctx(CapabilityRegistry::default(), None),
         )
         .await
@@ -718,70 +768,48 @@ async fn clarify_plan_declares_clarification_resource() {
         [ActionResource::Clarification {
             action,
             prompt_hash: Some(_)
-        }] if action == "ask"
+        }] if action == "ask_user_question"
     ));
 }
 
 #[tokio::test]
-async fn clarify_rejects_invalid_timeout_seconds() {
-    let tool = ClarifyTool::default();
+async fn ask_user_question_rejects_invalid_question_sets() {
+    let tool = AskUserQuestionTool::default();
     let ctx = tool_ctx(CapabilityRegistry::default(), None);
-
-    let zero = validate_error_message(
-        &tool,
-        json!({ "prompt": "Pick one", "timeout_seconds": 0 }),
-        ctx.clone(),
-    )
-    .await;
-    assert_eq!(zero, "timeout_seconds must be greater than 0");
-
-    let overflow = validate_error_message(
-        &tool,
-        json!({ "prompt": "Pick one", "timeout_seconds": u64::MAX }),
-        ctx,
-    )
-    .await;
-    assert_eq!(overflow, "timeout_seconds must fit in u32");
-}
-
-#[tokio::test]
-async fn clarify_rejects_invalid_choices() {
-    let tool = ClarifyTool::default();
-    let ctx = tool_ctx(CapabilityRegistry::default(), None);
-
-    for (input, expected) in [
-        (
-            json!({ "prompt": "Pick one", "choices": "a" }),
-            "choices must be an array",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": ["a"] }),
-            "choice must be an object",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": [{ "label": "A" }] }),
-            "choice.id is required",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": [{ "id": "", "label": "A" }] }),
-            "choice.id is required",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": [{ "id": "a" }] }),
-            "choice.label is required",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": [{ "id": "a", "label": "" }] }),
-            "choice.label is required",
-        ),
-        (
-            json!({ "prompt": "Pick one", "choices": [{ "id": "a", "label": "A", "hint": 1 }] }),
-            "choice.hint must be a string",
-        ),
-    ] {
-        let error = validate_error_message(&tool, input, ctx.clone()).await;
-        assert_eq!(error, expected);
-    }
+    assert!(tool
+        .validate(&json!({ "questions": [] }), &ctx)
+        .await
+        .is_err());
+    assert!(tool
+        .validate(
+            &json!({
+                "questions": [
+                    { "id": "one", "question": "One" },
+                    { "id": "two", "question": "Two" },
+                    { "id": "three", "question": "Three" },
+                    { "id": "four", "question": "Four" }
+                ]
+            }),
+            &ctx,
+        )
+        .await
+        .is_err());
+    assert!(tool
+        .validate(
+            &json!({
+                "questions": [{
+                    "id": "choice",
+                    "question": "Pick one",
+                    "options": [
+                        { "id": "a", "label": "A" },
+                        { "id": "a", "label": "Again" }
+                    ]
+                }]
+            }),
+            &ctx,
+        )
+        .await
+        .is_err());
 }
 
 #[test]
@@ -791,7 +819,7 @@ fn default_builtin_toolset_registers_m3_t04b_tools_without_forbidden_deps() {
         .build()
         .unwrap();
 
-    for name in ["Bash", "WebSearch", "Clarify", "SendMessage"] {
+    for name in ["AskUserQuestion", "Bash", "WebSearch", "SendMessage"] {
         assert!(registry.get(name).is_some(), "{name} should be registered");
     }
 
@@ -1303,15 +1331,21 @@ impl ToolNetworkBrokerCap for FakeNetworkBroker {
     }
 }
 
-struct FakeClarify;
+struct FakeQuestionChannel;
 
-impl harness_contracts::ClarifyChannelCap for FakeClarify {
-    fn ask(&self, prompt: ClarifyPrompt) -> BoxFuture<'static, Result<ClarifyAnswer, ToolError>> {
-        assert_eq!(prompt.prompt, "Pick one");
+impl harness_contracts::AskUserQuestionCap for FakeQuestionChannel {
+    fn ask(
+        &self,
+        request: AskUserQuestionRequest,
+    ) -> BoxFuture<'static, Result<AskUserQuestionOutcome, ToolError>> {
+        assert_eq!(request.questions[0].question, "Pick one");
         Box::pin(async {
-            Ok(ClarifyAnswer {
-                answer: "A".to_owned(),
-                chosen_ids: vec!["a".to_owned()],
+            Ok(AskUserQuestionOutcome::Answered {
+                answers: vec![AskUserQuestionAnswer {
+                    question_id: "choice".to_owned(),
+                    selected_option_ids: vec!["a".to_owned()],
+                    text: None,
+                }],
             })
         })
     }
